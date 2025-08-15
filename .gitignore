@@ -3,6 +3,17 @@ schedule_by_week.csv
 schedule_by_team.csv
 team_schedule_grid.csv
 
+# SENSITIVE AUTHENTICATION DATA - DO NOT COMMIT
+.env
+credentials.json
+FantasyRecords/credentials.json
+token.pickle
+*.pickle
+
+# BFL Records CSV Output Files
+bfl_records_*.csv
+bfl_summary_records.csv
+
 # Python cache files
 __pycache__/
 *.py[cod]

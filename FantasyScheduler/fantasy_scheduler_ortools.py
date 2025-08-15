@@ -86,7 +86,7 @@ for div_teams in teams_by_div.values():
                 total_games.extend([matches[team_i][team_j][w], matches[team_j][team_i][w]])
             model.Add(sum(total_games) == 2)
 
-# Constraint 4: Opposite division single round
+# Constraint 4: Opposite division single round with balanced home/away
 for div1, div2 in [("North", "South"), ("East", "West")]:
     div1_indices = [idx[team] for team in teams_by_div[div1]]
     div2_indices = [idx[team] for team in teams_by_div[div2]]
@@ -98,6 +98,27 @@ for div1, div2 in [("North", "South"), ("East", "West")]:
             for w in range(W):
                 total_games.extend([matches[team_i][team_j][w], matches[team_j][team_i][w]])
             model.Add(sum(total_games) == 1)
+
+# Constraint 4b: Opposite division home/away balance (2 home, 2 away per team)
+for div1, div2 in [("North", "South"), ("East", "West")]:
+    div1_indices = [idx[team] for team in teams_by_div[div1]]
+    div2_indices = [idx[team] for team in teams_by_div[div2]]
+    
+    # Each team in div1 hosts exactly 2 games against div2 teams
+    for team_i in div1_indices:
+        home_games_vs_div2 = []
+        for team_j in div2_indices:
+            for w in range(W):
+                home_games_vs_div2.append(matches[team_i][team_j][w])
+        model.Add(sum(home_games_vs_div2) == 2)
+    
+    # Each team in div2 hosts exactly 2 games against div1 teams  
+    for team_j in div2_indices:
+        home_games_vs_div1 = []
+        for team_i in div1_indices:
+            for w in range(W):
+                home_games_vs_div1.append(matches[team_j][team_i][w])
+        model.Add(sum(home_games_vs_div1) == 2)
 
 # Constraint 5: Home/Away balance (7 home, 7 away per team)
 for i in range(T):
