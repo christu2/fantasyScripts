@@ -216,28 +216,35 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             lines.append(f"* 🎰 **Projected Spread:** `Pre-Draft Baseline` (Rosters will populate post-draft)")
             
         # 2. Historical & Drama Context
-        leader_str = f"**{a_owner if a_wins > h_wins else h_owner} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if a_wins != h_wins else f"**Deadlocked {a_wins}-{h_wins}**"
-        lines.append(f"* 📜 **18-Year Series:** {leader_str} across **{total_meetings} meetings** (2008–{target_season})")
+        lead_name = a_owner if a_wins > h_wins else h_owner
+        lead_str = f"**{lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if a_wins != h_wins else f"**Series Deadlocked {a_wins}-{h_wins}**"
+        lines.append(f"* 📜 **18-Year Series:** {lead_str} across **{total_meetings} meetings** (2008–{target_season})")
         
         # 3. Dynamic Narrative
-        if pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
-            narrative = f"👑 THE BATTLE OF THE SHAWNS. Lukose holds a 10-8 edge across 18 lifetime meetings. Thor seeking a statement win."
+        if total_meetings == 0:
+            narrative = f"🆕 Inaugural Showdown! {a_owner} and {h_owner} meet for the very first time in franchise history."
+        elif pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
+            lead_summary = f"Lukose leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}" if a_wins > h_wins else f"Thor leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}"
+            narrative = f"👑 THE BATTLE OF THE SHAWNS. {lead_summary} across {total_meetings} lifetime meetings since 2008! Thor seeking a statement win."
         elif pair == ('Adam Olen', 'Samran Mirza'):
-            narrative = f"🔥 Deadlocked at 7-7! 15th meeting in league history. AMO took their 2025 clash by 1.04 pts."
+            if a_wins == h_wins:
+                narrative = f"🔥 Deadlocked at {a_wins}-{h_wins}! Heading into their {total_meetings + 1}th all-time clash, AMO won their 2025 meeting by a razor-thin margin."
+            else:
+                narrative = f"🔥 {lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} in {total_meetings} meetings since 2008."
         elif pair == ('Dino Davros', 'rej hoxha'):
-            narrative = f"⚖️ Century Rivalry. Dino leads 10-6 in 16 clashes since 2008. Rej won their last meeting by 0.38 pts."
+            narrative = f"⚖️ Century Rivalry. {lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} in {total_meetings} clashes since 2008. Rej won their last meeting by 0.38 pts!"
         elif pair == ('Tommy Ehrlich', 'Nick Christus'):
-            narrative = f"🎯 North Division Showdown. Nick leads 11-6 across 17 meetings since 2008. Tommy searching for his first franchise ring."
+            narrative = f"🎯 North Division Showdown. {lead_name} commands a {max(a_wins, h_wins)}-{min(a_wins, h_wins)} series lead across {total_meetings} meetings since 2008."
         elif pair == ('Abe Thomas', 'Saagar Gupta'):
-            narrative = f"🌴 South Division Grudge Match. Defending champ Abe leads 12-6 over inaugural champ Saagar."
+            narrative = f"🌴 South Division Grudge Match. {lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} across {total_meetings} lifetime meetings since 2008."
         elif pair == ('Daniel Kruszewski', 'Nitesh Patel'):
-            narrative = f"⚡ Nitesh's first official game as solo owner of Big Nasties against former champ Dan Kruszewski."
+            narrative = f"⚡ Nitesh's first official game as solo owner of Big Nasties against Dan Kruszewski (Dan leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} from past co-owner matchups)."
         elif pair == ('Blake Whitehouse', 'Nael Ahmed'):
-            narrative = f"⚔️ Cross-Division Clash. Nael holds a 4-3 edge across 7 meetings (including 4 playoff clashes)."
+            narrative = f"⚔️ Cross-Division Clash. {lead_name} holds a {max(a_wins, h_wins)}-{min(a_wins, h_wins)} edge across {total_meetings} lifetime meetings."
         elif pair == ('Alex Kite', 'Sydney Miller'):
-            narrative = f"💥 West Division Showdown. Sydney holds a tight 5-4 edge over Alex in 9 meetings."
+            narrative = f"💥 West Division Showdown. {lead_name} holds a tight {max(a_wins, h_wins)}-{min(a_wins, h_wins)} edge in {total_meetings} meetings."
         else:
-            narrative = f"{a_owner} vs {h_owner} renewal."
+            narrative = f"{lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} across {total_meetings} lifetime meetings since 2008."
             
         lines.append(f"* ⚔️ **Key Storyline:** {narrative}\n")
         
@@ -247,7 +254,7 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             'home': f"{h_team} ({h_owner})",
             'series': f"{a_owner} {a_wins}-{h_wins} {h_owner}" if total_meetings > 0 else "First Meeting",
             'type': m_type,
-            'spread': f"{fav} -{spread:.1f}" if has_live_rosters else "TBD",
+            'spread': f"{fav} -{spread:.1f}" if has_live_rosters else "Draft Pending",
             'narrative': narrative
         })
         
