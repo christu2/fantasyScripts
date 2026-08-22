@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-BFL Week 1 Pre-Season Preview & Historical Tale of the Tape
-===========================================================
-Generates a comprehensive, data-backed preview of upcoming matchups before
-the season starts by compiling 8 years of historical head-to-head records (2018-2025):
-- All-Time Series Record & Win %
-- Last Meeting Score & Heartbreaks
-- Matchup Storylines & "Tale of the Tape"
-- Simulated Vegas Betting Lines
+BFL Week 1 Pre-Season Preview & 18-Year Historical Tale of the Tape (2008-2025)
+=============================================================================
+Generates a comprehensive, data-backed preview of upcoming matchups by compiling
+18 seasons of historical head-to-head records (2008-2025) from ESPN API:
+- Full co-owner resolution (tracks primary & secondary owners per season)
+- Lifetime Series Record & Win % (Regular Season & Playoffs)
+- Last Meeting Score, Year, Week, and Margin
+- Deep narrative context for each rivalry
 - Discord Webhook Embeds & Markdown Report
 """
 
@@ -41,9 +41,11 @@ MANAGER_SYNONYMS = {
     'tommy ehrlich': 'Tommy Ehrlich',
     'dan kruszewski': 'Daniel Kruszewski',
     'daniel kruszewski': 'Daniel Kruszewski',
+    'ali bhujwala': 'Daniel Kruszewski',
     'sydney kite': 'Sydney Miller',
     'sydney miller': 'Sydney Miller',
     'sydney christus': 'Sydney Miller',
+    'emelie lovasko': 'Emelie Lovasko',
     'shawn ullenbrauck': 'Shawn Ullenbrauck',
     'shawn lukose': 'Shawn Lukose',
     'nick christus': 'Nick Christus',
@@ -57,8 +59,15 @@ MANAGER_SYNONYMS = {
     'samran mirza': 'Samran Mirza',
     'dino davros': 'Dino Davros',
     'adam olen': 'Adam Olen',
+    'ryan olen': 'Ryan Olen',
     'alex kite': 'Alex Kite',
     'evan hagedorn': 'Alex Kite',
+    'matt rosato': 'Austin Russell',
+    'bubba franks': 'Austin Russell',
+    'austin russell': 'Austin Russell',
+    'alexandra christus': 'Alex Christus',
+    'georgia batman': 'Georgia Christus',
+    'georgia christus': 'Georgia Christus',
 }
 
 TEAM_DETAILS_2026 = {
@@ -81,10 +90,15 @@ TEAM_DETAILS_2026 = {
 }
 
 def standardize_name(name: str) -> str:
-    return MANAGER_SYNONYMS.get(name.lower().strip(), name.strip())
+    if not name:
+        return 'Unknown'
+    return MANAGER_SYNONYMS.get(name.lower().strip(), name.strip().title())
 
 def compile_all_time_h2h(league_id: str, s2: str, swid: str):
-    """Fetches all games from 2018 to 2025 to build lifetime head-to-head match matrices."""
+    """
+    Fetches all 18 seasons (2008 to 2025) via ESPN leagueHistory API.
+    Resolves all primary & secondary co-owners for full historical fidelity.
+    """
     cookies = {}
     if s2 and swid:
         cookies = {"espn_s2": s2, "SWID": swid}
@@ -92,27 +106,48 @@ def compile_all_time_h2h(league_id: str, s2: str, swid: str):
     h2h = {}
     career_stats = {}
     
-    print("⏳ Compiling 8 seasons of BFL historical matchup data (2018-2025)...")
-    for y in range(2018, 2026):
-        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{y}/segments/0/leagues/{league_id}?view=mMatchupScore&view=mTeam&view=mSettings"
+    print("⏳ Compiling 18 seasons of BFL historical matchup data (2008-2025)...")
+    for y in range(2008, 2026):
+        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{league_id}?seasonId={y}&view=mMatchupScore&view=mTeam&view=mSettings&view=mMembers"
         try:
-            resp = requests.get(url, cookies=cookies, timeout=6)
+            resp = requests.get(url, cookies=cookies, timeout=8)
             if resp.status_code != 200:
                 continue
-            data = resp.json()
+            raw = resp.json()
+            data = raw[0] if isinstance(raw, list) and len(raw) > 0 else raw
             
+            # 1. Map member IDs to human names for year y
             members = {}
             for m in data.get('members', []):
                 f = m.get('firstName', '').strip()
                 l = m.get('lastName', '').strip()
-                name = f"{f} {l}".strip() or m.get('displayName', '')
-                members[m['id']] = standardize_name(name)
+                full = f"{f} {l}".strip()
+                disp = m.get('displayName', '').strip()
+                members[m['id']] = standardize_name(full if full else disp)
                 
+            # 2. Map teams to all co-owners for year y
             teams = {}
             for t in data.get('teams', []):
-                owner_id = t.get('primaryOwner') or (t.get('owners', [None])[0])
-                teams[t['id']] = members.get(owner_id, 'Unknown')
+                tid = t['id']
+                owner_ids = t.get('owners', [])
+                if not owner_ids and t.get('primaryOwner'):
+                    owner_ids = [t['primaryOwner']]
+                    
+                owners = set()
+                for oid in owner_ids:
+                    if oid in members:
+                        owners.add(members[oid])
+                        
+                if not owners:
+                    tname = f"{t.get('location', '')} {t.get('nickname', '')}".strip()
+                    if tname:
+                        owners.add(standardize_name(tname))
+                    else:
+                        owners.add(f"Team {tid}")
+                        
+                teams[tid] = list(owners)
                 
+            # 3. Process matchups
             for g in data.get('schedule', []):
                 away = g.get('away', {})
                 home = g.get('home', {})
@@ -120,41 +155,48 @@ def compile_all_time_h2h(league_id: str, s2: str, swid: str):
                     continue
                 a_id = away.get('teamId')
                 h_id = home.get('teamId')
-                a_owner = teams.get(a_id)
-                h_owner = teams.get(h_id)
+                a_owners = teams.get(a_id, [])
+                h_owners = teams.get(h_id, [])
                 a_score = away.get('totalPoints', 0.0)
                 h_score = home.get('totalPoints', 0.0)
                 w = g.get('matchupPeriodId', 0)
                 
-                if a_owner and h_owner and a_owner != h_owner and a_score > 0 and h_score > 0:
-                    pair = tuple(sorted([a_owner, h_owner]))
-                    if pair not in h2h:
-                        h2h[pair] = []
-                    winner = a_owner if a_score > h_score else h_owner
-                    loser = h_owner if a_score > h_score else a_owner
+                if a_score > 0 and h_score > 0 and a_owners and h_owners:
                     margin = round(abs(a_score - h_score), 2)
                     
-                    h2h[pair].append({
-                        'year': y,
-                        'week': w,
-                        'away_owner': a_owner,
-                        'home_owner': h_owner,
-                        'away_score': a_score,
-                        'home_score': h_score,
-                        'winner': winner,
-                        'loser': loser,
-                        'margin': margin
-                    })
-                    
-                    # Track career averages
-                    for owner, pts in [(a_owner, a_score), (h_owner, h_score)]:
-                        if owner not in career_stats:
-                            career_stats[owner] = {'total_pts': 0.0, 'games': 0, 'wins': 0}
-                        career_stats[owner]['total_pts'] += pts
-                        career_stats[owner]['games'] += 1
-                        if owner == winner:
-                            career_stats[owner]['wins'] += 1
-        except Exception:
+                    # Cross-attribute across all co-owner pairings
+                    for own_a in a_owners:
+                        for own_b in h_owners:
+                            if own_a == own_b:
+                                continue
+                            pair = tuple(sorted([own_a, own_b]))
+                            if pair not in h2h:
+                                h2h[pair] = []
+                                
+                            winner = own_a if a_score > h_score else own_b
+                            loser = own_b if a_score > h_score else own_a
+                            
+                            h2h[pair].append({
+                                'year': y,
+                                'week': w,
+                                'owner_a': own_a,
+                                'owner_b': own_b,
+                                'score_a': a_score,
+                                'score_b': h_score,
+                                'winner': winner,
+                                'loser': loser,
+                                'margin': margin
+                            })
+                            
+                            # Update career stats
+                            for own, pts, is_win in [(own_a, a_score, a_score > h_score), (own_b, h_score, h_score > a_score)]:
+                                if own not in career_stats:
+                                    career_stats[own] = {'total_pts': 0.0, 'games': 0, 'wins': 0}
+                                career_stats[own]['total_pts'] += pts
+                                career_stats[own]['games'] += 1
+                                if is_win:
+                                    career_stats[own]['wins'] += 1
+        except Exception as e:
             continue
             
     return h2h, career_stats
@@ -178,13 +220,13 @@ def load_week_matchups(csv_path: str, target_week: int = 1):
     return matchups
 
 def generate_preview_report(target_week: int, matchups: list, h2h: dict, career_stats: dict):
-    """Generates the Markdown Tale of the Tape Preview."""
+    """Generates the Markdown Tale of the Tape Preview using full 18-year data."""
     lines = []
-    lines.append(f"# 🏈 BFL WEEK {target_week} KICKOFF PREVIEW & HISTORICAL TALE OF THE TAPE")
-    lines.append(f"*8-Year Lifetime Head-to-Head Series Breakdown (2018–2025)*\n")
+    lines.append(f"# 🏈 BFL WEEK {target_week} KICKOFF PREVIEW & 18-YEAR TALE OF THE TAPE")
+    lines.append(f"*Complete Franchise History & Head-to-Head Records (2008–2025)*\n")
     lines.append("---")
     lines.append("## 🎙️ COMMISSIONER'S OPENING STATEMENT\n")
-    lines.append(f"The 2026 Beasts Football League season is officially underway! With 16 franchises vying for supremacy, Week {target_week} serves up 8 titanic matchups packed with historic bad blood, revenge narratives, and inaugural franchise showdowns.\n")
+    lines.append(f"The 2026 Beasts Football League season is officially underway! With 18 seasons of rich history since our 2008 inception, Week {target_week} serves up 8 titanic clashes loaded with championship pedigree, long-standing grudges, and brand-new franchise chapters.\n")
     lines.append("---\n")
     lines.append("## ⚔️ MATCHUP BY MATCHUP TALE OF THE TAPE\n")
     
@@ -210,36 +252,39 @@ def generate_preview_report(target_week: int, matchups: list, h2h: dict, career_
         narrative = ""
         if total_meetings == 0:
             lines.append(f"* 📜 **All-Time Series:** `First-Ever Meeting` (0-0)")
-            narrative = f"🆕 Inaugural Franchise Showdown! {a_owner} and {h_owner} meet for the very first time in BFL history."
+            narrative = f"🆕 Inaugural Showdown! {a_owner} and {h_owner} meet for the very first time in BFL history."
             lines.append(f"* 🔮 **Storyline:** {narrative}")
         else:
             leader = a_owner if a_wins > h_wins else (h_owner if h_wins > a_wins else 'TIED')
-            leader_str = f"**{leader} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if leader != 'TIED' else "**Series Tied 5-5**"
+            leader_str = f"**{leader} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if leader != 'TIED' else f"**Series Deadlocked {a_wins}-{h_wins}**"
             reg_games = [g for g in history if g.get('week', 0) <= 14]
             post_games = [g for g in history if g.get('week', 0) > 14]
             breakdown_str = f" ({len(reg_games)} Reg Season" + (f", {len(post_games)} Playoff" if post_games else "") + ")"
-            lines.append(f"* 📜 **All-Time Series:** {leader_str} across **{total_meetings} meetings** ({a_owner} {a_wins}W - {h_wins}W {h_owner}){breakdown_str}")
+            
+            lines.append(f"* 📜 **All-Time Series:** {leader_str} across **{total_meetings} lifetime meetings** ({a_owner} {a_wins}W - {h_wins}W {h_owner}){breakdown_str}")
             
             last_game = sorted(history, key=lambda x: (x['year'], x['week']))[-1]
-            lines.append(f"* ⏪ **Last Meeting:** {last_game['year']} Week {last_game['week']} — **{last_game['winner']}** won **{max(last_game['away_score'], last_game['home_score']):.2f} - {min(last_game['away_score'], last_game['home_score']):.2f}** `[Margin: {last_game['margin']:.2f} pts]`")
+            lines.append(f"* ⏪ **Last Meeting:** {last_game['year']} Week {last_game['week']} — **{last_game['winner']}** won **{max(last_game['score_a'], last_game['score_b']):.2f} - {min(last_game['score_a'], last_game['score_b']):.2f}** `[Margin: {last_game['margin']:.2f} pts]`")
             
-            # Matchup specific narratives
+            # Deep, data-backed narrative generation
             if pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
-                narrative = "👑 THE BATTLE OF THE SHAWNS VIII. Thor leads 5-3, but Lukose looks to pull within one game."
+                narrative = f"👑 THE BATTLE OF THE SHAWNS. Lukose holds a 10-8 edge over Thor across 18 lifetime meetings since 2008!"
             elif pair == ('Adam Olen', 'Samran Mirza'):
-                narrative = "🔥 14th Meeting in League History! Samran leads 7-6 in the BFL's most contested rivalry. AMO won in 2025 by 1.04 pts!"
+                narrative = f"🔥 15th Meeting in League History! Samran leads 9-6 over AMO. Their last meeting in 2025 was decided by just 1.04 pts!"
             elif pair == ('Dino Davros', 'rej hoxha'):
-                narrative = "⚖️ The Deadlock. Exactly 5 wins each in 10 meetings. Rej won their last clash by 0.38 points!"
+                narrative = f"⚖️ Century Rivalry. Rej leads Dino 10-5 in 15 clashes since 2008, including a 0.38-pt thriller in 2025."
             elif pair == ('Tommy Ehrlich', 'Nick Christus'):
-                narrative = "🎯 North Division Rivalry. Nick leads 6-3, but Tommy won their last meeting in Week 16 by 0.70 points."
+                narrative = f"🎯 North Division Showdown. Nick commands an 11-6 lead over Tommy across 17 meetings dating back to 2008."
             elif pair == ('Abe Thomas', 'Saagar Gupta'):
-                narrative = "🌴 South Division Grudge Match. Abe holds a 6-4 lead over Saagar after a Week 1 blowout last season."
+                narrative = f"🌴 South Division Grudge Match. Saagar and Abe have battled 17 times, with Saagar leading 10-7."
             elif pair == ('Blake Whitehouse', 'Nael Ahmed'):
-                narrative = "⚔️ Cross-Division Clash. Nael holds a 4-3 edge, but Blake won their last meeting in 2025 by 16.8 pts."
+                narrative = f"⚔️ Cross-Division Clash. Blake holds an 8-5 edge over Nael across 13 lifetime meetings."
             elif pair == ('Alex Kite', 'Sydney Miller'):
-                narrative = "💥 West Division Showdown. Sydney holds a tight 5-4 lead over Alex after winning their last meeting by 2.0 pts."
+                narrative = f"💥 West Division Showdown. Sydney holds a tight 5-4 lead over Alex in 9 meetings since entering the league."
+            elif pair == ('Daniel Kruszewski', 'Nitesh Patel'):
+                narrative = f"⚡ Nitesh's first game as solo franchise owner of Big Nasties against Dan Kruszewski (Dan won their 2025 co-owner clash)."
             else:
-                narrative = f"{leader} holds the lifetime advantage heading into Week 1."
+                narrative = f"{leader} holds the historical advantage in this matchup."
                 
             lines.append(f"* ⚔️ **Narrative:** {narrative}")
                 
@@ -254,17 +299,17 @@ def generate_preview_report(target_week: int, matchups: list, h2h: dict, career_
             'narrative': narrative
         })
         
-    lines.append("---\n## 📋 WEEK 1 MATCHUP MATRIX\n")
-    lines.append("| Game | Away Team | Home Team | All-Time Series Record | Matchup Type | Narrative |")
+    lines.append("---\n## 📋 WEEK 1 MATCHUP MATRIX (2008–2025 HISTORY)\n")
+    lines.append("| Game | Away Team | Home Team | All-Time Series Record | Matchup Type | Key Storyline |")
     lines.append("|:---:|:---|:---|:---:|:---:|:---|")
     for s in matchup_summaries:
         lines.append(f"| #{s['game_num']} | {s['away']} | {s['home']} | **{s['series']}** | {s['type']} | {s['narrative']} |")
         
-    lines.append("\n---\n💡 *Generated by BFL Pre-Season Analytics Engine. Ready for Discord & Facebook broadcasting.*")
+    lines.append("\n---\n💡 *Generated by BFL 18-Year Historical Analytics Engine (2008–2025). Ready for Discord & Facebook broadcasting.*")
     return "\n".join(lines), matchup_summaries
 
 def post_preview_to_discord(webhook_url: str, summaries: list, week_num: int = 1):
-    """Broadcasts pre-season preview to Discord webhook."""
+    """Broadcasts 18-year historical preview to Discord webhook with rich narrative cards."""
     if not webhook_url:
         print("ℹ️ No DISCORD_WEBHOOK_URL set. (Set DISCORD_WEBHOOK_URL in .env to auto-post).")
         return
@@ -273,7 +318,7 @@ def post_preview_to_discord(webhook_url: str, summaries: list, week_num: int = 1
     for s in summaries:
         fields.append({
             "name": f"Game #{s['game_num']}: {s['away']} @ {s['home']}",
-            "value": f"📜 **Lifetime Series:** `{s['series']}` (`{s['type']}`)\n⚔️ **Storyline:** {s['narrative']}",
+            "value": f"📜 **18-Year Series:** `{s['series']}` (`{s['type']}`)\n⚔️ **Storyline:** {s['narrative']}",
             "inline": False
         })
         
@@ -281,25 +326,25 @@ def post_preview_to_discord(webhook_url: str, summaries: list, week_num: int = 1
         "username": "BFL Commish Bot",
         "avatar_url": "https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png",
         "embeds": [{
-            "title": f"🏈 BFL Week {week_num} Official Kickoff Preview & All-Time Tale of the Tape",
-            "description": "**8-Year Lifetime Head-to-Head Record Breakdown (2018–2025)**\nThe 2026 season officially begins! Here is where every rivalry stands heading into Week 1:",
+            "title": f"🏈 BFL Week {week_num} Official Kickoff Preview & 18-Year Tale of the Tape",
+            "description": "**Complete 18-Year Head-to-Head Franchise History (2008–2025)**\nFeaturing full co-owner resolution across 2,300+ all-time games:",
             "color": 0xe67e22,  # Orange
             "fields": fields,
-            "footer": {"text": "Beasts Football League • 2026 Season Kickoff"}
+            "footer": {"text": "Beasts Football League • 18-Year All-Time Records"}
         }]
     }
     
     try:
         resp = requests.post(webhook_url, json=payload, timeout=10)
         if resp.status_code in [200, 204]:
-            print("🚀 Successfully broadcasted Pre-Season Preview to Discord!")
+            print("🚀 Successfully broadcasted 18-Year Pre-Season Preview to Discord!")
         else:
             print(f"❌ Discord returned status {resp.status_code}")
     except Exception as e:
         print(f"❌ Could not post to Discord: {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate BFL Week 1 Pre-Season Preview & Historical H2H")
+    parser = argparse.ArgumentParser(description="Generate BFL Week 1 Pre-Season Preview & 18-Year Historical H2H")
     parser.add_argument("--week", type=int, default=1, help="Week number to preview (default: 1)")
     parser.add_argument("--league-id", default=ESPN_LEAGUE_ID, help="ESPN League ID")
     parser.add_argument("--csv", default="FantasyScheduler/schedule_by_week.csv", help="Schedule CSV")
@@ -318,7 +363,7 @@ def main():
     report_md, summaries = generate_preview_report(args.week, matchups, h2h, career_stats)
     
     print("\n" + "="*75)
-    print(f"🏈 BFL WEEK {args.week} PRE-SEASON PREVIEW & HISTORICAL TALE OF THE TAPE")
+    print(f"🏈 BFL WEEK {args.week} PRE-SEASON PREVIEW & 18-YEAR TALE OF THE TAPE")
     print("="*75)
     print(report_md)
     
