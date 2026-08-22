@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 ESPN Fantasy Football Schedule Uploader
-Automates entering a 14-week schedule from schedule_by_week.csv into ESPN Fantasy Football LM Tools.
-Supports division-aware owner matching, interactive mapping confirmation, and Playwright browser automation.
+Automates updating matchups on ESPN League Schedule page (fantasy.espn.com/football/league/schedule).
+Uses Playwright browser automation to click [Edit], swap teams into exact Away @ Home slots, and save.
 """
 
 import os
@@ -37,11 +37,11 @@ ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
 ESPN_S2 = os.getenv("ESPN_S2", "")
 ESPN_SWID = os.getenv("ESPN_SWID", "")
 
-# Automatically derive current year from the system clock
+# Automatically derive current year from system clock
 CURRENT_YEAR = str(datetime.now().year)
 SEASON_YEAR = os.getenv("SEASON_YEAR") or CURRENT_YEAR
 
-# Automatically load division definitions directly from the scheduler script
+# Automatically load division definitions from the scheduler
 try:
     from FantasyScheduler.fantasy_scheduler_ortools import teams_by_div as DEFAULT_DIVISIONS
 except ImportError:
@@ -57,27 +57,27 @@ except ImportError:
 
 # Known aliases mapping script shorthand names to real 2026 owner names
 CUSTOM_OWNER_ALIASES = {
-    "Nasties": ["Nitesh Patel", "Nitesh", "Nasties"],
-    "Shooter": ["Alex Kite", "Alex", "Kite", "Shooter"],
-    "DTM":     ["Daniel Kruszewski", "Dan", "DTM"],
-    "AMO":     ["Adam Olen", "Adam", "AMO"],
-    "Thomas":  ["Tommy Ehrlich", "Tommy", "Tom", "Thomas"],
-    "Nick":    ["Nick Christus", "Nick"],
-    "Blake":   ["Blake Whitehouse", "Blake"],
-    "Nael":    ["Nael Ahmed", "Nael"],
-    "Saagar":  ["Saagar Gupta", "Saagar"],
-    "Abe":     ["Abe Thomas", "Abe"],
-    "Lukose":  ["Shawn Lukose", "Lukose"],
-    "Rej":     ["rej hoxha", "Rej"],
-    "Samran":  ["Samran Mirza", "Samran"],
-    "Dino":    ["Dino Davros", "Dino"],
-    "Sydney":  ["Sydney Miller", "Sydney"],
-    "Thor":    ["Shawn Ullenbrauck", "Thor"],
+    "Nasties": ["Nitesh Patel", "Nitesh", "Nasties", "Big Nasties"],
+    "Shooter": ["Alex Kite", "Alex", "Kite", "Shooter", "Send Da Trade"],
+    "DTM":     ["Daniel Kruszewski", "Dan", "DTM", "Dynasty Destroyers"],
+    "AMO":     ["Adam Olen", "Adam", "AMO", "Green and Golden"],
+    "Thomas":  ["Tommy Ehrlich", "Tommy", "Tom", "Thomas", "The Ehrly Birds"],
+    "Nick":    ["Nick Christus", "Nick", "Mykonos Minotaurs"],
+    "Blake":   ["Blake Whitehouse", "Blake", "Block O meets O Block"],
+    "Nael":    ["Nael Ahmed", "Nael", "NMAfia"],
+    "Saagar":  ["Saagar Gupta", "Saagar", "King Gupta's Army"],
+    "Abe":     ["Abe Thomas", "Abe", "Crashee Bandicoot"],
+    "Lukose":  ["Shawn Lukose", "Lukose", "Nilgiri Tahrs"],
+    "Rej":     ["rej hoxha", "Rej", "Steve Bartman"],
+    "Samran":  ["Samran Mirza", "Samran", "De'von Intervention"],
+    "Dino":    ["Dino Davros", "Dino", "Taliban Gang"],
+    "Sydney":  ["Sydney Miller", "Sydney", "30p Chance"],
+    "Thor":    ["Shawn Ullenbrauck", "Thor", "Pat N' Pending"],
 }
 
 def get_espn_data(league_id: str, season: str, espn_s2: str, swid: str):
     """
-    Fetch current teams, owners, and division setup from ESPN API.
+    Fetch current teams and owners from ESPN API.
     """
     url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league_id}?view=mTeam&view=mSettings&view=mMembers"
     cookies = {}
@@ -88,13 +88,6 @@ def get_espn_data(league_id: str, season: str, espn_s2: str, swid: str):
         resp = requests.get(url, cookies=cookies, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            
-            # Map division IDs to names
-            divisions = {}
-            for d in data.get('settings', {}).get('scheduleSettings', {}).get('divisions', []):
-                divisions[d['id']] = d.get('name', f"Division {d['id']}")
-            
-            # Map owner IDs to owner full names and usernames
             members = {}
             for m in data.get('members', []):
                 disp = m.get('displayName', '')
@@ -115,24 +108,19 @@ def get_espn_data(league_id: str, season: str, espn_s2: str, swid: str):
                 t_abbrev = t.get('abbrev', '')
                 primary_owner_id = t.get('primaryOwner') or (t.get('owners', [None])[0])
                 owner_info = members.get(primary_owner_id, {'name': 'Unknown', 'displayName': '', 'firstName': '', 'lastName': ''})
-                div_id = t.get('divisionId', 0)
-                div_name = divisions.get(div_id, f"Division {div_id}")
-                
                 teams.append({
                     'id': t['id'],
                     'name': t_name,
                     'abbrev': t_abbrev,
-                    'division_id': div_id,
-                    'division_name': div_name,
                     'owner': owner_info['name'],
                     'owner_display': owner_info['displayName'],
                     'owner_first': owner_info['firstName'],
                     'owner_last': owner_info['lastName']
                 })
-            return teams, divisions
+            return teams
     except Exception as e:
         print(f"⚠️ Could not automatically fetch league data from ESPN API: {e}")
-    return [], {}
+    return []
 
 def load_schedule_csv(csv_path: str):
     """Load and group matchups by week from schedule_by_week.csv."""
@@ -155,57 +143,19 @@ def load_schedule_csv(csv_path: str):
 
 def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_mapping.json"):
     """
-    Create and validate mapping from script names to ESPN teams using Division & Owner Name matching.
+    Create and validate mapping from script names to ESPN teams.
     """
-    mapping_path = Path(__file__).resolve().parent / cache_file
-    if mapping_path.exists():
-        try:
-            with open(mapping_path, 'r') as f:
-                saved_mapping = json.load(f)
-            # Ensure saved mapping is rich dict format
-            if saved_mapping and isinstance(list(saved_mapping.values())[0], dict):
-                print(f"\n📂 Found saved team mapping in {cache_file}.")
-                use_saved = input("Do you want to use the saved mapping? (Y/n): ").strip().lower()
-                if use_saved != 'n':
-                    return saved_mapping
-        except Exception:
-            pass
-
     mapping = {}
     print("\n" + "="*75)
-    print("📋 DIVISION & OWNER NAME VALIDATION")
+    print("📋 OWNER & TEAM VALIDATION")
     print("="*75)
     
-    if not espn_teams:
-        print("⚠️ No ESPN teams retrieved from API. Defaulting to exact names.")
-        for code in csv_teams:
-            mapping[code] = {'id': code, 'owner': code, 'name': code}
-        return mapping
-
-    # Build division lookup for CSV teams
-    csv_team_div = {}
     for div, members in teams_by_div.items():
-        for m in members:
-            csv_team_div[m] = div
-
-    unmatched_csv_by_div = {div: [] for div in teams_by_div}
-    unmatched_espn_by_div = {div: [] for div in teams_by_div}
-
-    # Group ESPN teams by division matching
-    for espn_t in espn_teams:
-        div_name = espn_t['division_name']
-        matched_div_key = next((d for d in teams_by_div if d.lower() in div_name.lower()), None)
-        if matched_div_key:
-            unmatched_espn_by_div[matched_div_key].append(espn_t)
-
-    # 1. Match within each division against Owner Names & Aliases
-    for div, div_members in teams_by_div.items():
-        espn_div_teams = unmatched_espn_by_div.get(div, [])
-        for code in div_members:
+        for code in members:
             aliases = CUSTOM_OWNER_ALIASES.get(code, [code])
             matched_espn = None
             
-            for t in espn_div_teams:
+            for t in espn_teams:
                 owner_full = t['owner'].lower()
                 owner_first = t['owner_first'].lower()
                 owner_disp = t['owner_display'].lower()
@@ -228,60 +178,22 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
                 mapping[code] = {
                     'id': matched_espn['id'],
                     'owner': matched_espn['owner'],
-                    'name': matched_espn['name'] or matched_espn['owner']
+                    'team_name': matched_espn['name'] or matched_espn['owner'],
+                    'aliases': aliases
                 }
-                espn_div_teams.remove(matched_espn)
             else:
-                unmatched_csv_by_div[div].append(code)
+                mapping[code] = {
+                    'id': 'N/A',
+                    'owner': code,
+                    'team_name': code,
+                    'aliases': [code]
+                }
 
-    # 2. Handle manual clarification for any unmatched teams per division
-    for div, codes in unmatched_csv_by_div.items():
-        remaining_espn = unmatched_espn_by_div.get(div, [])
-        for code in codes:
-            print(f"\n❓ Manual match needed for '{code}' in the [{div}] Division:")
-            if remaining_espn:
-                for idx, t in enumerate(remaining_espn):
-                    print(f"  [{idx+1}] ID {t['id']:2d}: Owner: {t['owner']} ({t['owner_display']})")
-                while True:
-                    try:
-                        choice = int(input(f"Select ESPN team for '{code}' (1-{len(remaining_espn)}): "))
-                        if 1 <= choice <= len(remaining_espn):
-                            selected = remaining_espn.pop(choice-1)
-                            mapping[code] = {
-                                'id': selected['id'],
-                                'owner': selected['owner'],
-                                'name': selected['name'] or selected['owner']
-                            }
-                            break
-                    except ValueError:
-                        pass
-            else:
-                for idx, t in enumerate(espn_teams):
-                    print(f"  [{idx+1}] ID {t['id']:2d}: [{t['division_name']}] Owner: {t['owner']}")
-                while True:
-                    try:
-                        choice = int(input(f"Select ESPN team for '{code}' (1-{len(espn_teams)}): "))
-                        if 1 <= choice <= len(espn_teams):
-                            selected = espn_teams[choice-1]
-                            mapping[code] = {
-                                'id': selected['id'],
-                                'owner': selected['owner'],
-                                'name': selected['name'] or selected['owner']
-                            }
-                            break
-                    except ValueError:
-                        pass
-
-    # 3. Present full validation table for confirmation
-    print("\n" + "="*75)
-    print("📊 CONFIRM TEAM & OWNER MAPPINGS BEFORE PROCEEDING")
-    print("="*75)
     print(f"{'Division':<10} | {'Script Code':<12} | {'Team ID':<8} | {'ESPN Owner Name':<25}")
     print("-" * 75)
-    
     for div, members in teams_by_div.items():
         for code in members:
-            info = mapping.get(code, {'id': 'N/A', 'owner': 'MISSING', 'name': 'MISSING'})
+            info = mapping[code]
             print(f"{div:<10} | {code:<12} | ID {info['id']:<5} | {info['owner']:<25}")
     print("-" * 75)
 
@@ -290,21 +202,21 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
         print("Aborting. Please check names and re-run.")
         sys.exit(0)
 
-    # Save mapping for reuse
-    try:
-        with open(mapping_path, 'w') as f:
-            json.dump(mapping, f, indent=2)
-        print(f"💾 Mapping saved to {cache_file} for future runs.")
-    except Exception:
-        pass
-
     return mapping
+
+def slot_matches_team(slot_text: str, team_code: str, team_info: dict) -> bool:
+    """Check if the text in a slot corresponds to the target team."""
+    text_lower = slot_text.lower()
+    for a in team_info.get('aliases', [team_code]):
+        if a.lower() in text_lower:
+            return True
+    return False
 
 def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_mapping: dict, dry_run: bool = False):
     """
-    Uses Playwright in a visible browser window to populate the ESPN LM Schedule editor.
+    Uses Playwright to edit matchups week by week on ESPN Schedule page.
     """
-    schedule_url = f"https://fantasy.espn.com/football/tools/schedulesettings?leagueId={league_id}&seasonId={season}"
+    schedule_url = f"https://fantasy.espn.com/football/league/schedule?leagueId={league_id}"
     
     print("\n" + "="*75)
     print("🚀 LAUNCHING BROWSER AUTOMATION")
@@ -312,8 +224,8 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
     print(f"Target URL: {schedule_url}")
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, slow_mo=100)
-        context = browser.new_context(viewport={'width': 1280, 'height': 900})
+        browser = p.chromium.launch(headless=False, slow_mo=150)
+        context = browser.new_context(viewport={'width': 1366, 'height': 900})
         
         if ESPN_S2 and ESPN_SWID:
             print("🔑 Injecting ESPN authentication cookies from environment...")
@@ -323,116 +235,153 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
             ])
         
         page = context.new_page()
-        print("🌐 Opening ESPN Schedule Editor...")
+        print("🌐 Navigating to League Schedule page...")
         page.goto(schedule_url, wait_until="domcontentloaded")
         
         print("\n" + "="*75)
         print("👤 ESPN BROWSER LOGIN & VERIFICATION")
         print("="*75)
         print("Please check the opened browser window:")
-        print("  1. If prompted, log into your ESPN League Manager account.")
-        print("  2. Ensure the schedule editor with matchup dropdowns is visible.")
-        input("\n👉 Press [Enter] here once the Schedule Editor page is loaded in the browser...")
-        
-        # Verify page elements
-        time.sleep(1)
-        while True:
-            all_selects = page.locator("select").count()
-            if all_selects >= 16:  # 8 games * 2 teams = 16 dropdowns per week
-                print(f"✅ Verified: Found {all_selects} dropdown selectors on page!")
-                break
-            else:
-                print(f"⚠️ Found {all_selects} dropdowns on current page. (Expecting at least 16 for 8 games).")
-                print("Please make sure you are on the LM Tools ➔ Edit Schedule page in the browser.")
-                retry = input("Press [Enter] to re-check the page, or 'q' to quit: ").strip().lower()
-                if retry == 'q':
-                    browser.close()
-                    sys.exit(0)
-                time.sleep(1)
+        print("  1. Log into ESPN if you see a login prompt.")
+        print("  2. Make sure you can see the 'League Schedule' page with [Edit] buttons.")
+        input("\n👉 Press [Enter] here once you are logged in and looking at the League Schedule page...")
         
         weeks = sorted(schedule_by_week.keys())
         for week_num in weeks:
-            print(f"\n📅 Setting Week {week_num} ({len(schedule_by_week[week_num])} matchups)...")
+            print(f"\n" + "="*70)
+            print(f"📅 Setting Week {week_num} ({len(schedule_by_week[week_num])} matchups)...")
+            print("="*70)
             
-            # Select the week tab or dropdown on ESPN if present
-            week_selector = page.locator("select[name='matchupPeriodId'], select#matchupPeriodId, .week-filter-select")
-            if week_selector.is_visible():
-                week_selector.select_option(value=str(week_num))
-                time.sleep(1)
-            else:
-                week_tab = page.locator(f"button:has-text('Week {week_num}'), a:has-text('Week {week_num}')")
-                if week_tab.is_visible():
-                    week_tab.click()
-                    time.sleep(1)
+            # 1. Click the [Edit] button for this specific week
+            # First ensure we are on the main schedule page
+            if f"NFL Week {week_num}" not in page.title() and not page.locator(f"h1:has-text('NFL Week {week_num}'), h2:has-text('NFL Week {week_num}'), .headline:has-text('Week {week_num}')").is_visible():
+                # Locate edit button for Week {week_num}
+                edit_btn = page.locator(f"div:has-text('NFL Week {week_num}') button:has-text('Edit'), section:has-text('Week {week_num}') button:has-text('Edit'), button:has-text('Edit')").nth(0)
+                # Find all edit buttons
+                all_edits = page.locator("button:has-text('Edit'), a:has-text('Edit')")
+                if all_edits.count() >= week_num:
+                    edit_btn = all_edits.nth(week_num - 1)
+                
+                print(f"  🖱️ Clicking [Edit] for NFL Week {week_num}...")
+                edit_btn.click()
+                time.sleep(2)
             
+            # Build target order for the 16 slots (8 games: Left=Away, Right=Home)
             matchups = schedule_by_week[week_num]
-            selects = page.locator("select.schedule-team-select, table.schedule-table select, .matchup-row select")
-            select_count = selects.count()
+            targets = []
+            for g in matchups:
+                targets.append(g['Away'])
+                targets.append(g['Home'])
             
-            if select_count >= len(matchups) * 2:
-                for g_idx, game in enumerate(matchups):
-                    away_info = team_mapping.get(game['Away'], {})
-                    home_info = team_mapping.get(game['Home'], {})
-                    
-                    away_id = str(away_info.get('id', ''))
-                    home_id = str(home_info.get('id', ''))
-                    away_owner = away_info.get('owner', game['Away'])
-                    home_owner = home_info.get('owner', game['Home'])
-                    
-                    away_select = selects.nth(g_idx * 2)
-                    home_select = selects.nth(g_idx * 2 + 1)
-                    
-                    print(f"  Game {g_idx+1}: {game['Away']} ({away_owner}) @ {game['Home']} ({home_owner})")
-                    
-                    if not dry_run:
-                        try:
-                            away_select.select_option(value=away_id)
-                        except Exception:
-                            away_select.select_option(label=away_owner)
-                            
-                        try:
-                            home_select.select_option(value=home_id)
-                        except Exception:
-                            home_select.select_option(label=home_owner)
-            else:
-                rows = page.locator("tr.Table__TR, .schedule-item, .matchupRow")
-                row_count = rows.count()
-                for g_idx, game in enumerate(matchups):
-                    if g_idx < row_count:
-                        row = rows.nth(g_idx)
-                        row_selects = row.locator("select")
-                        if row_selects.count() >= 2:
-                            away_info = team_mapping.get(game['Away'], {})
-                            home_info = team_mapping.get(game['Home'], {})
-                            away_id = str(away_info.get('id', ''))
-                            home_id = str(home_info.get('id', ''))
-                            away_owner = away_info.get('owner', game['Away'])
-                            home_owner = home_info.get('owner', game['Home'])
-                            
-                            print(f"  Game {g_idx+1}: {away_owner} @ {home_owner}")
-                            if not dry_run:
-                                try:
-                                    row_selects.nth(0).select_option(value=away_id)
-                                except Exception:
-                                    row_selects.nth(0).select_option(label=away_owner)
-                                try:
-                                    row_selects.nth(1).select_option(value=home_id)
-                                except Exception:
-                                    row_selects.nth(1).select_option(label=home_owner)
+            # Print planned matchups
+            for idx, g in enumerate(matchups):
+                away_owner = team_mapping[g['Away']]['owner']
+                home_owner = team_mapping[g['Home']]['owner']
+                print(f"  Game {idx+1}: {g['Away']:<8} ({away_owner:<18}) @ {g['Home']:<8} ({home_owner:<18})")
             
             if dry_run:
                 print(f"  [DRY RUN] Week {week_num} previewed.")
-            else:
-                save_button = page.locator("button:has-text('Save'), button:has-text('Save Changes'), button.btn-save")
-                if save_button.is_visible() and save_button.is_enabled():
-                    print(f"  💾 Saving Week {week_num}...")
-                    save_button.click()
-                    time.sleep(2)
+                # Click Cancel if visible
+                cancel_btn = page.locator("button:has-text('Cancel')")
+                if cancel_btn.is_visible():
+                    cancel_btn.click()
+                    time.sleep(1)
+                continue
+            
+            # Perform in-place swaps until all 16 slots match targets
+            max_iterations = 25
+            iteration = 0
+            
+            while iteration < max_iterations:
+                iteration += 1
+                
+                # Fetch all 16 checkboxes and their row text
+                checkboxes = page.locator("input[type='checkbox']")
+                checkbox_count = checkboxes.count()
+                
+                if checkbox_count < 16:
+                    print(f"  ⚠️ Waiting for checkboxes to load (found {checkbox_count}/16)...")
+                    time.sleep(1)
+                    continue
+                
+                # Read text associated with each slot
+                rows = page.locator("table tr:has(input[type='checkbox']), tr.Table__TR:has(input[type='checkbox'])")
+                current_slots = []
+                
+                for r_idx in range(rows.count()):
+                    r = rows.nth(r_idx)
+                    tds = r.locator("td")
+                    if tds.count() >= 2:
+                        left_text = tds.nth(0).inner_text()
+                        right_text = tds.nth(1).inner_text()
+                        current_slots.append({'slot': len(current_slots), 'cb': r.locator("input[type='checkbox']").nth(0), 'text': left_text})
+                        current_slots.append({'slot': len(current_slots), 'cb': r.locator("input[type='checkbox']").nth(1), 'text': right_text})
+                    else:
+                        cbs = r.locator("input[type='checkbox']")
+                        for c_idx in range(cbs.count()):
+                            current_slots.append({'slot': len(current_slots), 'cb': cbs.nth(c_idx), 'text': r.inner_text()})
+                
+                if len(current_slots) < 16:
+                    # Fallback to direct checkbox index mapping
+                    current_slots = [{'slot': i, 'cb': checkboxes.nth(i), 'text': checkboxes.nth(i).locator("xpath=..").inner_text()} for i in range(16)]
+                
+                # Check which slot is out of place
+                misplaced_slot = None
+                target_team_code = None
+                
+                for slot_idx in range(16):
+                    t_code = targets[slot_idx]
+                    t_info = team_mapping[t_code]
+                    if not slot_matches_team(current_slots[slot_idx]['text'], t_code, t_info):
+                        misplaced_slot = slot_idx
+                        target_team_code = t_code
+                        break
+                
+                if misplaced_slot is None:
+                    print(f"  ✅ All 16 teams correctly positioned for Week {week_num}!")
+                    break
+                
+                # Find where target_team_code currently is
+                target_curr_slot = None
+                t_info = team_mapping[target_team_code]
+                for s_idx in range(16):
+                    if slot_matches_team(current_slots[s_idx]['text'], target_team_code, t_info):
+                        target_curr_slot = s_idx
+                        break
+                
+                if target_curr_slot is None:
+                    print(f"  ⚠️ Could not find current position for '{target_team_code}'. Skipping auto-swap for this slot.")
+                    break
+                
+                # Swap misplaced_slot and target_curr_slot
+                slot_a = current_slots[misplaced_slot]
+                slot_b = current_slots[target_curr_slot]
+                
+                # Uncheck any currently checked boxes first
+                for s in current_slots:
+                    if s['cb'].is_checked():
+                        s['cb'].uncheck()
+                
+                # Check the two boxes to swap
+                slot_a['cb'].check()
+                slot_b['cb'].check()
+                
+                # Click [Switch Teams]
+                switch_btn = page.locator("button:has-text('Switch Teams')")
+                switch_btn.click()
+                time.sleep(0.6)
+            
+            # Save Week Changes
+            save_btn = page.locator("button:has-text('Save Changes')")
+            if save_btn.is_visible():
+                print(f"  💾 Saving changes for Week {week_num}...")
+                save_btn.click()
+                time.sleep(3)
         
         print("\n" + "="*75)
         print("🎉 SCHEDULE UPLOAD COMPLETE!")
         print("="*75)
-        print("Please review the schedule in the browser window.")
+        print("Please review your schedule on ESPN in the opened browser.")
         input("Press [Enter] to close browser...")
         browser.close()
 
@@ -455,19 +404,15 @@ def main():
         print("Please run fantasy_scheduler_ortools.py first to generate schedule_by_week.csv.")
         sys.exit(1)
         
-    league_id = args.league_id
-    if not league_id:
-        league_id = input("Enter your ESPN League ID: ").strip()
-        
     schedule_by_week = load_schedule_csv(csv_path)
     all_csv_teams = sorted(list({game['Away'] for games in schedule_by_week.values() for game in games}))
     
     print(f"Loaded schedule with {len(schedule_by_week)} weeks and {len(all_csv_teams)} teams.")
     
-    espn_teams, divisions = get_espn_data(league_id, args.season, ESPN_S2, ESPN_SWID)
+    espn_teams = get_espn_data(args.league_id, args.season, ESPN_S2, ESPN_SWID)
     team_mapping = build_team_mapping(all_csv_teams, DEFAULT_DIVISIONS, espn_teams)
     
-    upload_schedule(league_id, args.season, schedule_by_week, team_mapping, dry_run=args.dry_run)
+    upload_schedule(args.league_id, args.season, schedule_by_week, team_mapping, dry_run=args.dry_run)
 
 if __name__ == "__main__":
     main()
