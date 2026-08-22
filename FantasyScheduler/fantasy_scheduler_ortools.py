@@ -9,10 +9,10 @@ import csv
 
 # Team and division setup
 teams_by_div = {
-    "North": ["Thor", "Blake", "Abe", "DTM"],
-    "South": ["Samran", "Nasties", "Thomas", "Shooter"],
-    "East":  ["Emelie", "AMO", "Lukose", "Sydney"],
-    "West":  ["Nick", "Rej", "Saagar", "Dino"],
+    "North": ["DTM", "Thomas", "Nick", "Blake"],
+    "South": ["Nael", "Saagar", "Abe", "Nasties"],
+    "East":  ["Lukose", "Rej", "Samran", "Dino"],
+    "West":  ["AMO", "Shooter", "Sydney", "Thor"],
 }
 
 div_of = {t: d for d, ts in teams_by_div.items() for t in ts}
@@ -28,14 +28,14 @@ idx_to_team = {i: t for t, i in idx.items()}
 
 # Rivalry pairs
 rivals = [
-    ("DTM", "Sydney"),
-    ("Thomas", "Emelie"),
-    ("Thor", "Nick"),
-    ("Blake", "Rej"),
-    ("Samran", "Dino"),
-    ("Abe", "Lukose"),
-    ("Nasties", "Saagar"),
-    ("Shooter", "AMO"),
+    ("DTM", "Thor"),
+    ("Thomas", "Dino"),
+    ("Nick", "Sydney"),
+    ("Blake", "Lukose"),
+    ("Nael", "Samran"),
+    ("Saagar", "Shooter"),
+    ("Abe", "Rej"),
+    ("Nasties", "AMO"),
 ]
 
 print(f"Setting up schedule for {T} teams over {W} weeks...")
