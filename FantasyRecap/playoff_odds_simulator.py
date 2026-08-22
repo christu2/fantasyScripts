@@ -289,10 +289,19 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
         sc_champ2 = random.gauss(team_power[semi_w2]['mean'], team_power[semi_w2]['std'])
         champ = semi_w1 if sc_champ1 >= sc_champ2 else semi_w2
         
-        # 3rd place 2-week total simulation
-        sc_3rd_1 = random.gauss(team_power[semi_l1]['mean']*2, team_power[semi_l1]['std']*1.4)
-        sc_3rd_2 = random.gauss(team_power[semi_l2]['mean']*2, team_power[semi_l2]['std']*1.4)
+        # 3rd place 1-week matchup during Super Bowl week (Top 3 Cash Payout!)
+        sc_3rd_1 = random.gauss(team_power[semi_l1]['mean'], team_power[semi_l1]['std'])
+        sc_3rd_2 = random.gauss(team_power[semi_l2]['mean'], team_power[semi_l2]['std'])
         third_place = semi_l1 if sc_3rd_1 >= sc_3rd_2 else semi_l2
+        
+        # 5th place 2-week combined matchup for Round 1 losers
+        # (Top 2 highest-seeded losers of Round 1)
+        r1_losers_sorted = sorted(r1_losers, key=lambda x: x[0])
+        t_5th_1 = r1_losers_sorted[0][1]
+        t_5th_2 = r1_losers_sorted[1][1]
+        sc_5th_1 = random.gauss(team_power[t_5th_1]['mean']*2, team_power[t_5th_1]['std']*1.4)
+        sc_5th_2 = random.gauss(team_power[t_5th_2]['mean']*2, team_power[t_5th_2]['std']*1.4)
+        fifth_place = t_5th_1 if sc_5th_1 >= sc_5th_2 else t_5th_2
         
         # Loser's Bracket Simulation (Winner gets #1 choice of draft pick!)
         lb_scores = {t: random.gauss(team_power[t]['mean'], team_power[t]['std']) for t in toilet_bowl}
@@ -339,16 +348,16 @@ def format_playoff_odds_report(results: dict, current_week: int, season: int) ->
     lines.append("\n---\n💡 *Simulation Rules:*")
     lines.append("* **Playoffs (7 Teams):** 4 Division Winners (#1-#4) + 3 Wild Cards (#5-#7). Seed #1 receives the First-Round Bye.")
     lines.append("* **NFL Dynamic Re-Seeding:** In Round 2, Seed #1 plays the lowest surviving seed.")
-    lines.append("* **Top 3 Cash Payouts:** Super Bowl Champ (1st), Runner-Up (2nd), and 3rd Place (Two-Week Combined Matchup).")
+    lines.append("* **Top 3 Cash Payouts:** Super Bowl Champ (1st), Runner-Up (2nd), and 3rd Place (1-Week Matchup for 3rd).")
+    lines.append("* **5th Place Consolation:** Round 1 losers play a 2-week combined matchup for 5th.")
     lines.append("* **Loser's Bracket Stakes:** Winner of the Loser's Bracket gets 1st choice of draft slot next season.")
     return "\n".join(lines)
 
-def post_playoff_odds_to_discord(webhook_url: str, results: dict, current_week: int, season: int = 2026):
-    """Broadcasts Playoff Odds Board to Discord."""
-    if not webhook_url:
-        return
-        
-    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['div_title_pct']), reverse=True)
+def post_playoff_odds_to_discord(results: dict, current_week: int, season: int = 2026):
+    """Broadcasts Playoff Odds Board to #commissioner-desk."""
+    from FantasyRecap.discord_channels import send_to_channel
+    
+    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct']), reverse=True)
     
     # Division favorites
     div_favs = {}
@@ -364,13 +373,13 @@ def post_playoff_odds_to_discord(webhook_url: str, results: dict, current_week: 
             "inline": False
         },
         {
-            "name": "🚀 Top 7 Playoff Projections (Entering Week {current_week})",
-            "value": "\n".join([f"**#{idx} {r['owner']}** ({r['division']}): `{r['playoff_pct']}%` Playoff | `{r['div_title_pct']}%` Division" for idx, r in enumerate(sorted_teams[:7], 1)]),
+            "name": f"🚀 Top 7 Playoff Projections (Entering Week {current_week})",
+            "value": "\n".join([f"**#{idx} {r['owner']}** ({r['division']}): `{r['playoff_pct']}%` Playoff | `{r['top3_payout_pct']}%` Top 3 Payout" for idx, r in enumerate(sorted_teams[:7], 1)]),
             "inline": False
         },
         {
-            "name": "🚨 Playoff Bubble & Toilet Bowl Watch",
-            "value": "\n".join([f"• **{r['owner']}**: `{r['playoff_pct']}%` Playoff | `{r['toilet_bowl_pct']}%` Sacko Risk" for r in sorted_teams[7:12]]),
+            "name": "🎯 Loser's Bracket #1 Draft Pick Choice Favorites",
+            "value": "\n".join([f"• **{r['owner']}**: `{r['draft_choice_fav_pct']}%` Chance at 1st Pick Choice | `{r['toilet_bowl_pct']}%` Toilet Bowl" for r in sorted_teams[11:]]),
             "inline": False
         }
     ]
@@ -379,23 +388,21 @@ def post_playoff_odds_to_discord(webhook_url: str, results: dict, current_week: 
         "username": "BFL Playoff Analytics Desk",
         "avatar_url": "https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png",
         "embeds": [{
-            "title": f"📈 BFL Week {current_week} Official Playoff Probability Board ({season})",
-            "description": "**10,000 Monte Carlo Simulations • 7 Playoff Spots (4 Div + 3 Wild Cards)**\nLive playoff odds, division title races, and #1 seed first-round bye probabilities:",
+            "title": f"📈 BFL Week {current_week} Official Playoff & Draft Stakes Board ({season})",
+            "description": "**10,000 Monte Carlo Simulations • 7 Playoff Spots (4 Div + 3 Wild Cards)**\nLive playoff odds, division title races, top 3 cash payouts, and #1 draft pick choice odds:",
             "color": 0x34495e,  # Dark Slate Blue
             "fields": fields,
             "footer": {"text": f"Beasts Football League • Playoff Simulator • Week {current_week}"}
         }]
     }
     
-    try:
-        resp = requests.post(webhook_url, json=payload, timeout=10)
-        if resp.status_code in [200, 204]:
-            print("🚀 Successfully broadcasted Playoff Odds Board to Discord!")
-    except Exception as e:
-        print(f"❌ Error broadcasting playoff odds: {e}")
+    success = send_to_channel('commish', payload)
+    if success:
+        print("🚀 Successfully broadcasted Playoff Odds Board to #commissioner-desk!")
 
 if __name__ == "__main__":
     schedule = load_schedule_csv()
     results = run_playoff_simulation(1, [], schedule, n_sims=10000)
     report = format_playoff_odds_report(results, 1, 2026)
     print(report)
+    post_playoff_odds_to_discord(results, 1, 2026)

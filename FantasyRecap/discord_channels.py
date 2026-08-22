@@ -44,6 +44,10 @@ def send_to_channel(channel_type: str, payload: dict) -> bool:
         print(f"ℹ️ No webhook URL configured for channel type '{channel_type}'.")
         return False
         
+    # Forum channels require thread_name if creating a top-level post
+    if channel_type in ['podcast', 'press_room', 'episodes'] and 'thread_name' not in payload:
+        payload['thread_name'] = "🎙️ BFL Sunday Night Prime Podcast & Press Room"
+        
     try:
         resp = requests.post(url, json=payload, timeout=12)
         return resp.status_code in [200, 204]
