@@ -45,6 +45,26 @@ DEFAULT_DIVISIONS = {
     "West":  ["AMO", "Shooter", "Sydney", "Thor"],
 }
 
+# Known aliases mapping script shorthand names to real owner names/nicknames
+CUSTOM_OWNER_ALIASES = {
+    "Nasties": ["Nitesh", "Nasties"],
+    "Shooter": ["Alex Kite", "Alex", "Kite", "Shooter"],
+    "DTM":     ["Daniel Kruszewski", "Dan", "DTM"],
+    "AMO":     ["Adam Olen", "Adam", "AMO"],
+    "Thomas":  ["Tommy Ehrlich", "Tommy", "Thomas"],
+    "Nick":    ["Nick Christus", "Nick"],
+    "Blake":   ["Blake Whitehouse", "Blake"],
+    "Nael":    ["Nael Ahmed", "Nael"],
+    "Saagar":  ["Saagar Gupta", "Saagar"],
+    "Abe":     ["Abe Thomas", "Abe"],
+    "Lukose":  ["Shawn Lukose", "Lukose"],
+    "Rej":     ["rej hoxha", "Rej"],
+    "Samran":  ["Samran Mirza", "Samran"],
+    "Dino":    ["Dino Davros", "Dino"],
+    "Sydney":  ["Sydney Miller", "Sydney"],
+    "Thor":    ["Shawn Ullenbrauck", "Thor"],
+}
+
 def get_espn_data(league_id: str, season: str, espn_s2: str, swid: str):
     """
     Fetch current teams, owners, and division setup from ESPN API.
@@ -167,20 +187,30 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
         if matched_div_key:
             unmatched_espn_by_div[matched_div_key].append(espn_t)
 
-    # 1. Match within each division against Owner Names
+    # 1. Match within each division against Owner Names & Aliases
     for div, div_members in teams_by_div.items():
         espn_div_teams = unmatched_espn_by_div.get(div, [])
         for code in div_members:
-            code_lower = code.lower()
+            aliases = CUSTOM_OWNER_ALIASES.get(code, [code])
             matched_espn = None
             
             for t in espn_div_teams:
-                # Primary search against owner first name, full name, or display name
-                if (code_lower in t['owner_first'].lower() or 
-                    code_lower in t['owner'].lower() or 
-                    code_lower in t['owner_display'].lower() or
-                    code_lower in t['abbrev'].lower() or
-                    code_lower in t['name'].lower()):
+                # Search aliases against owner full name, first name, display name, team name, and abbr
+                owner_full = t['owner'].lower()
+                owner_first = t['owner_first'].lower()
+                owner_disp = t['owner_display'].lower()
+                team_name = t['name'].lower()
+                team_abbr = t['abbrev'].lower()
+                
+                matched = any(
+                    a.lower() in owner_full or
+                    a.lower() in owner_first or
+                    a.lower() in owner_disp or
+                    a.lower() in team_name or
+                    a.lower() in team_abbr
+                    for a in aliases
+                )
+                if matched:
                     matched_espn = t
                     break
             
