@@ -35,7 +35,7 @@ else:
 ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "")
 ESPN_S2 = os.getenv("ESPN_S2", "")
 ESPN_SWID = os.getenv("ESPN_SWID", "")
-SEASON_YEAR = os.getenv("SEASON_YEAR", "2025")
+SEASON_YEAR = os.getenv("SEASON_YEAR", "2026")
 
 # Fallback division definition from scheduler
 DEFAULT_DIVISIONS = {
@@ -45,13 +45,13 @@ DEFAULT_DIVISIONS = {
     "West":  ["AMO", "Shooter", "Sydney", "Thor"],
 }
 
-# Known aliases mapping script shorthand names to real owner names/nicknames
+# Known aliases mapping script shorthand names to real 2026 owner names
 CUSTOM_OWNER_ALIASES = {
-    "Nasties": ["Nitesh", "Nasties"],
+    "Nasties": ["Nitesh Patel", "Nitesh", "Nasties"],
     "Shooter": ["Alex Kite", "Alex", "Kite", "Shooter"],
     "DTM":     ["Daniel Kruszewski", "Dan", "DTM"],
     "AMO":     ["Adam Olen", "Adam", "AMO"],
-    "Thomas":  ["Tommy Ehrlich", "Tommy", "Thomas"],
+    "Thomas":  ["Tommy Ehrlich", "Tommy", "Tom", "Thomas"],
     "Nick":    ["Nick Christus", "Nick"],
     "Blake":   ["Blake Whitehouse", "Blake"],
     "Nael":    ["Nael Ahmed", "Nael"],
