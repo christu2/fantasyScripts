@@ -163,6 +163,9 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
     playoff_counts = {t: 0 for t in OWNER_TO_DIV}
     div_champ_counts = {t: 0 for t in OWNER_TO_DIV}
     bye_counts = {t: 0 for t in OWNER_TO_DIV}
+    champs_count = {t: 0 for t in OWNER_TO_DIV}
+    payout_count = {t: 0 for t in OWNER_TO_DIV}
+    draft_pick_count = {t: 0 for t in OWNER_TO_DIV}
     seed_distribution = {t: {s: 0 for s in range(1, 17)} for t in OWNER_TO_DIV}
     
     for _ in range(n_sims):
@@ -193,7 +196,6 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
         wildcard_pool = []
         
         for div_name, members in DIVISIONS.items():
-            # Group by wins
             grouped = {}
             for m in members:
                 w = sim_records[m]['wins']
@@ -244,6 +246,64 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
         for s_idx, t_team in enumerate(toilet_bowl, 8):
             seed_distribution[t_team][s_idx] += 1
 
+        # Simulate Playoff Bracket with NFL Re-Seeding (Round 1 -> Round 2)
+        # Round 1: #2 vs #7, #3 vs #6, #4 vs #5 (Seed #1 on Bye)
+        r1_winners = []
+        r1_losers = []
+        for s_hi, s_lo in [(2, 7), (3, 6), (4, 5)]:
+            t_hi = playoff_field[s_hi - 1]
+            t_lo = playoff_field[s_lo - 1]
+            sc_hi = random.gauss(team_power[t_hi]['mean'], team_power[t_hi]['std'])
+            sc_lo = random.gauss(team_power[t_lo]['mean'], team_power[t_lo]['std'])
+            if sc_hi >= sc_lo:
+                r1_winners.append((s_hi, t_hi))
+                r1_losers.append((s_lo, t_lo))
+            else:
+                r1_winners.append((s_lo, t_lo))
+                r1_losers.append((s_hi, t_hi))
+                
+        # Round 2: NFL Dynamic Re-Seeding!
+        # #1 seed plays lowest surviving seed (highest seed number)
+        r1_winners_sorted = sorted(r1_winners, key=lambda x: x[0])
+        semis_opp_1 = r1_winners_sorted[-1]
+        semis_match_2 = (r1_winners_sorted[0], r1_winners_sorted[1])
+        
+        # Semifinal 1: #1 Seed vs lowest surviving seed
+        t1 = playoff_field[0]
+        t_low = semis_opp_1[1]
+        sc1 = random.gauss(team_power[t1]['mean'], team_power[t1]['std'])
+        scl = random.gauss(team_power[t_low]['mean'], team_power[t_low]['std'])
+        semi_w1 = t1 if sc1 >= scl else t_low
+        semi_l1 = t_low if sc1 >= scl else t1
+        
+        # Semifinal 2: other two surviving seeds
+        t_s1 = semis_match_2[0][1]
+        t_s2 = semis_match_2[1][1]
+        sc_s1 = random.gauss(team_power[t_s1]['mean'], team_power[t_s1]['std'])
+        sc_s2 = random.gauss(team_power[t_s2]['mean'], team_power[t_s2]['std'])
+        semi_w2 = t_s1 if sc_s1 >= sc_s2 else t_s2
+        semi_l2 = t_s2 if sc_s1 >= sc_s2 else t_s1
+        
+        # Finals (Super Bowl) & 3rd Place Matchup (Top 3 Cash Payouts!)
+        sc_champ1 = random.gauss(team_power[semi_w1]['mean'], team_power[semi_w1]['std'])
+        sc_champ2 = random.gauss(team_power[semi_w2]['mean'], team_power[semi_w2]['std'])
+        champ = semi_w1 if sc_champ1 >= sc_champ2 else semi_w2
+        
+        # 3rd place 2-week total simulation
+        sc_3rd_1 = random.gauss(team_power[semi_l1]['mean']*2, team_power[semi_l1]['std']*1.4)
+        sc_3rd_2 = random.gauss(team_power[semi_l2]['mean']*2, team_power[semi_l2]['std']*1.4)
+        third_place = semi_l1 if sc_3rd_1 >= sc_3rd_2 else semi_l2
+        
+        # Loser's Bracket Simulation (Winner gets #1 choice of draft pick!)
+        lb_scores = {t: random.gauss(team_power[t]['mean'], team_power[t]['std']) for t in toilet_bowl}
+        draft_choice_winner = max(toilet_bowl, key=lambda t: lb_scores[t])
+        
+        champs_count[champ] += 1
+        payout_count[semi_w1] += 1
+        payout_count[semi_w2] += 1
+        payout_count[third_place] += 1
+        draft_pick_count[draft_choice_winner] += 1
+
     # Format probability outputs
     results = {}
     for t in OWNER_TO_DIV:
@@ -253,6 +313,9 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
             'playoff_pct': round((playoff_counts[t] / n_sims) * 100, 1),
             'div_title_pct': round((div_champ_counts[t] / n_sims) * 100, 1),
             'bye_pct': round((bye_counts[t] / n_sims) * 100, 1),
+            'top3_payout_pct': round((payout_count[t] / n_sims) * 100, 1),
+            'champ_pct': round((champs_count[t] / n_sims) * 100, 1),
+            'draft_choice_fav_pct': round((draft_pick_count[t] / n_sims) * 100, 1),
             'toilet_bowl_pct': round(100.0 - ((playoff_counts[t] / n_sims) * 100), 1),
             'seed_dist': {s: round((seed_distribution[t][s] / n_sims) * 100, 1) for s in range(1, 17)}
         }
@@ -262,18 +325,22 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
 def format_playoff_odds_report(results: dict, current_week: int, season: int) -> str:
     """Formats playoff odds into clean markdown."""
     lines = []
-    lines.append(f"# 📊 BFL WEEK {current_week} PLAYOFF PROBABILITY & SEEDING INDEX ({season})")
-    lines.append(f"*10,000 Monte Carlo Simulations • 4 Division Titles • 3 Wild Cards • 1 First-Round Bye*\n")
+    lines.append(f"# 📊 BFL WEEK {current_week} PLAYOFF & DRAFT STAKES INDEX ({season})")
+    lines.append(f"*10,000 Monte Carlo Simulations • NFL Re-Seeding • Top 3 Payouts • Loser's Bracket Draft Order*\n")
     lines.append("---")
-    lines.append("## 🏆 PLAYOFF LEVERAGE & SEEDING PROBABILITIES\n")
-    lines.append("| Rank | Manager | Division | Playoff Odds % | Win Division % | #1 Seed Bye % | Toilet Bowl % |")
-    lines.append("|:---:|:---|:---:|:---:|:---:|:---:|:---:|")
+    lines.append("## 🏆 PLAYOFF, PAYOUT & DRAFT PICK PROBABILITIES\n")
+    lines.append("| Rank | Manager | Division | Playoff % | Division % | #1 Bye % | Top 3 Payout % | 💍 Ring % | 🎯 #1 Draft Choice % |")
+    lines.append("|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
     
-    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['div_title_pct']), reverse=True)
+    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct']), reverse=True)
     for rank, r in enumerate(sorted_teams, 1):
-        lines.append(f"| #{rank} | **{r['owner']}** | {r['division']} | **{r['playoff_pct']}%** | {r['div_title_pct']}% | {r['bye_pct']}% | {r['toilet_bowl_pct']}% |")
+        lines.append(f"| #{rank} | **{r['owner']}** | {r['division']} | **{r['playoff_pct']}%** | {r['div_title_pct']}% | {r['bye_pct']}% | **{r['top3_payout_pct']}%** | {r['champ_pct']}% | {r['draft_choice_fav_pct']}% |")
         
-    lines.append("\n---\n💡 *Simulation Rules: 4 Division Winners (#1-#4) + 3 Wild Cards (#5-#7). Tiebreakers: Record -> H2H -> Total Points Scored (PF).*")
+    lines.append("\n---\n💡 *Simulation Rules:*")
+    lines.append("* **Playoffs (7 Teams):** 4 Division Winners (#1-#4) + 3 Wild Cards (#5-#7). Seed #1 receives the First-Round Bye.")
+    lines.append("* **NFL Dynamic Re-Seeding:** In Round 2, Seed #1 plays the lowest surviving seed.")
+    lines.append("* **Top 3 Cash Payouts:** Super Bowl Champ (1st), Runner-Up (2nd), and 3rd Place (Two-Week Combined Matchup).")
+    lines.append("* **Loser's Bracket Stakes:** Winner of the Loser's Bracket gets 1st choice of draft slot next season.")
     return "\n".join(lines)
 
 def post_playoff_odds_to_discord(webhook_url: str, results: dict, current_week: int, season: int = 2026):
