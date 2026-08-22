@@ -52,12 +52,15 @@ def generate_10min_podcast_script(week_num: int, season: int, recap_data: dict, 
         w_quote = interviews_data.get(w_owner, {}).get('response', 'No comment.') if interviews_data else "Felt great to get the win."
         l_quote = interviews_data.get(l_owner, {}).get('response', 'We need to be better.') if interviews_data else "Tough break, we will bounce back."
         
+        blunder_name = blunder.get('benched', {}).get('name', 'None') if isinstance(blunder, dict) else 'None'
+        blunder_diff = blunder.get('diff', 0.0) if isinstance(blunder, dict) else 0.0
+        
         matchups_context.append(
             f"Game: {g.get('away_team')} ({g.get('away_score'):.2f}) @ {g.get('home_team')} ({g.get('home_score'):.2f})\n"
             f"  Winner: {w_owner} (+{margin:.2f} pts) | Loser: {l_owner}\n"
             f"  Winner Press Quote: \"{w_quote}\"\n"
             f"  Loser Press Quote: \"{l_quote}\"\n"
-            f"  Bench Blunder: {blunder['player'] if blunder else 'None'} ({blunder['pts'] if blunder else 0} pts left on bench)\n"
+            f"  Bench Blunder: {blunder_name} ({blunder_diff:.1f} pts left on bench)\n"
         )
         
     prompt = f"""You are the lead executive producer and writer for "BFL Sunday Night Prime", the premier 10-minute sports podcast and review show for the Beasts Football League (BFL).
@@ -104,19 +107,73 @@ Include sound effect cues in brackets like [SFX: WHISTLE], [SFX: SHOCKWAVE SIREN
         except Exception as e:
             print(f"⚠️ Gemini API fallback: {e}")
             
-    # Fallback template if Gemini key is unreachable
-    return f"""# 🎙️ BFL SUNDAY NIGHT PRIME: WEEK {week_num} PODCAST REVIEW ({season})
-
-[SFX: BFL SPORTS THEME INTRO MUSIC]
-
-[COMMISH]: Welcome to BFL Sunday Night Prime, your official 10-minute deep dive across all 16 franchises in Week {week_num} of the {season} campaign! I'm your Commissioner, and alongside me as always is our resident roast master and color analyst. What a chaotic slate of fantasy football we just witnessed.
-
-[COLOR COMMENTATOR]: Chaotic doesn't even begin to describe it, Commish! We had heartbreaks by fractions of a point, massive 50-point probability swings on Monday night, and some bench management decisions that belong in the fantasy hall of shame.
-
-[COMMISH]: Let's start with our Game of the Week...
-
-[COLOR COMMENTATOR]: And make sure you stick around for Act 3 when we go inside the post-game press conferences to hear what the losing managers had to say for themselves!
-"""
+    # Built-in High-Production 5-Act Sports Talk Show Generator
+    lines = []
+    lines.append(f"# 🎙️ BFL SUNDAY NIGHT PRIME: WEEK {week_num} REVIEW SHOW ({season})")
+    lines.append(f"*The Official 10-Minute Beasts Football League Post-Game Podcast & SportsCenter Breakdown*\n")
+    lines.append("---\n")
+    
+    # Act 1
+    lines.append(f"## 🎬 ACT 1: THE COLD OPEN & GAME OF THE WEEK (0:00 - 2:00)\n")
+    lines.append(f"[SFX: BFL PRIME INTRO THEME MUSIC & STADIUM CROWD CHEER]\n")
+    lines.append(f"**[COMMISH]**: Welcome inside the studio for BFL Sunday Night Prime! I'm your Commissioner, and alongside me as always is our lead analyst and resident roast master. Week {week_num} of the {season} campaign is in the books, and we saw pure, unadulterated fantasy chaos across all 16 franchises.")
+    lines.append(f"**[COLOR COMMENTATOR]**: Commish, my heart rate hasn't come down since Monday night! We had nail-biters decided by less than a field goal, massive 40-point probability swings, and start/sit decisions that should trigger an immediate league investigation.")
+    lines.append(f"**[COMMISH]**: Let's go straight to our **Game of the Week**: {recap_data.get('game_of_week', 'N/A')}. In a matchup with massive divisional weight, every single yard on Monday Night Football counted.")
+    lines.append(f"**[COLOR COMMENTATOR]**: Total heartbreak! When you lose by just a couple of points, every dropped pass and negative rush yard haunts your dreams all Tuesday morning.\n")
+    
+    # Act 2
+    lines.append(f"---\n## 🏟️ ACT 2: THE 8-GAME DIVISION GAUNTLET (2:00 - 5:00)\n")
+    lines.append(f"[SFX: WHISTLE & HIGHLIGHT TRANSITION CHIME]\n")
+    lines.append(f"**[COMMISH]**: Let's take a spin around the league and break down the scoreboard across all 4 divisions:\n")
+    for idx, g in enumerate(recap_data.get('games', []), 1):
+        w_score = max(g['away_score'], g['home_score'])
+        l_score = min(g['away_score'], g['home_score'])
+        margin = round(abs(w_score - l_score), 2)
+        lines.append(f"### 🥊 Matchup #{idx}: {g.get('away_team')} @ {g.get('home_team')}")
+        lines.append(f"* **Final Score:** **{g['winner']}** def. {g['loser']} (**{w_score:.2f}** - {l_score:.2f}) `[Margin: +{margin:.2f} pts]`")
+        if margin <= 5.0:
+            lines.append(f"* **[COMMISH]**: An absolute instant classic. Win probability swung violently in the 4th quarter.")
+            lines.append(f"* **[COLOR COMMENTATOR]**: Highway robbery! {g['winner']} walked out of there with the win while {g['loser']} is left questioning their entire existence.")
+        elif margin >= 25.0:
+            lines.append(f"* **[COMMISH]**: Total dominance. {g['winner']} puts up a statement win that puts the entire division on notice.")
+            lines.append(f"* **[COLOR COMMENTATOR]**: [SFX: GONG] Stop the fight! That wasn't a fantasy game, that was a public execution.")
+        else:
+            lines.append(f"* **[COMMISH]**: A solid, hard-fought victory for {g['winner']} to bank crucial points.")
+        lines.append("")
+        
+    # Act 3
+    lines.append(f"---\n## 🎙️ ACT 3: THE POST-GAME PRESS CONFERENCE (5:00 - 7:30)\n")
+    lines.append(f"[SFX: FLASHBULBS & REPORTERS CHATTERING]\n")
+    lines.append(f"**[COMMISH]**: It's time to head down to the media room. We sent our press corps to interview the managers directly after the final whistle. Let's hear what they had to say:\n")
+    
+    if interviews_data:
+        for owner, data in list(interviews_data.items())[:6]:
+            resp = data.get('response') or ("We left it all on the field." if data['result'] == 'WIN' else "We will evaluate the tape and make adjustments.")
+            lines.append(f"**🎤 Reporter to {owner} ({data['result']}):** *\"{data['question']}\"*")
+            lines.append(f"**💬 {owner}:** *\"{resp}\"*\n")
+            if data['result'] == 'WIN':
+                lines.append(f"**[COLOR COMMENTATOR]**: You can hear the swagger in that response, Commish! {owner} is riding high heading into next week.")
+            else:
+                lines.append(f"**[COLOR COMMENTATOR]**: That is the sound of pure, unfiltered pain. No amount of coach-speak can hide the sting of that loss.")
+            lines.append("")
+            
+    # Act 4
+    lines.append(f"---\n## 🤡 ACT 4: BENCH BLUNDERS & TOUGH LUCK ROASTS (7:30 - 9:00)\n")
+    lines.append(f"[SFX: SAD TROMBONE & CLOWN HORN]\n")
+    lines.append(f"**[COMMISH]**: It wouldn't be Sunday Night Prime without our weekly **Hall of Shame** awards. Let's hand out the hardware:")
+    lines.append(f"* 💔 **Tough Luck Loser**: **{recap_data.get('tough_luck', 'N/A')}** — Put up big points, but ran directly into a buzzsaw.")
+    lines.append(f"* 🍀 **The Golden Horseshoe**: **{recap_data.get('golden_horseshoe', 'N/A')}** — Escaped with a win despite one of the lowest outputs of the week.")
+    lines.append(f"* 🔨 **Beatdown of the Week**: **{recap_data.get('beatdown_of_week', 'N/A')}**.")
+    lines.append(f"\n**[COLOR COMMENTATOR]**: To the managers who left 20+ points on their bench while losing by 3 points: please seek help. Your waiver wire priority will not save you from your own lineup decisions!")
+    
+    # Act 5
+    lines.append(f"\n---\n## 🔮 ACT 5: DIVISION RACE OUTLOOK & THURSDAY LOOKAHEAD (9:00 - 10:00)\n")
+    lines.append(f"[SFX: BFL OUTRO THEME MUSIC CRESCENDO]\n")
+    lines.append(f"**[COMMISH]**: Looking ahead, the division races are already heating up. In just a few days, Thursday Night Football kicks off Week {week_num + 1}, and our automated Vegas Lineup Desk will drop the official spreads and starting lineup duels.")
+    lines.append(f"**[COLOR COMMENTATOR]**: Get your waiver claims in, set your alarms, and don't make the same mistakes twice! For the Commissioner and the entire BFL broadcast crew, we'll see you on Thursday morning!")
+    lines.append(f"\n[SFX: THEME MUSIC FADE OUT]")
+    
+    return "\n".join(lines)
 
 if __name__ == "__main__":
     print("="*75)

@@ -44,7 +44,9 @@ def generate_postgame_interview_prompts(week_num: int, games: list) -> dict:
             
         # Loser Question
         if margin <= 4.0:
-            blunder_text = f" Leaving {bench_blunder['pts']:.1f} pts on the bench with {bench_blunder['player']} proved fatal." if bench_blunder else ""
+            blunder_p = bench_blunder.get('benched', {}).get('name') if isinstance(bench_blunder, dict) else None
+            blunder_diff = bench_blunder.get('diff', 0.0) if isinstance(bench_blunder, dict) else 0.0
+            blunder_text = f" Leaving {blunder_diff:.1f} pts on the bench with {blunder_p} proved fatal." if blunder_p else ""
             l_q = f"🎙️ Commish Press Room: A heartbreaking {margin}-point loss to {w_owner}.{blunder_text} What went wrong in the final minutes, and how do you rally the locker room for next week?"
         elif margin >= 30.0:
             l_q = f"🎙️ Commish Press Room: Complete disaster week—blown out by {margin:.2f} points. Are you putting starters on the trade block or calling an emergency team meeting?"
