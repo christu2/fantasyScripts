@@ -148,6 +148,13 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
                 if h_own:
                     espn_lineups_by_owner[h_own] = home_data
     
+    # Check if draft has actually occurred (all teams have rosters populated)
+    draft_completed = False
+    if espn_data:
+        total_rostered = sum(len(t.get('roster', {}).get('entries', [])) for t in espn_data.get('teams', []))
+        if total_rostered >= 160:  # 16 teams * at least 10 players
+            draft_completed = True
+
     for idx, m in enumerate(matchups):
         a_owner = m['away_info']['owner']
         h_owner = m['home_info']['owner']
@@ -169,20 +176,21 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
         a_starters, h_starters = None, None
         a_injuries, h_injuries = [], []
         
-        adata = espn_lineups_by_owner.get(a_owner)
-        hdata = espn_lineups_by_owner.get(h_owner)
-        
-        if adata and hdata:
-            a_entries = adata.get('rosterForCurrentScoringPeriod', {}).get('entries', [])
-            h_entries = hdata.get('rosterForCurrentScoringPeriod', {}).get('entries', [])
-            if a_entries and h_entries:
-                a_s, a_b, a_p, a_inj = parse_team_starting_lineup(a_entries, target_week)
-                h_s, h_b, h_p, h_inj = parse_team_starting_lineup(h_entries, target_week)
-                if a_p > 0 or h_p > 0:
-                    has_live_rosters = True
-                    a_starters, h_starters = a_s, h_s
-                    a_proj, h_proj = a_p, h_p
-                    a_injuries, h_injuries = a_inj, h_inj
+        if draft_completed:
+            adata = espn_lineups_by_owner.get(a_owner)
+            hdata = espn_lineups_by_owner.get(h_owner)
+            
+            if adata and hdata:
+                a_entries = adata.get('rosterForCurrentScoringPeriod', {}).get('entries', [])
+                h_entries = hdata.get('rosterForCurrentScoringPeriod', {}).get('entries', [])
+                if a_entries and h_entries:
+                    a_s, a_b, a_p, a_inj = parse_team_starting_lineup(a_entries, target_week)
+                    h_s, h_b, h_p, h_inj = parse_team_starting_lineup(h_entries, target_week)
+                    if a_p > 0 or h_p > 0:
+                        has_live_rosters = True
+                        a_starters, h_starters = a_s, h_s
+                        a_proj, h_proj = a_p, h_p
+                        a_injuries, h_injuries = a_inj, h_inj
         
         lines.append(f"### 🥊 Game {idx+1}: {a_team} ({a_owner}) @ {h_team} ({h_owner})")
         lines.append(f"**Division:** {m['away_info']['division']} vs {m['home_info']['division']} | **Type:** `{m_type}`\n")
@@ -213,38 +221,36 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
                 all_inj = a_injuries + h_injuries
                 lines.append(f"* 🩺 **Injury Watch:** {', '.join(all_inj)}")
         else:
-            lines.append(f"* 🎰 **Projected Spread:** `Pre-Draft Baseline` (Rosters will populate post-draft)")
+            lines.append(f"* 🎰 **Projected Spread:** `Pre-Draft Baseline` (Rosters unlock post-draft)")
             
-        # 2. Historical & Drama Context
+        # 2. Historical & Drama Context (Single Clean Line)
         lead_name = a_owner if a_wins > h_wins else h_owner
         lead_str = f"**{lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if a_wins != h_wins else f"**Series Deadlocked {a_wins}-{h_wins}**"
         lines.append(f"* 📜 **18-Year Series:** {lead_str} across **{total_meetings} meetings** (2008–{target_season})")
         
-        # 3. Dynamic Narrative
+        # 3. Pure Narrative & Storyline (No Redundant Record Duplication)
+        last_game = sorted(history, key=lambda x: (x['year'], x['week']))[-1] if history else None
+        
         if total_meetings == 0:
-            narrative = f"🆕 Inaugural Showdown! {a_owner} and {h_owner} meet for the very first time in franchise history."
+            narrative = f"🆕 Inaugural franchise showdown! First-ever meeting in BFL history."
         elif pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
-            lead_summary = f"Lukose leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}" if a_wins > h_wins else f"Thor leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}"
-            narrative = f"👑 THE BATTLE OF THE SHAWNS. {lead_summary} across {total_meetings} lifetime meetings since 2008! Thor seeking a statement win."
+            narrative = f"👑 THE BATTLE OF THE SHAWNS. Thor won their 2025 finale by 22 pts; Lukose looks to defend home turf."
         elif pair == ('Adam Olen', 'Samran Mirza'):
-            if a_wins == h_wins:
-                narrative = f"🔥 Deadlocked at {a_wins}-{h_wins}! Heading into their {total_meetings + 1}th all-time clash, AMO won their 2025 meeting by a razor-thin margin."
-            else:
-                narrative = f"🔥 {lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} in {total_meetings} meetings since 2008."
+            narrative = f"🔥 The BFL's most evenly contested rivalry. AMO took their last clash in 2025 by just 1.04 pts."
         elif pair == ('Dino Davros', 'rej hoxha'):
-            narrative = f"⚖️ Century Rivalry. {lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} in {total_meetings} clashes since 2008. Rej won their last meeting by 0.38 pts!"
+            narrative = f"⚖️ Century Rivalry. Rej won their last clash in Week 17 by a razor-thin 0.38 pts!"
         elif pair == ('Tommy Ehrlich', 'Nick Christus'):
-            narrative = f"🎯 North Division Showdown. {lead_name} commands a {max(a_wins, h_wins)}-{min(a_wins, h_wins)} series lead across {total_meetings} meetings since 2008."
+            narrative = f"🎯 North Division Showdown. Tommy took their last battle in Week 16 by 0.70 pts as he continues his hunt for Ring #1."
         elif pair == ('Abe Thomas', 'Saagar Gupta'):
-            narrative = f"🌴 South Division Grudge Match. {lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} across {total_meetings} lifetime meetings since 2008."
+            narrative = f"🌴 South Division Grudge Match. Defending champ Abe blew out Saagar in Week 1 last season; King Gupta seeks revenge."
         elif pair == ('Daniel Kruszewski', 'Nitesh Patel'):
-            narrative = f"⚡ Nitesh's first official game as solo owner of Big Nasties against Dan Kruszewski (Dan leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} from past co-owner matchups)."
+            narrative = f"⚡ Nitesh's official debut as solo owner of Big Nasties against former champ Dan Kruszewski."
         elif pair == ('Blake Whitehouse', 'Nael Ahmed'):
-            narrative = f"⚔️ Cross-Division Clash. {lead_name} holds a {max(a_wins, h_wins)}-{min(a_wins, h_wins)} edge across {total_meetings} lifetime meetings."
+            narrative = f"⚔️ Cross-Division Clash with heavy playoff pedigree (4 postseason battles). Blake won their last meeting."
         elif pair == ('Alex Kite', 'Sydney Miller'):
-            narrative = f"💥 West Division Showdown. {lead_name} holds a tight {max(a_wins, h_wins)}-{min(a_wins, h_wins)} edge in {total_meetings} meetings."
+            narrative = f"💥 West Division Showdown. Sydney clipped Alex by exactly 2.0 pts in their last clash."
         else:
-            narrative = f"{lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)} across {total_meetings} lifetime meetings since 2008."
+            narrative = f"Classic rivalry renewal heading into Week {target_week}."
             
         lines.append(f"* ⚔️ **Key Storyline:** {narrative}\n")
         
@@ -254,7 +260,7 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             'home': f"{h_team} ({h_owner})",
             'series': f"{a_owner} {a_wins}-{h_wins} {h_owner}" if total_meetings > 0 else "First Meeting",
             'type': m_type,
-            'spread': f"{fav} -{spread:.1f}" if has_live_rosters else "Draft Pending",
+            'spread': f"{fav} -{spread:.1f}" if has_live_rosters else "Pre-Draft",
             'narrative': narrative
         })
         
