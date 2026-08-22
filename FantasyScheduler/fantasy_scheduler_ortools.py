@@ -6,6 +6,7 @@ More robust constraint solver with comprehensive scheduling constraints
 
 from ortools.sat.python import cp_model
 import csv
+import random
 
 # Team and division setup
 teams_by_div = {
@@ -22,8 +23,10 @@ T = len(teams)
 W = 14  # weeks
 G = 8   # games per week
 
-# Create team index mapping
-idx = {t: i for i, t in enumerate(teams)}
+# Create team index mapping (shuffled to eliminate deterministic template bias)
+shuffled_teams = list(teams)
+random.shuffle(shuffled_teams)
+idx = {t: i for i, t in enumerate(shuffled_teams)}
 idx_to_team = {i: t for t, i in idx.items()}
 
 # Rivalry pairs
@@ -273,11 +276,24 @@ for i in range(T):
         # At most 3 away games in any 4 consecutive weeks
         model.Add(sum(away_games_in_4_weeks) <= 3)
 
+# Randomized objective: assign small random weights to each matchup variable
+# This guides the solver to a unique, varied schedule structure on every run
+random_objective = []
+for i in range(T):
+    for j in range(T):
+        if i != j:
+            for w in range(W):
+                random_objective.append(matches[i][j][w] * random.randint(-100, 100))
+model.Maximize(sum(random_objective))
+
 print("Solving with OR-Tools...")
 
 # Create solver and solve
 solver = cp_model.CpSolver()
 solver.parameters.max_time_in_seconds = 300  # 5 minute timeout
+solver.parameters.random_seed = random.randint(1, 1000000)
+solver.parameters.randomize_search = True
+solver.parameters.num_search_workers = 8
 
 status = solver.Solve(model)
 
