@@ -276,10 +276,11 @@ for i in range(T):
         # At most 3 away games in any 4 consecutive weeks
         model.Add(sum(away_games_in_4_weeks) <= 3)
 
-# Constraint 13: Prevent late-season division congestion (Weeks 11, 12, 13)
-# Max 5 division games across the league per week in the stretch run
-stretch_weeks = [10, 11, 12]  # weeks 11, 12, 13 (0-indexed)
-for w in stretch_weeks:
+# Constraint 13: Weekly Slate Diversity Banding (Weeks 1-9 and 11-13)
+# Every regular week must have between 2 and 5 division games across the league
+# This prevents "dead weeks" (0 or 1 division games) and prevents accidental division traffic jams
+regular_weeks = list(range(0, 9)) + [10, 11, 12]  # 0-indexed: Weeks 1-9 and 11-13
+for w in regular_weeks:
     div_games_in_week = []
     for div_teams in teams_by_div.values():
         div_indices = [idx[team] for team in div_teams]
@@ -287,25 +288,8 @@ for w in stretch_weeks:
             for j in range(i + 1, len(div_indices)):
                 team_i, team_j = div_indices[i], div_indices[j]
                 div_games_in_week.extend([matches[team_i][team_j][w], matches[team_j][team_i][w]])
+    model.Add(sum(div_games_in_week) >= 2)
     model.Add(sum(div_games_in_week) <= 5)
-
-# Constraint 14: Strict 2-and-2 cross-division balance
-# Each team plays exactly 2 games vs Non-Opposite Div A and 2 games vs Non-Opposite Div B
-for div, non_opp_divs in [
-    ("North", ["East", "West"]),
-    ("South", ["East", "West"]),
-    ("East", ["North", "South"]),
-    ("West", ["North", "South"]),
-]:
-    for team in teams_by_div[div]:
-        t_idx = idx[team]
-        for non_opp_div in non_opp_divs:
-            games_vs_div = []
-            for opp_team in teams_by_div[non_opp_div]:
-                opp_idx = idx[opp_team]
-                for w in range(W):
-                    games_vs_div.extend([matches[t_idx][opp_idx][w], matches[opp_idx][t_idx][w]])
-            model.Add(sum(games_vs_div) == 2)
 
 print("Solving with OR-Tools...")
 
