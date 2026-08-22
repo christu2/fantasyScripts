@@ -304,32 +304,36 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                     time.sleep(1)
                     continue
                 
-                # Read text associated with each slot
+                # Read text associated with each slot (4 columns per row: td0=Away CB/Team, td1=Away Owner, td2=Home CB/Team, td3=Home Owner)
                 rows = page.locator("table tr:has(input[type='checkbox']), tr.Table__TR:has(input[type='checkbox'])")
                 current_slots = []
                 
                 for r_idx in range(rows.count()):
                     r = rows.nth(r_idx)
                     tds = r.locator("td")
-                    if tds.count() >= 2:
+                    if tds.count() >= 4:
+                        left_text = tds.nth(0).inner_text() + " " + tds.nth(1).inner_text()
+                        left_cb = tds.nth(0).locator("input[type='checkbox']")
+                        right_text = tds.nth(2).inner_text() + " " + tds.nth(3).inner_text()
+                        right_cb = tds.nth(2).locator("input[type='checkbox']")
+                        current_slots.append({'slot': len(current_slots), 'cb': left_cb, 'text': left_text})
+                        current_slots.append({'slot': len(current_slots), 'cb': right_cb, 'text': right_text})
+                    elif tds.count() >= 2:
                         left_text = tds.nth(0).inner_text()
+                        left_cb = tds.nth(0).locator("input[type='checkbox']")
                         right_text = tds.nth(1).inner_text()
-                        current_slots.append({'slot': len(current_slots), 'cb': r.locator("input[type='checkbox']").nth(0), 'text': left_text})
-                        current_slots.append({'slot': len(current_slots), 'cb': r.locator("input[type='checkbox']").nth(1), 'text': right_text})
-                    else:
-                        cbs = r.locator("input[type='checkbox']")
-                        for c_idx in range(cbs.count()):
-                            current_slots.append({'slot': len(current_slots), 'cb': cbs.nth(c_idx), 'text': r.inner_text()})
+                        right_cb = tds.nth(1).locator("input[type='checkbox']")
+                        current_slots.append({'slot': len(current_slots), 'cb': left_cb, 'text': left_text})
+                        current_slots.append({'slot': len(current_slots), 'cb': right_cb, 'text': right_text})
                 
                 if len(current_slots) < 16:
-                    # Fallback to direct checkbox index mapping
-                    current_slots = [{'slot': i, 'cb': checkboxes.nth(i), 'text': checkboxes.nth(i).locator("xpath=..").inner_text()} for i in range(16)]
+                    current_slots = [{'slot': i, 'cb': checkboxes.nth(i), 'text': checkboxes.nth(i).locator("xpath=../..").inner_text()} for i in range(checkbox_count)]
                 
                 # Check which slot is out of place
                 misplaced_slot = None
                 target_team_code = None
                 
-                for slot_idx in range(16):
+                for slot_idx in range(min(16, len(current_slots))):
                     t_code = targets[slot_idx]
                     t_info = team_mapping[t_code]
                     if not slot_matches_team(current_slots[slot_idx]['text'], t_code, t_info):
@@ -344,13 +348,13 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                 # Find where target_team_code currently is
                 target_curr_slot = None
                 t_info = team_mapping[target_team_code]
-                for s_idx in range(16):
+                for s_idx in range(len(current_slots)):
                     if slot_matches_team(current_slots[s_idx]['text'], target_team_code, t_info):
                         target_curr_slot = s_idx
                         break
                 
                 if target_curr_slot is None:
-                    print(f"  ⚠️ Could not find current position for '{target_team_code}'. Skipping auto-swap for this slot.")
+                    print(f"  ⚠️ Could not find current position for '{target_team_code}' ({t_info['owner']}). Skipping auto-swap for this slot.")
                     break
                 
                 # Swap misplaced_slot and target_curr_slot
@@ -359,24 +363,37 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                 
                 # Uncheck any currently checked boxes first
                 for s in current_slots:
-                    if s['cb'].is_checked():
-                        s['cb'].uncheck()
+                    try:
+                        if s['cb'].is_checked():
+                            s['cb'].click(force=True)
+                    except Exception:
+                        pass
                 
                 # Check the two boxes to swap
-                slot_a['cb'].check()
-                slot_b['cb'].check()
+                slot_a['cb'].click(force=True)
+                time.sleep(0.2)
+                slot_b['cb'].click(force=True)
+                time.sleep(0.2)
                 
                 # Click [Switch Teams]
                 switch_btn = page.locator("button:has-text('Switch Teams')")
                 switch_btn.click()
-                time.sleep(0.6)
+                time.sleep(1.0)
             
-            # Save Week Changes
-            save_btn = page.locator("button:has-text('Save Changes')")
-            if save_btn.is_visible():
+            # Save Week Changes if button is enabled
+            time.sleep(1)
+            save_btn = page.locator("button.save--changes, button:has-text('Save Changes')")
+            if save_btn.is_visible() and save_btn.is_enabled():
                 print(f"  💾 Saving changes for Week {week_num}...")
                 save_btn.click()
                 time.sleep(3)
+            else:
+                print(f"  ℹ️ Week {week_num} already saved / matches target.")
+                
+            # Navigate back to main schedule page for next week
+            if week_num < 14:
+                page.goto(schedule_url, wait_until="domcontentloaded")
+                time.sleep(2)
         
         print("\n" + "="*75)
         print("🎉 SCHEDULE UPLOAD COMPLETE!")
