@@ -12,6 +12,7 @@ import time
 import json
 import argparse
 import requests
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -35,15 +36,24 @@ else:
 ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
 ESPN_S2 = os.getenv("ESPN_S2", "")
 ESPN_SWID = os.getenv("ESPN_SWID", "")
-SEASON_YEAR = os.getenv("SEASON_YEAR", "2026")
 
-# Fallback division definition from scheduler
-DEFAULT_DIVISIONS = {
-    "North": ["DTM", "Thomas", "Nick", "Blake"],
-    "South": ["Nael", "Saagar", "Abe", "Nasties"],
-    "East":  ["Lukose", "Rej", "Samran", "Dino"],
-    "West":  ["AMO", "Shooter", "Sydney", "Thor"],
-}
+# Automatically derive current year from the system clock
+CURRENT_YEAR = str(datetime.now().year)
+SEASON_YEAR = os.getenv("SEASON_YEAR") or CURRENT_YEAR
+
+# Automatically load division definitions directly from the scheduler script
+try:
+    from FantasyScheduler.fantasy_scheduler_ortools import teams_by_div as DEFAULT_DIVISIONS
+except ImportError:
+    try:
+        from fantasy_scheduler_ortools import teams_by_div as DEFAULT_DIVISIONS
+    except ImportError:
+        DEFAULT_DIVISIONS = {
+            "North": ["DTM", "Thomas", "Nick", "Blake"],
+            "South": ["Nael", "Saagar", "Abe", "Nasties"],
+            "East":  ["Lukose", "Rej", "Samran", "Dino"],
+            "West":  ["AMO", "Shooter", "Sydney", "Thor"],
+        }
 
 # Known aliases mapping script shorthand names to real 2026 owner names
 CUSTOM_OWNER_ALIASES = {
