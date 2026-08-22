@@ -57,22 +57,22 @@ except ImportError:
 
 # Known aliases mapping script shorthand names to real 2026 owner names & team names
 CUSTOM_OWNER_ALIASES = {
-    "Nasties": ["Nitesh Patel", "Nitesh", "Patel", "Nasties", "Big Nasties", "NME"],
-    "Shooter": ["Alex Kite", "Alex", "Kite", "Shooter", "Send Da Trade", "SDT"],
-    "DTM":     ["Daniel Kruszewski", "Daniel", "Kruszewski", "Dan", "DTM", "Dynasty Destroyers", "DD"],
-    "AMO":     ["Adam Olen", "Adam", "Olen", "AMO", "Green and Golden", "GnG"],
-    "Thomas":  ["Tommy Ehrlich", "Tommy", "Tom Ehrlich", "Tom", "Thomas", "The Ehrly Birds", "EHRL"],
-    "Nick":    ["Nick Christus", "Nick", "Christus", "Mykonos Minotaurs", "MM"],
-    "Blake":   ["Blake Whitehouse", "Blake", "Whitehouse", "Block O", "BOOB"],
-    "Nael":    ["Nael Ahmed", "Nael", "Ahmed", "NMAfia", "NMA"],
-    "Saagar":  ["Saagar Gupta", "Saagar", "Gupta", "King Gupta's Army", "KGA", "Ayush Gupta"],
-    "Abe":     ["Abe Thomas", "Abe", "Thomas", "Crashee Bandicoot", "CB"],
-    "Lukose":  ["Shawn Lukose", "Lukose", "Nilgiri Tahrs", "NT"],
-    "Rej":     ["rej hoxha", "rej", "hoxha", "Rej", "Steve Bartman", "SB"],
-    "Samran":  ["Samran Mirza", "Samran", "Mirza", "De'von Intervention", "DI"],
-    "Dino":    ["Dino Davros", "Dino", "Davros", "Taliban Gang", "TGM"],
-    "Sydney":  ["Sydney Miller", "Sydney", "Miller", "30p Chance", "MGrl"],
-    "Thor":    ["Shawn Ullenbrauck", "Ullenbrauck", "Thor", "Pat N' Pending", "PNP"],
+    "Nasties": ["Nitesh Patel", "Nitesh", "Big Nasties", "Nasties"],
+    "Shooter": ["Alex Kite", "Alex", "Evan Hagedorn", "Send Da Trade", "Shooter"],
+    "DTM":     ["Daniel Kruszewski", "Daniel", "Dan Kruszewski", "Dynasty Destroyers", "DTM"],
+    "AMO":     ["Adam Olen", "Adam", "Green and Golden", "AMO"],
+    "Thomas":  ["Tommy Ehrlich", "Tommy", "Tom Ehrlich", "The Ehrly Birds", "Thomas"],
+    "Nick":    ["Nick Christus", "Nick", "Mykonos Minotaurs"],
+    "Blake":   ["Blake Whitehouse", "Blake", "Block O", "O Block"],
+    "Nael":    ["Nael Ahmed", "Nael", "NMAfia"],
+    "Saagar":  ["Saagar Gupta", "Saagar", "Ayush Gupta", "King Gupta's Army"],
+    "Abe":     ["Abe Thomas", "Abe", "Crashee Bandicoot"],
+    "Lukose":  ["Shawn Lukose", "Lukose", "Nilgiri Tahrs"],
+    "Rej":     ["rej hoxha", "rej", "hoxha", "Steve Bartman", "Rej"],
+    "Samran":  ["Samran Mirza", "Samran", "Mirza", "De'von Intervention"],
+    "Dino":    ["Dino Davros", "Dino", "Davros", "Taliban Gang Mujahideen"],
+    "Sydney":  ["Sydney Miller", "Sydney", "30p Chance"],
+    "Thor":    ["Shawn Ullenbrauck", "Ullenbrauck", "Pat N' Pending", "Thor"],
 }
 
 def get_espn_data(league_id: str, season: str, espn_s2: str, swid: str):
@@ -167,7 +167,7 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams):
                     a.lower() in owner_first or
                     a.lower() in owner_disp or
                     (team_name and a.lower() in team_name) or
-                    (team_abbr and a.lower() in team_abbr)
+                    (team_abbr and a.lower() == team_abbr)
                     for a in aliases
                 )
                 if matched:
@@ -214,32 +214,31 @@ def slot_matches_team(slot_text: str, team_code: str, team_info: dict) -> bool:
 
 def read_current_slots(page):
     """
-    Reads the 16 slots from the 8 table rows on the ESPN Edit Schedule page.
-    Returns a list of 16 dicts: {'slot': idx, 'cb': locator, 'text': string}
+    Reads the 16 slots from the 8 table rows (data-idx 0..7) on the ESPN Edit Schedule page.
+    Returns a list of 16 dicts: {'slot': idx, 'text': string, 'row_idx': r, 'col_idx': c}
     """
-    rows = page.locator("table.Table tbody tr, table tbody tr, .Table__TR")
-    # Filter to rows that have checkboxes
+    rows = page.locator("tr[data-idx]")
     slots = []
     
-    for r_idx in range(rows.count()):
+    row_count = min(8, rows.count())
+    for r_idx in range(row_count):
         r = rows.nth(r_idx)
-        cbs = r.locator("input[type='checkbox']")
-        if cbs.count() >= 2:
-            tds = r.locator("td")
-            if tds.count() >= 4:
-                away_text = f"{tds.nth(0).inner_text()} {tds.nth(1).inner_text()}"
-                away_cb = tds.nth(0).locator("input[type='checkbox']")
-                home_text = f"{tds.nth(2).inner_text()} {tds.nth(3).inner_text()}"
-                home_cb = tds.nth(2).locator("input[type='checkbox']")
-            else:
-                away_text = tds.nth(0).inner_text()
-                away_cb = cbs.nth(0)
-                home_text = tds.nth(1).inner_text()
-                home_cb = cbs.nth(1)
-                
-            slots.append({'slot': len(slots), 'cb': away_cb, 'text': away_text.strip()})
-            slots.append({'slot': len(slots), 'cb': home_cb, 'text': home_text.strip()})
+        tds = r.locator("td")
+        if tds.count() >= 6:
+            # td 0 = Away Team, td 1 = Away Manager
+            # td 5 = Home Team, td 4 = Home Manager
+            away_text = f"{tds.nth(0).inner_text()} {tds.nth(1).inner_text()}"
+            home_text = f"{tds.nth(5).inner_text()} {tds.nth(4).inner_text()}"
+        elif tds.count() >= 4:
+            away_text = f"{tds.nth(0).inner_text()} {tds.nth(1).inner_text()}"
+            home_text = f"{tds.nth(2).inner_text()} {tds.nth(3).inner_text()}"
+        else:
+            away_text = tds.nth(0).inner_text()
+            home_text = tds.nth(1).inner_text() if tds.count() > 1 else ""
             
+        slots.append({'slot': len(slots), 'text': away_text.strip(), 'row_idx': r_idx, 'col_idx': 0})
+        slots.append({'slot': len(slots), 'text': home_text.strip(), 'row_idx': r_idx, 'col_idx': 1})
+        
     return slots
 
 def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_mapping: dict, dry_run: bool = False):
@@ -379,19 +378,26 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                 
                 print(f"  🔄 Swap {swap_count}: Putting {target_team_code} into Game {game_a} {side_a} (swapping with Game {game_b} {side_b})...")
                 
-                # Uncheck everything first
-                all_cbs = page.locator("input[type='checkbox']")
+                # Uncheck all checkboxes first
+                all_cbs = page.locator("tr[data-idx] input[type='checkbox']")
                 for i in range(all_cbs.count()):
                     try:
-                        if all_cbs.nth(i).is_checked():
-                            all_cbs.nth(i).click(force=True)
+                        cb = all_cbs.nth(i)
+                        if cb.is_checked():
+                            cb.click(force=True)
                     except Exception:
                         pass
                 
-                # Check the two swap candidates
-                slot_a['cb'].click(force=True)
+                # Target checkboxes directly by row data-idx
+                row_a = page.locator(f"tr[data-idx='{slot_a['row_idx']}']")
+                cb_a = row_a.locator("input[type='checkbox']").nth(slot_a['col_idx'])
+                
+                row_b = page.locator(f"tr[data-idx='{slot_b['row_idx']}']")
+                cb_b = row_b.locator("input[type='checkbox']").nth(slot_b['col_idx'])
+                
+                cb_a.click(force=True)
                 time.sleep(0.3)
-                slot_b['cb'].click(force=True)
+                cb_b.click(force=True)
                 time.sleep(0.3)
                 
                 # Click [Switch Teams]
