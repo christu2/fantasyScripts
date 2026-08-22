@@ -32,7 +32,7 @@ if env_path.exists():
 else:
     load_dotenv()
 
-ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "")
+ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
 ESPN_S2 = os.getenv("ESPN_S2", "")
 ESPN_SWID = os.getenv("ESPN_SWID", "")
 SEASON_YEAR = os.getenv("SEASON_YEAR", "2026")
@@ -152,22 +152,24 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
         try:
             with open(mapping_path, 'r') as f:
                 saved_mapping = json.load(f)
-            print(f"\n📂 Found saved team mapping in {cache_file}.")
-            use_saved = input("Do you want to use the saved mapping? (Y/n): ").strip().lower()
-            if use_saved != 'n':
-                return saved_mapping
+            # Ensure saved mapping is rich dict format
+            if saved_mapping and isinstance(list(saved_mapping.values())[0], dict):
+                print(f"\n📂 Found saved team mapping in {cache_file}.")
+                use_saved = input("Do you want to use the saved mapping? (Y/n): ").strip().lower()
+                if use_saved != 'n':
+                    return saved_mapping
         except Exception:
             pass
 
     mapping = {}
-    print("\n" + "="*70)
+    print("\n" + "="*75)
     print("📋 DIVISION & OWNER NAME VALIDATION")
-    print("="*70)
+    print("="*75)
     
     if not espn_teams:
         print("⚠️ No ESPN teams retrieved from API. Defaulting to exact names.")
         for code in csv_teams:
-            mapping[code] = code
+            mapping[code] = {'id': code, 'owner': code, 'name': code}
         return mapping
 
     # Build division lookup for CSV teams
@@ -182,7 +184,6 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
     # Group ESPN teams by division matching
     for espn_t in espn_teams:
         div_name = espn_t['division_name']
-        # Find which division key matches
         matched_div_key = next((d for d in teams_by_div if d.lower() in div_name.lower()), None)
         if matched_div_key:
             unmatched_espn_by_div[matched_div_key].append(espn_t)
@@ -195,7 +196,6 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
             matched_espn = None
             
             for t in espn_div_teams:
-                # Search aliases against owner full name, first name, display name, team name, and abbr
                 owner_full = t['owner'].lower()
                 owner_first = t['owner_first'].lower()
                 owner_disp = t['owner_display'].lower()
@@ -206,8 +206,8 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
                     a.lower() in owner_full or
                     a.lower() in owner_first or
                     a.lower() in owner_disp or
-                    a.lower() in team_name or
-                    a.lower() in team_abbr
+                    (team_name and a.lower() in team_name) or
+                    (team_abbr and a.lower() in team_abbr)
                     for a in aliases
                 )
                 if matched:
@@ -215,37 +215,49 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
                     break
             
             if matched_espn:
-                mapping[code] = matched_espn['name']
+                mapping[code] = {
+                    'id': matched_espn['id'],
+                    'owner': matched_espn['owner'],
+                    'name': matched_espn['name'] or matched_espn['owner']
+                }
                 espn_div_teams.remove(matched_espn)
             else:
                 unmatched_csv_by_div[div].append(code)
 
-    # 2. Handle manual clarification for unmatched teams per division (e.g. Nasties)
+    # 2. Handle manual clarification for any unmatched teams per division
     for div, codes in unmatched_csv_by_div.items():
         remaining_espn = unmatched_espn_by_div.get(div, [])
         for code in codes:
             print(f"\n❓ Manual match needed for '{code}' in the [{div}] Division:")
             if remaining_espn:
                 for idx, t in enumerate(remaining_espn):
-                    print(f"  [{idx+1}] Owner: {t['owner']} ({t['owner_display']}) ➔ Team: '{t['name']}'")
+                    print(f"  [{idx+1}] ID {t['id']:2d}: Owner: {t['owner']} ({t['owner_display']})")
                 while True:
                     try:
                         choice = int(input(f"Select ESPN team for '{code}' (1-{len(remaining_espn)}): "))
                         if 1 <= choice <= len(remaining_espn):
                             selected = remaining_espn.pop(choice-1)
-                            mapping[code] = selected['name']
+                            mapping[code] = {
+                                'id': selected['id'],
+                                'owner': selected['owner'],
+                                'name': selected['name'] or selected['owner']
+                            }
                             break
                     except ValueError:
                         pass
             else:
-                # Fallback list all ESPN teams
                 for idx, t in enumerate(espn_teams):
-                    print(f"  [{idx+1}] [{t['division_name']}] Owner: {t['owner']} ➔ Team: '{t['name']}'")
+                    print(f"  [{idx+1}] ID {t['id']:2d}: [{t['division_name']}] Owner: {t['owner']}")
                 while True:
                     try:
                         choice = int(input(f"Select ESPN team for '{code}' (1-{len(espn_teams)}): "))
                         if 1 <= choice <= len(espn_teams):
-                            mapping[code] = espn_teams[choice-1]['name']
+                            selected = espn_teams[choice-1]
+                            mapping[code] = {
+                                'id': selected['id'],
+                                'owner': selected['owner'],
+                                'name': selected['name'] or selected['owner']
+                            }
                             break
                     except ValueError:
                         pass
@@ -254,15 +266,13 @@ def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_map
     print("\n" + "="*75)
     print("📊 CONFIRM TEAM & OWNER MAPPINGS BEFORE PROCEEDING")
     print("="*75)
-    print(f"{'Division':<10} | {'Script Name':<12} | {'ESPN Owner':<20} | {'ESPN Team Name':<25}")
+    print(f"{'Division':<10} | {'Script Code':<12} | {'Team ID':<8} | {'ESPN Owner Name':<25}")
     print("-" * 75)
     
     for div, members in teams_by_div.items():
         for code in members:
-            espn_team_name = mapping.get(code, "MISSING")
-            espn_info = next((t for t in espn_teams if t['name'] == espn_team_name), None)
-            owner_str = espn_info['owner'] if espn_info else "Unknown"
-            print(f"{div:<10} | {code:<12} | {owner_str:<20} | {espn_team_name:<25}")
+            info = mapping.get(code, {'id': 'N/A', 'owner': 'MISSING', 'name': 'MISSING'})
+            print(f"{div:<10} | {code:<12} | ID {info['id']:<5} | {info['owner']:<25}")
     print("-" * 75)
 
     confirm = input("\nDoes this mapping look 100% correct? (Y/n): ").strip().lower()
@@ -286,9 +296,9 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
     """
     schedule_url = f"https://fantasy.espn.com/football/tools/schedulesettings?leagueId={league_id}&seasonId={season}"
     
-    print("\n" + "="*70)
+    print("\n" + "="*75)
     print("🚀 LAUNCHING BROWSER AUTOMATION")
-    print("="*70)
+    print("="*75)
     print(f"Target URL: {schedule_url}")
     
     with sync_playwright() as p:
@@ -337,17 +347,29 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
             
             if select_count >= len(matchups) * 2:
                 for g_idx, game in enumerate(matchups):
-                    away_name = team_mapping.get(game['Away'], game['Away'])
-                    home_name = team_mapping.get(game['Home'], game['Home'])
+                    away_info = team_mapping.get(game['Away'], {})
+                    home_info = team_mapping.get(game['Home'], {})
+                    
+                    away_id = str(away_info.get('id', ''))
+                    home_id = str(home_info.get('id', ''))
+                    away_owner = away_info.get('owner', game['Away'])
+                    home_owner = home_info.get('owner', game['Home'])
                     
                     away_select = selects.nth(g_idx * 2)
                     home_select = selects.nth(g_idx * 2 + 1)
                     
-                    print(f"  Game {g_idx+1}: {game['Away']} (@) vs {game['Home']} (vs)")
+                    print(f"  Game {g_idx+1}: {game['Away']} ({away_owner}) @ {game['Home']} ({home_owner})")
                     
                     if not dry_run:
-                        away_select.select_option(label=away_name)
-                        home_select.select_option(label=home_name)
+                        try:
+                            away_select.select_option(value=away_id)
+                        except Exception:
+                            away_select.select_option(label=away_owner)
+                            
+                        try:
+                            home_select.select_option(value=home_id)
+                        except Exception:
+                            home_select.select_option(label=home_owner)
             else:
                 rows = page.locator("tr.Table__TR, .schedule-item, .matchupRow")
                 row_count = rows.count()
@@ -356,12 +378,23 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                         row = rows.nth(g_idx)
                         row_selects = row.locator("select")
                         if row_selects.count() >= 2:
-                            away_name = team_mapping.get(game['Away'], game['Away'])
-                            home_name = team_mapping.get(game['Home'], game['Home'])
-                            print(f"  Game {g_idx+1}: {away_name} @ {home_name}")
+                            away_info = team_mapping.get(game['Away'], {})
+                            home_info = team_mapping.get(game['Home'], {})
+                            away_id = str(away_info.get('id', ''))
+                            home_id = str(home_info.get('id', ''))
+                            away_owner = away_info.get('owner', game['Away'])
+                            home_owner = home_info.get('owner', game['Home'])
+                            
+                            print(f"  Game {g_idx+1}: {away_owner} @ {home_owner}")
                             if not dry_run:
-                                row_selects.nth(0).select_option(label=away_name)
-                                row_selects.nth(1).select_option(label=home_name)
+                                try:
+                                    row_selects.nth(0).select_option(value=away_id)
+                                except Exception:
+                                    row_selects.nth(0).select_option(label=away_owner)
+                                try:
+                                    row_selects.nth(1).select_option(value=home_id)
+                                except Exception:
+                                    row_selects.nth(1).select_option(label=home_owner)
             
             if dry_run:
                 print(f"  [DRY RUN] Week {week_num} previewed.")
@@ -372,9 +405,9 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                     save_button.click()
                     time.sleep(2)
         
-        print("\n" + "="*70)
+        print("\n" + "="*75)
         print("🎉 SCHEDULE UPLOAD COMPLETE!")
-        print("="*70)
+        print("="*75)
         print("Please review the schedule in the browser window.")
         input("Press [Enter] to close browser...")
         browser.close()
