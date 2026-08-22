@@ -212,12 +212,17 @@ def slot_matches_team(slot_text: str, team_code: str, team_info: dict) -> bool:
             return True
     return False
 
+def get_active_edit_container(page):
+    """Locate the active week's container that holds the Switch Teams and Save Changes buttons."""
+    return page.locator("xpath=//button[contains(., 'Switch Teams')]/ancestor::*[.//table][1]")
+
 def read_current_slots(page):
     """
-    Reads the 16 slots from the 8 table rows (data-idx 0..7) on the ESPN Edit Schedule page.
+    Reads the 16 slots from the 8 table rows of the active edit container.
     Returns a list of 16 dicts: {'slot': idx, 'text': string, 'row_idx': r, 'col_idx': c}
     """
-    rows = page.locator("tr[data-idx]")
+    edit_container = get_active_edit_container(page)
+    rows = edit_container.locator("tbody tr, tr[data-idx]")
     slots = []
     
     row_count = min(8, rows.count())
@@ -378,8 +383,10 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                 
                 print(f"  🔄 Swap {swap_count}: Putting {target_team_code} into Game {game_a} {side_a} (swapping with Game {game_b} {side_b})...")
                 
-                # Uncheck all checkboxes first
-                all_cbs = page.locator("tr[data-idx] input[type='checkbox']")
+                edit_container = get_active_edit_container(page)
+                
+                # Uncheck all checkboxes in active edit container
+                all_cbs = edit_container.locator("input[type='checkbox']")
                 for i in range(all_cbs.count()):
                     try:
                         cb = all_cbs.nth(i)
@@ -388,11 +395,12 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                     except Exception:
                         pass
                 
-                # Target checkboxes directly by row data-idx
-                row_a = page.locator(f"tr[data-idx='{slot_a['row_idx']}']")
+                # Target checkboxes strictly inside active container's rows
+                edit_rows = edit_container.locator("tbody tr, tr[data-idx]")
+                row_a = edit_rows.nth(slot_a['row_idx'])
                 cb_a = row_a.locator("input[type='checkbox']").nth(slot_a['col_idx'])
                 
-                row_b = page.locator(f"tr[data-idx='{slot_b['row_idx']}']")
+                row_b = edit_rows.nth(slot_b['row_idx'])
                 cb_b = row_b.locator("input[type='checkbox']").nth(slot_b['col_idx'])
                 
                 cb_a.click(force=True)
@@ -401,7 +409,7 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                 time.sleep(0.3)
                 
                 # Click [Switch Teams]
-                switch_btn = page.locator("button:has-text('Switch Teams')")
+                switch_btn = edit_container.locator("button:has-text('Switch Teams')")
                 switch_btn.click()
                 time.sleep(1.2)
             
