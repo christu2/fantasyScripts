@@ -323,18 +323,32 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
             ])
         
         page = context.new_page()
-        print("🌐 Navigating to ESPN Schedule Editor...")
+        print("🌐 Opening ESPN Schedule Editor...")
         page.goto(schedule_url, wait_until="domcontentloaded")
         
-        time.sleep(3)
-        if "login" in page.url.lower() or page.locator("text=Log In").is_visible():
-            print("\n⚠️ Authentication required.")
-            print("👉 Please log into your ESPN account in the opened browser window.")
-            input("Press [Enter] in this terminal once you have logged in and can see the League Manager page...")
-            page.goto(schedule_url, wait_until="domcontentloaded")
-            time.sleep(3)
-            
-        print("✅ Connected to Schedule Editor page!")
+        print("\n" + "="*75)
+        print("👤 ESPN BROWSER LOGIN & VERIFICATION")
+        print("="*75)
+        print("Please check the opened browser window:")
+        print("  1. If prompted, log into your ESPN League Manager account.")
+        print("  2. Ensure the schedule editor with matchup dropdowns is visible.")
+        input("\n👉 Press [Enter] here once the Schedule Editor page is loaded in the browser...")
+        
+        # Verify page elements
+        time.sleep(1)
+        while True:
+            all_selects = page.locator("select").count()
+            if all_selects >= 16:  # 8 games * 2 teams = 16 dropdowns per week
+                print(f"✅ Verified: Found {all_selects} dropdown selectors on page!")
+                break
+            else:
+                print(f"⚠️ Found {all_selects} dropdowns on current page. (Expecting at least 16 for 8 games).")
+                print("Please make sure you are on the LM Tools ➔ Edit Schedule page in the browser.")
+                retry = input("Press [Enter] to re-check the page, or 'q' to quit: ").strip().lower()
+                if retry == 'q':
+                    browser.close()
+                    sys.exit(0)
+                time.sleep(1)
         
         weeks = sorted(schedule_by_week.keys())
         for week_num in weeks:
