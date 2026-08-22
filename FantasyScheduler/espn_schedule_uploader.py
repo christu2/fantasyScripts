@@ -57,22 +57,22 @@ except ImportError:
 
 # Known aliases mapping script shorthand names to real 2026 owner names & team names
 CUSTOM_OWNER_ALIASES = {
+    "DTM":     ["Daniel Kruszewski", "Kruszewski", "Dynasty Destroyers"],
+    "Thomas":  ["Tommy Ehrlich", "Tommy", "Tom Ehrlich", "The Ehrly Birds", "Ehrly", "Ehrlich"],
+    "Nick":    ["Nick Christus", "Christus", "Mykonos Minotaurs", "Minotaurs"],
+    "Blake":   ["Blake Whitehouse", "Whitehouse", "Block O", "O Block"],
+    "Nael":    ["Nael Ahmed", "Ahmed", "NMAfia"],
+    "Saagar":  ["Saagar Gupta", "Saagar", "Ayush Gupta", "King Gupta"],
+    "Abe":     ["Abe Thomas", "Abe", "Crashee Bandicoot", "Crashee"],
     "Nasties": ["Nitesh Patel", "Nitesh", "Big Nasties", "Nasties"],
-    "Shooter": ["Alex Kite", "Alex", "Evan Hagedorn", "Send Da Trade", "Shooter"],
-    "DTM":     ["Daniel Kruszewski", "Daniel", "Dan Kruszewski", "Dynasty Destroyers", "DTM"],
-    "AMO":     ["Adam Olen", "Adam", "Green and Golden", "AMO"],
-    "Thomas":  ["Tommy Ehrlich", "Tommy", "Tom Ehrlich", "The Ehrly Birds", "Thomas"],
-    "Nick":    ["Nick Christus", "Nick", "Mykonos Minotaurs"],
-    "Blake":   ["Blake Whitehouse", "Blake", "Block O", "O Block"],
-    "Nael":    ["Nael Ahmed", "Nael", "NMAfia"],
-    "Saagar":  ["Saagar Gupta", "Saagar", "Ayush Gupta", "King Gupta's Army"],
-    "Abe":     ["Abe Thomas", "Abe", "Crashee Bandicoot"],
-    "Lukose":  ["Shawn Lukose", "Lukose", "Nilgiri Tahrs"],
-    "Rej":     ["rej hoxha", "rej", "hoxha", "Steve Bartman", "Rej"],
-    "Samran":  ["Samran Mirza", "Samran", "Mirza", "De'von Intervention"],
-    "Dino":    ["Dino Davros", "Dino", "Davros", "Taliban Gang Mujahideen"],
-    "Sydney":  ["Sydney Miller", "Sydney", "30p Chance"],
-    "Thor":    ["Shawn Ullenbrauck", "Ullenbrauck", "Pat N' Pending", "Thor"],
+    "Lukose":  ["Shawn Lukose", "Lukose", "Nilgiri Tahrs", "Tahrs"],
+    "Rej":     ["rej hoxha", "hoxha", "Steve Bartman", "Bartman"],
+    "Samran":  ["Samran Mirza", "Samran", "Mirza", "De'von Intervention", "Intervention"],
+    "Dino":    ["Dino Davros", "Dino", "Davros", "Taliban Gang", "Mujahideen"],
+    "AMO":     ["Adam Olen", "Adam", "Olen", "Green and Golden"],
+    "Shooter": ["Alex Kite", "Alex", "Evan Hagedorn", "Send Da Trade"],
+    "Sydney":  ["Sydney Miller", "Sydney", "30p Chance", "Already Winning"],
+    "Thor":    ["Shawn Ullenbrauck", "Ullenbrauck", "Pat N' Pending"],
 }
 
 def get_espn_data(league_id: str, season: str, espn_s2: str, swid: str):
