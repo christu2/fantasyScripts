@@ -207,28 +207,41 @@ def generate_preview_report(target_week: int, matchups: list, h2h: dict, career_
         lines.append(f"### 🥊 Game {idx+1}: {a_team} ({a_owner}) @ {h_team} ({h_owner})")
         lines.append(f"**Matchup Type:** `{m_type}` | **Divisions:** {m['away_info']['division']} vs {m['home_info']['division']}\n")
         
+        narrative = ""
         if total_meetings == 0:
             lines.append(f"* 📜 **All-Time Series:** `First-Ever Meeting` (0-0)")
-            lines.append(f"* 🔮 **Storyline:** A brand-new chapter in BFL history! {a_owner} and {h_owner} meet for the very first time in franchise history.")
+            narrative = f"🆕 Inaugural Franchise Showdown! {a_owner} and {h_owner} meet for the very first time in BFL history."
+            lines.append(f"* 🔮 **Storyline:** {narrative}")
         else:
             leader = a_owner if a_wins > h_wins else (h_owner if h_wins > a_wins else 'TIED')
             leader_str = f"**{leader} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if leader != 'TIED' else "**Series Tied 5-5**"
-            lines.append(f"* 📜 **All-Time Series:** {leader_str} across **{total_meetings} meetings** ({a_owner} {a_wins}W - {h_wins}W {h_owner})")
+            reg_games = [g for g in history if g.get('week', 0) <= 14]
+            post_games = [g for g in history if g.get('week', 0) > 14]
+            breakdown_str = f" ({len(reg_games)} Reg Season" + (f", {len(post_games)} Playoff" if post_games else "") + ")"
+            lines.append(f"* 📜 **All-Time Series:** {leader_str} across **{total_meetings} meetings** ({a_owner} {a_wins}W - {h_wins}W {h_owner}){breakdown_str}")
             
             last_game = sorted(history, key=lambda x: (x['year'], x['week']))[-1]
             lines.append(f"* ⏪ **Last Meeting:** {last_game['year']} Week {last_game['week']} — **{last_game['winner']}** won **{max(last_game['away_score'], last_game['home_score']):.2f} - {min(last_game['away_score'], last_game['home_score']):.2f}** `[Margin: {last_game['margin']:.2f} pts]`")
             
-            # Special narrative callouts
+            # Matchup specific narratives
             if pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
-                lines.append(f"* ⚔️ **Narrative:** 👑 *THE BATTLE OF THE SHAWNS VIII*. Thor leads the lifetime series 5-3, but Lukose looks to pull within one game.")
+                narrative = "👑 THE BATTLE OF THE SHAWNS VIII. Thor leads 5-3, but Lukose looks to pull within one game."
             elif pair == ('Adam Olen', 'Samran Mirza'):
-                lines.append(f"* ⚔️ **Narrative:** 🔥 *14th Meeting in League History*. Samran leads 7-6 in the most contested active rivalry in the BFL. AMO took the last meeting in 2025 by just 1.04 points!")
+                narrative = "🔥 14th Meeting in League History! Samran leads 7-6 in the BFL's most contested rivalry. AMO won in 2025 by 1.04 pts!"
             elif pair == ('Dino Davros', 'rej hoxha'):
-                lines.append(f"* ⚔️ **Narrative:** ⚖️ *The Deadlock*. 10 previous meetings, exactly 5 wins each. In their last clash, Rej clipped Dino by 0.38 points!")
+                narrative = "⚖️ The Deadlock. Exactly 5 wins each in 10 meetings. Rej won their last clash by 0.38 points!"
             elif pair == ('Tommy Ehrlich', 'Nick Christus'):
-                lines.append(f"* ⚔️ **Narrative:** 🎯 *Division Showdown*. Nick commands a 6-3 series lead, but Tommy won their last meeting in Week 16 by 0.70 points.")
+                narrative = "🎯 North Division Rivalry. Nick leads 6-3, but Tommy won their last meeting in Week 16 by 0.70 points."
             elif pair == ('Abe Thomas', 'Saagar Gupta'):
-                lines.append(f"* ⚔️ **Narrative:** 🌴 *South Division Grudge Match*. Abe holds a 6-4 series lead over Saagar after blowing out King Gupta's Army in Week 1 last season.")
+                narrative = "🌴 South Division Grudge Match. Abe holds a 6-4 lead over Saagar after a Week 1 blowout last season."
+            elif pair == ('Blake Whitehouse', 'Nael Ahmed'):
+                narrative = "⚔️ Cross-Division Clash. Nael holds a 4-3 edge, but Blake won their last meeting in 2025 by 16.8 pts."
+            elif pair == ('Alex Kite', 'Sydney Miller'):
+                narrative = "💥 West Division Showdown. Sydney holds a tight 5-4 lead over Alex after winning their last meeting by 2.0 pts."
+            else:
+                narrative = f"{leader} holds the lifetime advantage heading into Week 1."
+                
+            lines.append(f"* ⚔️ **Narrative:** {narrative}")
                 
         lines.append("")
         
@@ -237,14 +250,15 @@ def generate_preview_report(target_week: int, matchups: list, h2h: dict, career_
             'away': f"{a_team} ({a_owner})",
             'home': f"{h_team} ({h_owner})",
             'series': f"{a_owner} {a_wins}-{h_wins} {h_owner}" if total_meetings > 0 else "First Meeting",
-            'type': m_type
+            'type': m_type,
+            'narrative': narrative
         })
         
     lines.append("---\n## 📋 WEEK 1 MATCHUP MATRIX\n")
-    lines.append("| Game | Away Team | Home Team | All-Time Series Record | Matchup Type |")
-    lines.append("|:---:|:---|:---|:---:|:---:|")
+    lines.append("| Game | Away Team | Home Team | All-Time Series Record | Matchup Type | Narrative |")
+    lines.append("|:---:|:---|:---|:---:|:---:|:---|")
     for s in matchup_summaries:
-        lines.append(f"| #{s['game_num']} | {s['away']} | {s['home']} | **{s['series']}** | {s['type']} |")
+        lines.append(f"| #{s['game_num']} | {s['away']} | {s['home']} | **{s['series']}** | {s['type']} | {s['narrative']} |")
         
     lines.append("\n---\n💡 *Generated by BFL Pre-Season Analytics Engine. Ready for Discord & Facebook broadcasting.*")
     return "\n".join(lines), matchup_summaries
@@ -259,7 +273,7 @@ def post_preview_to_discord(webhook_url: str, summaries: list, week_num: int = 1
     for s in summaries:
         fields.append({
             "name": f"Game #{s['game_num']}: {s['away']} @ {s['home']}",
-            "value": f"📜 **Lifetime Series:** `{s['series']}`\n🏷️ **Type:** `{s['type']}`",
+            "value": f"📜 **Lifetime Series:** `{s['series']}` (`{s['type']}`)\n⚔️ **Storyline:** {s['narrative']}",
             "inline": False
         })
         
