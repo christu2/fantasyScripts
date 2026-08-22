@@ -163,8 +163,8 @@ for team1, team2 in rivals:
     model.Add(matches[team1_idx][team2_idx][rivalry_week] + matches[team2_idx][team1_idx][rivalry_week] == 1)
 
 # Constraint 7: Minimum separation between games (division teams only)
-# Division teams that play twice should have at least 3 weeks between games
-separation_weeks = 3
+# Division teams that play twice should have at least 4 weeks between games (1 month real-time gap)
+separation_weeks = 4
 for div_teams in teams_by_div.values():
     div_indices = [idx[team] for team in div_teams]
     for i in range(len(div_indices)):
@@ -275,6 +275,37 @@ for i in range(T):
         
         # At most 3 away games in any 4 consecutive weeks
         model.Add(sum(away_games_in_4_weeks) <= 3)
+
+# Constraint 13: Prevent late-season division congestion (Weeks 11, 12, 13)
+# Max 5 division games across the league per week in the stretch run
+stretch_weeks = [10, 11, 12]  # weeks 11, 12, 13 (0-indexed)
+for w in stretch_weeks:
+    div_games_in_week = []
+    for div_teams in teams_by_div.values():
+        div_indices = [idx[team] for team in div_teams]
+        for i in range(len(div_indices)):
+            for j in range(i + 1, len(div_indices)):
+                team_i, team_j = div_indices[i], div_indices[j]
+                div_games_in_week.extend([matches[team_i][team_j][w], matches[team_j][team_i][w]])
+    model.Add(sum(div_games_in_week) <= 5)
+
+# Constraint 14: Strict 2-and-2 cross-division balance
+# Each team plays exactly 2 games vs Non-Opposite Div A and 2 games vs Non-Opposite Div B
+for div, non_opp_divs in [
+    ("North", ["East", "West"]),
+    ("South", ["East", "West"]),
+    ("East", ["North", "South"]),
+    ("West", ["North", "South"]),
+]:
+    for team in teams_by_div[div]:
+        t_idx = idx[team]
+        for non_opp_div in non_opp_divs:
+            games_vs_div = []
+            for opp_team in teams_by_div[non_opp_div]:
+                opp_idx = idx[opp_team]
+                for w in range(W):
+                    games_vs_div.extend([matches[t_idx][opp_idx][w], matches[opp_idx][t_idx][w]])
+            model.Add(sum(games_vs_div) == 2)
 
 print("Solving with OR-Tools...")
 
@@ -468,7 +499,7 @@ if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
             print(f"  🎉 Perfect divisional home/away balance in {div}!")
 
     # Check division game separation  
-    print(f"\n📅 Division Game Separation (min 3 weeks):")
+    print(f"\n📅 Division Game Separation (min 4 weeks):")
     for div, div_teams in teams_by_div.items():
         print(f"\n{div} Division:")
         for i in range(4):
@@ -481,7 +512,7 @@ if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
                 game_weeks.sort()
                 if len(game_weeks) == 2:
                     separation = abs(game_weeks[1] - game_weeks[0])
-                    status_check = "✅" if separation >= 3 else "❌"
+                    status_check = "✅" if separation >= 4 else "❌"
                     print(f"  {team1:8} vs {team2:8}: Weeks {game_weeks[0]:2}, {game_weeks[1]:2} (gap: {separation}) {status_check}")
 
     # Check consecutive division games constraint (max 2 in a row)
