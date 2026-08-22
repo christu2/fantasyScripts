@@ -283,7 +283,7 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
             print("="*75)
             
             # 1. Click the [Edit] button corresponding to Week {week_num}
-            edit_btn = page.locator(f"xpath=//*[text()='NFL Week {week_num}' or contains(text(), 'NFL Week {week_num}')]/following::button[contains(text(), 'Edit') or has-text('Edit')][1]")
+            edit_btn = page.locator(f"xpath=//*[contains(text(), 'NFL Week {week_num}') or contains(text(), 'Week {week_num}')]/following::button[contains(., 'Edit')][1]")
             
             if not edit_btn.is_visible():
                 edit_btn = page.locator(f"xpath=//div[contains(@class, 'Schedule')]//*[contains(text(), 'Week {week_num}')]//ancestor::*[.//button[contains(., 'Edit')]][1]//button[contains(., 'Edit')]")
