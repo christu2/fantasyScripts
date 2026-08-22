@@ -276,16 +276,6 @@ for i in range(T):
         # At most 3 away games in any 4 consecutive weeks
         model.Add(sum(away_games_in_4_weeks) <= 3)
 
-# Randomized objective: assign small random weights to each matchup variable
-# This guides the solver to a unique, varied schedule structure on every run
-random_objective = []
-for i in range(T):
-    for j in range(T):
-        if i != j:
-            for w in range(W):
-                random_objective.append(matches[i][j][w] * random.randint(-100, 100))
-model.Maximize(sum(random_objective))
-
 print("Solving with OR-Tools...")
 
 # Create solver and solve

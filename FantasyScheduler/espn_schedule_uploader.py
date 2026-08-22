@@ -2,7 +2,7 @@
 """
 ESPN Fantasy Football Schedule Uploader
 Automates entering a 14-week schedule from schedule_by_week.csv into ESPN Fantasy Football LM Tools.
-Supports automatic authentication via .env cookies or interactive browser login.
+Supports division-aware owner matching, interactive mapping confirmation, and Playwright browser automation.
 """
 
 import os
@@ -37,9 +37,17 @@ ESPN_S2 = os.getenv("ESPN_S2", "")
 ESPN_SWID = os.getenv("ESPN_SWID", "")
 SEASON_YEAR = os.getenv("SEASON_YEAR", "2025")
 
-def get_espn_teams(league_id: str, season: str, espn_s2: str, swid: str):
+# Fallback division definition from scheduler
+DEFAULT_DIVISIONS = {
+    "North": ["DTM", "Thomas", "Nick", "Blake"],
+    "South": ["Nael", "Saagar", "Abe", "Nasties"],
+    "East":  ["Lukose", "Rej", "Samran", "Dino"],
+    "West":  ["AMO", "Shooter", "Sydney", "Thor"],
+}
+
+def get_espn_data(league_id: str, season: str, espn_s2: str, swid: str):
     """
-    Fetch current teams and owners from ESPN API to aid in matching names.
+    Fetch current teams, owners, and division setup from ESPN API.
     """
     url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league_id}?view=mTeam&view=mSettings&view=mMembers"
     cookies = {}
@@ -50,24 +58,51 @@ def get_espn_teams(league_id: str, season: str, espn_s2: str, swid: str):
         resp = requests.get(url, cookies=cookies, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
-            members = {m['id']: m.get('displayName', m.get('firstName', '') + ' ' + m.get('lastName', '')).strip() 
-                       for m in data.get('members', [])}
+            
+            # Map division IDs to names
+            divisions = {}
+            for d in data.get('settings', {}).get('scheduleSettings', {}).get('divisions', []):
+                divisions[d['id']] = d.get('name', f"Division {d['id']}")
+            
+            # Map owner IDs to owner full names and usernames
+            members = {}
+            for m in data.get('members', []):
+                disp = m.get('displayName', '')
+                first = m.get('firstName', '').strip()
+                last = m.get('lastName', '').strip()
+                full = f"{first} {last}".strip()
+                name = full if full else disp
+                members[m['id']] = {
+                    'name': name,
+                    'displayName': disp,
+                    'firstName': first,
+                    'lastName': last
+                }
+            
             teams = []
             for t in data.get('teams', []):
                 t_name = f"{t.get('location', '')} {t.get('nickname', '')}".strip()
                 t_abbrev = t.get('abbrev', '')
                 primary_owner_id = t.get('primaryOwner') or (t.get('owners', [None])[0])
-                owner_name = members.get(primary_owner_id, "Unknown")
+                owner_info = members.get(primary_owner_id, {'name': 'Unknown', 'displayName': '', 'firstName': '', 'lastName': ''})
+                div_id = t.get('divisionId', 0)
+                div_name = divisions.get(div_id, f"Division {div_id}")
+                
                 teams.append({
                     'id': t['id'],
                     'name': t_name,
                     'abbrev': t_abbrev,
-                    'owner': owner_name
+                    'division_id': div_id,
+                    'division_name': div_name,
+                    'owner': owner_info['name'],
+                    'owner_display': owner_info['displayName'],
+                    'owner_first': owner_info['firstName'],
+                    'owner_last': owner_info['lastName']
                 })
-            return teams
+            return teams, divisions
     except Exception as e:
-        print(f"⚠️ Could not automatically fetch teams from ESPN API: {e}")
-    return []
+        print(f"⚠️ Could not automatically fetch league data from ESPN API: {e}")
+    return [], {}
 
 def load_schedule_csv(csv_path: str):
     """Load and group matchups by week from schedule_by_week.csv."""
@@ -88,54 +123,131 @@ def load_schedule_csv(csv_path: str):
             })
     return schedule_by_week
 
-def build_team_mapping(csv_teams, espn_teams):
+def build_team_mapping(csv_teams, teams_by_div, espn_teams, cache_file="team_mapping.json"):
     """
-    Create a mapping from CSV team names (e.g. 'DTM', 'Nick') to ESPN dropdown team names.
+    Create and validate mapping from script names to ESPN teams using Division & Owner Name matching.
     """
+    mapping_path = Path(__file__).resolve().parent / cache_file
+    if mapping_path.exists():
+        try:
+            with open(mapping_path, 'r') as f:
+                saved_mapping = json.load(f)
+            print(f"\n📂 Found saved team mapping in {cache_file}.")
+            use_saved = input("Do you want to use the saved mapping? (Y/n): ").strip().lower()
+            if use_saved != 'n':
+                return saved_mapping
+        except Exception:
+            pass
+
     mapping = {}
-    print("\n" + "="*60)
-    print("📋 TEAM NAME MATCHING")
-    print("="*60)
+    print("\n" + "="*70)
+    print("📋 DIVISION & OWNER NAME VALIDATION")
+    print("="*70)
     
-    if espn_teams:
-        print("\nESPN League Teams Found:")
-        for t in espn_teams:
-            print(f"  • ID {t['id']:2d}: {t['name']} (Abbr: {t['abbrev']}, Owner: {t['owner']})")
-        print("\nMatching CSV names to ESPN teams...")
-        
-        unmatched = []
+    if not espn_teams:
+        print("⚠️ No ESPN teams retrieved from API. Defaulting to exact names.")
         for code in csv_teams:
-            matched = False
+            mapping[code] = code
+        return mapping
+
+    # Build division lookup for CSV teams
+    csv_team_div = {}
+    for div, members in teams_by_div.items():
+        for m in members:
+            csv_team_div[m] = div
+
+    unmatched_csv_by_div = {div: [] for div in teams_by_div}
+    unmatched_espn_by_div = {div: [] for div in teams_by_div}
+
+    # Group ESPN teams by division matching
+    for espn_t in espn_teams:
+        div_name = espn_t['division_name']
+        # Find which division key matches
+        matched_div_key = next((d for d in teams_by_div if d.lower() in div_name.lower()), None)
+        if matched_div_key:
+            unmatched_espn_by_div[matched_div_key].append(espn_t)
+
+    # 1. Match within each division against Owner Names
+    for div, div_members in teams_by_div.items():
+        espn_div_teams = unmatched_espn_by_div.get(div, [])
+        for code in div_members:
             code_lower = code.lower()
-            for t in espn_teams:
-                if (code_lower in t['name'].lower() or 
-                    code_lower in t['abbrev'].lower() or 
-                    code_lower in t['owner'].lower()):
-                    mapping[code] = t['name']
-                    print(f"  ✅ Matched '{code}' ➔ '{t['name']}' (Owner: {t['owner']})")
-                    matched = True
+            matched_espn = None
+            
+            for t in espn_div_teams:
+                # Primary search against owner first name, full name, or display name
+                if (code_lower in t['owner_first'].lower() or 
+                    code_lower in t['owner'].lower() or 
+                    code_lower in t['owner_display'].lower() or
+                    code_lower in t['abbrev'].lower() or
+                    code_lower in t['name'].lower()):
+                    matched_espn = t
                     break
-            if not matched:
-                unmatched.append(code)
-        
-        if unmatched:
-            print(f"\n⚠️ Could not automatically match {len(unmatched)} teams: {unmatched}")
-            for code in unmatched:
-                print(f"\nSelect ESPN team for CSV team '{code}':")
-                for idx, t in enumerate(espn_teams):
-                    print(f"  [{idx+1}] {t['name']} (Owner: {t['owner']})")
+            
+            if matched_espn:
+                mapping[code] = matched_espn['name']
+                espn_div_teams.remove(matched_espn)
+            else:
+                unmatched_csv_by_div[div].append(code)
+
+    # 2. Handle manual clarification for unmatched teams per division (e.g. Nasties)
+    for div, codes in unmatched_csv_by_div.items():
+        remaining_espn = unmatched_espn_by_div.get(div, [])
+        for code in codes:
+            print(f"\n❓ Manual match needed for '{code}' in the [{div}] Division:")
+            if remaining_espn:
+                for idx, t in enumerate(remaining_espn):
+                    print(f"  [{idx+1}] Owner: {t['owner']} ({t['owner_display']}) ➔ Team: '{t['name']}'")
                 while True:
                     try:
-                        choice = int(input(f"Enter number (1-{len(espn_teams)}): "))
+                        choice = int(input(f"Select ESPN team for '{code}' (1-{len(remaining_espn)}): "))
+                        if 1 <= choice <= len(remaining_espn):
+                            selected = remaining_espn.pop(choice-1)
+                            mapping[code] = selected['name']
+                            break
+                    except ValueError:
+                        pass
+            else:
+                # Fallback list all ESPN teams
+                for idx, t in enumerate(espn_teams):
+                    print(f"  [{idx+1}] [{t['division_name']}] Owner: {t['owner']} ➔ Team: '{t['name']}'")
+                while True:
+                    try:
+                        choice = int(input(f"Select ESPN team for '{code}' (1-{len(espn_teams)}): "))
                         if 1 <= choice <= len(espn_teams):
                             mapping[code] = espn_teams[choice-1]['name']
                             break
                     except ValueError:
                         pass
-    else:
-        for code in csv_teams:
-            mapping[code] = code
-            
+
+    # 3. Present full validation table for confirmation
+    print("\n" + "="*75)
+    print("📊 CONFIRM TEAM & OWNER MAPPINGS BEFORE PROCEEDING")
+    print("="*75)
+    print(f"{'Division':<10} | {'Script Name':<12} | {'ESPN Owner':<20} | {'ESPN Team Name':<25}")
+    print("-" * 75)
+    
+    for div, members in teams_by_div.items():
+        for code in members:
+            espn_team_name = mapping.get(code, "MISSING")
+            espn_info = next((t for t in espn_teams if t['name'] == espn_team_name), None)
+            owner_str = espn_info['owner'] if espn_info else "Unknown"
+            print(f"{div:<10} | {code:<12} | {owner_str:<20} | {espn_team_name:<25}")
+    print("-" * 75)
+
+    confirm = input("\nDoes this mapping look 100% correct? (Y/n): ").strip().lower()
+    if confirm == 'n':
+        print("Aborting. Please check names and re-run.")
+        sys.exit(0)
+
+    # Save mapping for reuse
+    try:
+        with open(mapping_path, 'w') as f:
+            json.dump(mapping, f, indent=2)
+        print(f"💾 Mapping saved to {cache_file} for future runs.")
+    except Exception:
+        pass
+
     return mapping
 
 def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_mapping: dict, dry_run: bool = False):
@@ -144,9 +256,9 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
     """
     schedule_url = f"https://fantasy.espn.com/football/tools/schedulesettings?leagueId={league_id}&seasonId={season}"
     
-    print("\n" + "="*60)
+    print("\n" + "="*70)
     print("🚀 LAUNCHING BROWSER AUTOMATION")
-    print("="*60)
+    print("="*70)
     print(f"Target URL: {schedule_url}")
     
     with sync_playwright() as p:
@@ -176,8 +288,9 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
         
         weeks = sorted(schedule_by_week.keys())
         for week_num in weeks:
-            print(f"\n📅 Processing Week {week_num} ({len(schedule_by_week[week_num])} games)...")
+            print(f"\n📅 Setting Week {week_num} ({len(schedule_by_week[week_num])} matchups)...")
             
+            # Select the week tab or dropdown on ESPN if present
             week_selector = page.locator("select[name='matchupPeriodId'], select#matchupPeriodId, .week-filter-select")
             if week_selector.is_visible():
                 week_selector.select_option(value=str(week_num))
@@ -221,7 +334,7 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                                 row_selects.nth(1).select_option(label=home_name)
             
             if dry_run:
-                print(f"  [DRY RUN] Week {week_num} previewed (no changes saved).")
+                print(f"  [DRY RUN] Week {week_num} previewed.")
             else:
                 save_button = page.locator("button:has-text('Save'), button:has-text('Save Changes'), button.btn-save")
                 if save_button.is_visible() and save_button.is_enabled():
@@ -229,9 +342,9 @@ def upload_schedule(league_id: str, season: str, schedule_by_week: dict, team_ma
                     save_button.click()
                     time.sleep(2)
         
-        print("\n" + "="*60)
+        print("\n" + "="*70)
         print("🎉 SCHEDULE UPLOAD COMPLETE!")
-        print("="*60)
+        print("="*70)
         print("Please review the schedule in the browser window.")
         input("Press [Enter] to close browser...")
         browser.close()
@@ -264,8 +377,8 @@ def main():
     
     print(f"Loaded schedule with {len(schedule_by_week)} weeks and {len(all_csv_teams)} teams.")
     
-    espn_teams = get_espn_teams(league_id, args.season, ESPN_S2, ESPN_SWID)
-    team_mapping = build_team_mapping(all_csv_teams, espn_teams)
+    espn_teams, divisions = get_espn_data(league_id, args.season, ESPN_S2, ESPN_SWID)
+    team_mapping = build_team_mapping(all_csv_teams, DEFAULT_DIVISIONS, espn_teams)
     
     upload_schedule(league_id, args.season, schedule_by_week, team_mapping, dry_run=args.dry_run)
 
