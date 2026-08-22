@@ -3,11 +3,12 @@
 BFL Thursday Morning Matchup & Starting Lineup Preview
 ======================================================
 Runs every Thursday morning before TNF to provide an in-depth pre-game breakdown:
+- Dynamic In-Season Standings, Current Records (W-L), and Division Ranks
+- Matchup Stakes & Importance (1st Place Showdowns, Playoff Bubble Battles)
 - Active Starting Lineup Comparison (QB, RB, WR, TE, FLEX, K, D/ST)
-- Individual & Positional Projections (QB Battle, RB Advantage, WR Depth)
-- Questionable / Injury Watch
-- Simulated Vegas Betting Lines (Spread, Over/Under, Win Probability)
-- 18+ Year Lifetime Head-to-Head & Championship Context
+- Positional Corps Advantages (RB Corps, WR Depth, QB Duels)
+- Simulated Vegas Betting Lines (Spread, Over/Under)
+- 18+ Year Lifetime Head-to-Head Context (2008-2026)
 - Discord Webhook Embeds & Markdown Report
 """
 
@@ -56,6 +57,107 @@ def fetch_lineup_boxscores(league_id: str, season: str, week_num: int, s2: str, 
         print(f"⚠️ Could not fetch live ESPN rosters: {e}")
     return None
 
+def compute_in_season_standings(espn_data: dict, target_week: int):
+    """
+    Computes current win-loss record, division rank, and points for entering target_week.
+    """
+    owner_records = {info['owner']: {'wins': 0, 'losses': 0, 'pf': 0.0, 'division': info['division']} 
+                     for code, info in TEAM_DETAILS_2026.items()}
+    
+    if not espn_data or target_week <= 1:
+        return {info['owner']: {'record': '0-0', 'rank_str': f"{info['division']} Division", 'wins': 0, 'losses': 0, 'div_rank': 1, 'pf': 0.0}
+                for code, info in TEAM_DETAILS_2026.items()}
+                
+    members_map = {}
+    for m in espn_data.get('members', []):
+        f = m.get('firstName', '').strip()
+        l = m.get('lastName', '').strip()
+        full = f"{f} {l}".strip()
+        disp = m.get('displayName', '').strip()
+        members_map[m['id']] = standardize_name(full if full else disp)
+        
+    teams_map = {}
+    for t in espn_data.get('teams', []):
+        tid = t['id']
+        oids = t.get('owners', []) or ([t['primaryOwner']] if t.get('primaryOwner') else [])
+        for oid in oids:
+            if oid in members_map:
+                teams_map[tid] = members_map[oid]
+                break
+        if tid not in teams_map:
+            tname = f"{t.get('location', '')} {t.get('nickname', '')}".strip()
+            teams_map[tid] = standardize_name(tname)
+            
+    # Process completed weeks 1 to target_week - 1
+    for g in espn_data.get('schedule', []):
+        w = g.get('matchupPeriodId', 0)
+        if 1 <= w < target_week:
+            away = g.get('away', {})
+            home = g.get('home', {})
+            a_pts = away.get('totalPoints', 0.0)
+            h_pts = home.get('totalPoints', 0.0)
+            if a_pts > 0 and h_pts > 0:
+                a_own = teams_map.get(away.get('teamId'))
+                h_own = teams_map.get(home.get('teamId'))
+                if a_own in owner_records:
+                    if a_pts > h_pts:
+                        owner_records[a_own]['wins'] += 1
+                    else:
+                        owner_records[a_own]['losses'] += 1
+                    owner_records[a_own]['pf'] += a_pts
+                if h_own in owner_records:
+                    if h_pts > a_pts:
+                        owner_records[h_own]['wins'] += 1
+                    else:
+                        owner_records[h_own]['losses'] += 1
+                    owner_records[h_own]['pf'] += h_pts
+
+    # Calculate division ranks
+    div_groups = {'North': [], 'South': [], 'East': [], 'West': []}
+    for o, stat in owner_records.items():
+        div = stat['division']
+        if div in div_groups:
+            div_groups[div].append((o, stat['wins'], stat['losses'], stat['pf']))
+            
+    standings_output = {}
+    for div, group in div_groups.items():
+        group.sort(key=lambda x: (x[1], x[3]), reverse=True)
+        for rank, (o, w, l, pf) in enumerate(group, 1):
+            suffix = {1: 'st', 2: 'nd', 3: 'rd', 4: 'th'}.get(rank, 'th')
+            standings_output[o] = {
+                'record': f"{w}-{l}",
+                'rank_str': f"{rank}{suffix} in {div}",
+                'div_rank': rank,
+                'wins': w,
+                'losses': l,
+                'pf': round(pf, 2)
+            }
+            
+    return standings_output
+
+def determine_game_stakes(a_stat: dict, h_stat: dict, m_type: str, target_week: int) -> str:
+    """Dynamically calculates the game's importance, stakes, and playoff implications."""
+    if target_week == 1:
+        return "🌴 Division Grudge Match" if m_type == "Division" else "🚀 Season Kickoff Clash"
+        
+    a_w, a_l, a_rank = a_stat['wins'], a_stat['losses'], a_stat['div_rank']
+    h_w, h_l, h_rank = h_stat['wins'], h_stat['losses'], h_stat['div_rank']
+    
+    if m_type == 'Division':
+        if a_rank in [1, 2] and h_rank in [1, 2] and abs(a_w - h_w) <= 1:
+            return "👑 1ST PLACE SHOWDOWN: Winner takes top spot in the division!"
+        elif a_rank in [3, 4] and h_rank in [3, 4]:
+            return "🚨 BASEMENT BRAWL: Crucial battle to climb out of the cellar!"
+        else:
+            return "⚔️ DIVISION CLASH: Critical matchup with divisional tiebreaker weight!"
+    else:
+        if a_w >= (target_week // 2) and h_w >= (target_week // 2):
+            return "💥 CONTENDER SHOWDOWN: Playoff contenders fighting for top overall seeding!"
+        elif abs(a_w - h_w) <= 1:
+            return "🔥 PLAYOFF BUBBLE: High-stakes battle with major postseason implications!"
+        else:
+            return "🏈 CROSS-DIVISION BATTLE"
+
 def parse_team_starting_lineup(roster_entries: list, week_num: int):
     """Parses starters, projections, and injury statuses for a roster."""
     starters = {'QB': [], 'RB': [], 'WR': [], 'TE': [], 'FLEX': [], 'D/ST': [], 'K': []}
@@ -71,7 +173,6 @@ def parse_team_starting_lineup(roster_entries: list, week_num: int):
         pos_id = p.get('defaultPositionId', 0)
         pos_name = POS_MAP.get(pos_id, 'FLEX')
         injury = p.get('injuryStatus', 'ACTIVE')
-        pro_team = p.get('proTeamId', 0)
         
         proj_pts = 0.0
         for s in p.get('stats', []):
@@ -98,19 +199,21 @@ def parse_team_starting_lineup(roster_entries: list, week_num: int):
     return starters, bench, round(total_proj, 2), injuries
 
 def generate_thursday_preview_report(target_week: int, target_season: int, matchups: list, h2h: dict, espn_data: dict):
-    """Generates the comprehensive Thursday Morning Lineup & Vegas Odds report."""
+    """Generates the comprehensive Thursday Morning Lineup, Standings, and Stakes preview."""
     lines = []
     lines.append(f"# 🏈 BFL WEEK {target_week} THURSDAY MATCHUP & STARTING LINEUP PREVIEW ({target_season})")
-    lines.append(f"*Pre-Game Tactical Breakdown, Positional Battles & Simulated Vegas Lines*\n")
+    lines.append(f"*Pre-Game Tactical Breakdown, Positional Battles & Division Stakes*\n")
     lines.append("---")
     lines.append("## 🎙️ THURSDAY COMMISSIONER'S REPORT\n")
-    lines.append(f"Thursday Night Football approaches! Lineups are locked, projections are calculated, and Week {target_week} of the {target_season} BFL season is set for kickoff. Here is your full tactical Tale of the Tape:\n")
+    if target_week == 1:
+        lines.append(f"Thursday Night Football is here! Week 1 of the {target_season} BFL campaign officially begins. Here is your tactical Tale of the Tape:\n")
+    else:
+        lines.append(f"Week {target_week} action is underway! Current standings, division stakes, and tactical lineup battles are set for kickoff:\n")
     lines.append("---\n")
     
     matchup_summaries = []
+    standings = compute_in_season_standings(espn_data, target_week)
     
-    # Map ESPN teams if available
-    espn_matchups_by_pair = {}
     # Map ESPN teams by owner name
     espn_lineups_by_owner = {}
     if espn_data:
@@ -152,7 +255,7 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
     draft_completed = False
     if espn_data:
         total_rostered = sum(len(t.get('roster', {}).get('entries', [])) for t in espn_data.get('teams', []))
-        if total_rostered >= 160:  # 16 teams * at least 10 players
+        if total_rostered >= 160:
             draft_completed = True
 
     for idx, m in enumerate(matchups):
@@ -161,6 +264,10 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
         a_team = m['away_info']['team_name']
         h_team = m['home_info']['team_name']
         m_type = m['type']
+        
+        a_stat = standings.get(a_owner, {'record': '0-0', 'rank_str': m['away_info']['division'], 'div_rank': 1, 'wins': 0, 'losses': 0})
+        h_stat = standings.get(h_owner, {'record': '0-0', 'rank_str': m['home_info']['division'], 'div_rank': 1, 'wins': 0, 'losses': 0})
+        stakes_str = determine_game_stakes(a_stat, h_stat, m_type, target_week)
         
         pair = tuple(sorted([a_owner, h_owner]))
         history = h2h.get(pair, [])
@@ -192,8 +299,9 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
                         a_proj, h_proj = a_p, h_p
                         a_injuries, h_injuries = a_inj, h_inj
         
-        lines.append(f"### 🥊 Game {idx+1}: {a_team} ({a_owner}) @ {h_team} ({h_owner})")
-        lines.append(f"**Division:** {m['away_info']['division']} vs {m['home_info']['division']} | **Type:** `{m_type}`\n")
+        lines.append(f"### 🥊 Game {idx+1}: {a_team} ({a_owner}, {a_stat['record']}) @ {h_team} ({h_owner}, {h_stat['record']})")
+        lines.append(f"**Division Standing:** {a_stat['rank_str']} vs {h_stat['rank_str']} | **Type:** `{m_type}`")
+        lines.append(f"* 🎯 **Matchup Stakes:** `{stakes_str}`\n")
         
         # 1. Vegas Betting Lines
         if has_live_rosters and (a_proj > 0 or h_proj > 0):
@@ -202,12 +310,10 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             total_ou = a_proj + h_proj
             lines.append(f"* 🎰 **Vegas Line:** **{fav} -{spread:.1f}** | **O/U:** `{total_ou:.1f}` | Projections: {a_owner} ({a_proj:.1f}) @ {h_owner} ({h_proj:.1f})")
             
-            # QB Battle
             a_qb = a_starters['QB'][0] if a_starters.get('QB') else {'name': 'TBD', 'proj': 0}
             h_qb = h_starters['QB'][0] if h_starters.get('QB') else {'name': 'TBD', 'proj': 0}
             lines.append(f"* 🏈 **Starting QB Duel:** **{a_qb['name']}** ({a_qb['proj']} pts) vs **{h_qb['name']}** ({h_qb['proj']} pts)")
             
-            # Key Positional Advantage
             a_rb_pts = sum(p['proj'] for p in a_starters.get('RB', []))
             h_rb_pts = sum(p['proj'] for p in h_starters.get('RB', []))
             a_wr_pts = sum(p['proj'] for p in a_starters.get('WR', []))
@@ -223,12 +329,12 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
         else:
             lines.append(f"* 🎰 **Projected Spread:** `Pre-Draft Baseline` (Rosters unlock post-draft)")
             
-        # 2. Historical & Drama Context (Single Clean Line)
+        # 2. Historical Context
         lead_name = a_owner if a_wins > h_wins else h_owner
         lead_str = f"**{lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if a_wins != h_wins else f"**Series Deadlocked {a_wins}-{h_wins}**"
         lines.append(f"* 📜 **18-Year Series:** {lead_str} across **{total_meetings} meetings** (2008–{target_season})")
         
-        # 3. Pure Narrative & Storyline (No Redundant Record Duplication)
+        # 3. Dynamic Narrative
         last_game = sorted(history, key=lambda x: (x['year'], x['week']))[-1] if history else None
         
         if total_meetings == 0:
@@ -258,6 +364,10 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             'game_num': idx+1,
             'away': f"{a_team} ({a_owner})",
             'home': f"{h_team} ({h_owner})",
+            'away_rec': f"{a_owner} ({a_stat['record']})",
+            'home_rec': f"{h_owner} ({h_stat['record']})",
+            'standings': f"{a_stat['rank_str']} @ {h_stat['rank_str']}",
+            'stakes': stakes_str,
             'series': f"{a_owner} {a_wins}-{h_wins} {h_owner}" if total_meetings > 0 else "First Meeting",
             'type': m_type,
             'spread': f"{fav} -{spread:.1f}" if has_live_rosters else "Pre-Draft",
@@ -265,10 +375,10 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
         })
         
     lines.append("---\n## 📋 THURSDAY BETTING BOARD & MATCHUP MATRIX\n")
-    lines.append("| Game | Away Team | Home Team | Projected Spread | 18-Year H2H | Storyline |")
-    lines.append("|:---:|:---|:---|:---:|:---:|:---|")
+    lines.append("| Game | Away Team | Home Team | Standings | Stakes | Spread | 18-Year H2H |")
+    lines.append("|:---:|:---|:---|:---:|:---|:---:|:---:|")
     for s in matchup_summaries:
-        lines.append(f"| #{s['game_num']} | {s['away']} | {s['home']} | `{s['spread']}` | **{s['series']}** | {s['narrative']} |")
+        lines.append(f"| #{s['game_num']} | {s['away_rec']} | {s['home_rec']} | `{s['standings']}` | **{s['stakes']}** | `{s['spread']}` | **{s['series']}** |")
         
     lines.append(f"\n---\n💡 *Generated by BFL Thursday Lineup Intelligence Engine. Broadcasted to Discord.*")
     return "\n".join(lines), matchup_summaries
@@ -283,7 +393,7 @@ def post_thursday_preview_to_discord(webhook_url: str, summaries: list, week_num
     for s in summaries:
         fields.append({
             "name": f"Game #{s['game_num']}: {s['away']} @ {s['home']}",
-            "value": f"🎰 **Spread:** `{s['spread']}` | 📜 **H2H:** `{s['series']}`\n⚔️ **Storyline:** {s['narrative']}",
+            "value": f"📊 **Standings:** `{s['standings']}` | 🎯 **Stakes:** `{s['stakes']}`\n🎰 **Spread:** `{s['spread']}` | 📜 **H2H:** `{s['series']}`\n⚔️ **Storyline:** {s['narrative']}",
             "inline": False
         })
         
@@ -292,7 +402,7 @@ def post_thursday_preview_to_discord(webhook_url: str, summaries: list, week_num
         "avatar_url": "https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png",
         "embeds": [{
             "title": f"🏈 BFL Week {week_num} Thursday Lineup Preview & Vegas Odds ({season})",
-            "description": f"**Pre-Game Tactical Matchup & Lineup Projections**\nTNF is here! Positional battles, simulated spreads, and 18-year historical storylines:",
+            "description": f"**Pre-Game Tactical Matchup, Division Stakes & Lineup Projections**\nTNF is here! Standings, division implications, and 18-year storylines:",
             "color": 0x27ae60,  # Emerald Green
             "fields": fields,
             "footer": {"text": f"Beasts Football League • Thursday Lineup Preview • Week {week_num}"}
