@@ -25,7 +25,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from FantasyRecap.league_preview_generator import TEAM_DETAILS_2026, standardize_name
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
