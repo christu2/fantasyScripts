@@ -81,3 +81,25 @@ Thumbs.db
 *.tmp
 *.temp
 *.log
+
+# Audio, Video, and Large Media Files
+*.mp3
+*.wav
+*.mp4
+*.m4a
+*.png
+*.jpg
+*.jpeg
+
+# AI Models & Checkpoints
+models/
+*.onnx
+*.bin
+
+# Temporary Audio/Video Processing Dirs
+temp_audio*
+temp_video*
+
+# Generated Markdown Recaps & Reports
+FantasyRecap/*.md
+!FantasyRecap/README.md

@@ -21,14 +21,15 @@ of Pardon My Take (PMT):
 import os
 import sys
 import re
-import asyncio
 import subprocess
 import requests
-import edge_tts
+import soundfile as sf
 from pathlib import Path
 from dotenv import load_dotenv
+from kokoro_onnx import Kokoro
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from FantasyRecap.discord_chat_harvester import get_sample_trash_talk_banter
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -37,8 +38,12 @@ if env_path.exists():
 else:
     load_dotenv()
 
-VOICE_HOST1 = 'en-US-ChristopherNeural'       # Chris (Big Cat vibe)
-VOICE_HOST2 = 'en-US-BrianMultilingualNeural' # Dave (PFT vibe)
+# Initialize Kokoro ONNX Engine
+MODEL_PATH = str(Path(__file__).resolve().parent.parent / 'models/kokoro/kokoro-v0_19.onnx')
+VOICES_PATH = str(Path(__file__).resolve().parent.parent / 'models/kokoro/voices-v1.0.bin')
+
+VOICE_CHRIS = 'am_michael'  # Anchor (Casual, natural)
+VOICE_DAVE = 'am_adam'      # Color (Comedic, punchy)
 
 PHONETIC_RULES = [
     (r'\bShawn Lukose\b', 'Luke-ose'),
@@ -126,28 +131,34 @@ def build_hangover_dialogue(season: int = 2025, week_num: int = 1) -> list:
 
     return d
 
-async def produce_hangover_show(season: int = 2025, week_num: int = 1, post_to_discord: bool = True):
+def produce_hangover_show(season: int = 2025, week_num: int = 1, post_to_discord: bool = True):
     print("\n" + "="*75)
     print(f"🎙️ PRODUCING BFL TUESDAY MORNING HANGOVER: WEEK {week_num} ({season})")
     print("="*75)
 
+    print("⚡ Initializing Kokoro ONNX Engine...")
+    kokoro = Kokoro(MODEL_PATH, VOICES_PATH)
+
     dialogue = build_hangover_dialogue(season, week_num)
-    print(f"📝 Script ready: {len(dialogue)} hilarious PMT-style dialogue segments!")
+    print(f"📝 Script ready: {len(dialogue)} dynamic dialogue segments!")
 
     temp_dir = Path(__file__).resolve().parent / "temp_audio_hangover"
     temp_dir.mkdir(exist_ok=True)
 
     audio_files = []
-    print("🎙️ Synthesizing Christopher (Chris) & Brian (Dave) neural voices...")
+    print("🎙️ Synthesizing Kokoro ONNX voices (am_michael & am_adam)...")
 
     for idx, (speaker, raw_text) in enumerate(dialogue):
         clean_text = clean_for_spoken_audio(raw_text)
-        voice = VOICE_HOST1 if speaker == 'CHRIS' else VOICE_HOST2
-        seg_file = str(temp_dir / f"seg_{idx:03d}_{speaker}.mp3")
+        voice = VOICE_CHRIS if speaker == 'CHRIS' else VOICE_DAVE
+        seg_file = str(temp_dir / f"seg_{idx:03d}_{speaker}.wav")
 
-        comm = edge_tts.Communicate(clean_text, voice, rate="+3%", pitch="+0Hz")
-        await comm.save(seg_file)
-        audio_files.append(seg_file)
+        try:
+            samples, sr = kokoro.create(clean_text, voice=voice, speed=1.05, lang='en-us')
+            sf.write(seg_file, samples, sr)
+            audio_files.append(seg_file)
+        except Exception as e:
+            print(f"⚠️ Error synthesizing segment {idx}: {e}")
 
     master_mp3 = str(Path(__file__).resolve().parent / f"bfl_tuesday_morning_hangover_week_{week_num}_{season}.mp3")
     concat_list = temp_dir / "concat.txt"
@@ -156,11 +167,11 @@ async def produce_hangover_show(season: int = 2025, week_num: int = 1, post_to_d
             f.write(f"file '{af}'\n")
 
     print(f"🎵 Stitching master Tuesday Morning Hangover MP3 via ffmpeg -> {master_mp3}...")
-    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", master_mp3]
+    cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c:a", "libmp3lame", "-b:a", "192k", master_mp3]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # Cleanup temp
-    for f in temp_dir.glob("*.mp3"):
+    for f in temp_dir.glob("*.wav"):
         try: f.unlink()
         except: pass
     if concat_list.exists(): concat_list.unlink()
@@ -196,4 +207,4 @@ async def produce_hangover_show(season: int = 2025, week_num: int = 1, post_to_d
     return master_mp3
 
 if __name__ == "__main__":
-    asyncio.run(produce_hangover_show(2025, 1))
+    produce_hangover_show(2025, 1)
