@@ -25,14 +25,14 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
             'accent': (41, 128, 185),
             'items': [
                 {'tag': "SEASON FINALE", 'header': f"BEASTS FOOTBALL LEAGUE • {season} CHAMPIONSHIP", 'desc': "Full 16-Franchise Post-Season Breakdown with Chris & Dave"},
-                {'tag': "CROWNING", 'header': "A New Champion Claims The Jabroni", 'desc': "5.92-point title thriller, 48-point blowouts, and 0.38-point cardiac finishes"},
+                {'tag': "CROWNING", 'header': "A Champion Claims His 3rd Ring", 'desc': "5.92-point title thriller, 48-point blowouts, and 0.38-point cardiac finishes"},
                 {'tag': "18-YR LORE", 'header': "18 Seasons of Rivalry & Heartbreak", 'desc': "Podium bronze medals, consolation carnage, and off-season press conferences"}
             ]
         },
         'dialogue': [
             ('CHRIS', f"Good Tuesday morning everybody! Grab your coffee, pop an Advil, and welcome inside the season finale of the BFL Tuesday Morning Hangover, presented by the BFL Broadcast Network! Week {week_num} of the {season} fantasy football campaign is officially in the history books. Eighteen weeks of blood, sweat, waiver wire panic, and late-night trash-talk have all led to this crowning moment. I'm Chris alongside Dave."),
             ('DAVE', f"Good morning Chris! What an unbelievable, chaotic finale to the {season} season! Commissioner Nick Christus has this eighteen-year-old league operating at maximum intensity. We had an absolute five-point cardiac thriller for the championship, bronze medal podium battles, a zero-point-three-eight point photo finish, thirty-nine point explosions from Bijan Robinson, and a forty-five point demolition from King Derrick Henry!"),
-            ('CHRIS', "The stakes could not have been higher. Eighteen franchises battled through injuries and bad coaching decisions all autumn, but only one manager walks away with the ultimate crown: The Jabroni Trophy. Let's get right into our championship breakdown!")
+            ('CHRIS', "The stakes could not have been higher. Sixteen franchises battled through injuries and bad coaching decisions all autumn, but only one manager walks away with the ultimate crown: The Jabroni Trophy. Let's get right into our championship breakdown!")
         ]
     })
 
@@ -46,15 +46,15 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
             'badge': "CHAMPIONSHIP FINAL",
             'accent': (241, 196, 15),
             'items': [
-                {'tag': "CHAMPION", 'header': "Crashee Bandicoot (Abe Thomas) — 107.08 PTS", 'desc': "Back-to-Back BFL Champion! Claims 2nd career Jabroni Trophy."},
-                {'tag': "RUNNER-UP", 'header': "Dynasty Destroyers (Daniel Kruszewski) — 101.16 PTS", 'desc': "Valiant 101-point effort falls just +5.92 points shy of first title."},
+                {'tag': "CHAMPION", 'header': "Crashee Bandicoot (Abe Thomas) — 107.08 PTS", 'desc': "Captures 3rd Career Title (2011, 2022, 2025) & 3rd Jabroni Trophy!"},
+                {'tag': "RUNNER-UP", 'header': "Dynasty Destroyers (Daniel Kruszewski) — 101.16 PTS", 'desc': "Valiant 101-point effort falls just +5.92 points shy of 2nd title."},
                 {'tag': "STARS", 'header': "Luther Burden III (23.8 pts) & Stefon Diggs (19.1 pts)", 'desc': "Clutch playmaking carries Abe across the finish line."}
             ]
         },
         'dialogue': [
-            ('CHRIS', f"We begin at the pinnacle of fantasy football: The {season} BFL Championship Game for The Jabroni Trophy! Defending champion Abe Thomas and Crashee Bandicoot have done the unthinkable, going back-to-back with a thrilling one hundred and seven point zero eight to one hundred and one point one six victory over Daniel Kruszewski!"),
-            ('DAVE', f"Abe Thomas is your back-to-back BFL Champion! That is pure championship pedigree, Chris. Abe got twenty-three point eight fantasy points from Luther Burden the Third and nineteen from Stefon Diggs to close out the title. Dan put up a valiant one hundred and one points behind Aaron Jones and fifteen from the Giants defense, but fell just five point nine two points short of hoisting his first career Jabroni!"),
-            ('CHRIS', "Going back-to-back in an eighteen-year-old league with sixteen competitive franchises is almost statistically impossible. Abe built a juggernaut and defended the throne against every challenger all season long.")
+            ('CHRIS', f"We begin at the pinnacle of fantasy football: The {season} BFL Championship Game for The Jabroni Trophy! Abe Thomas and Crashee Bandicoot have captured their third career championship, defeating Daniel Kruszewski in a thrilling one hundred and seven point zero eight to one hundred and one point one six battle!"),
+            ('DAVE', f"Abe Thomas is officially a three-time BFL Champion! That is pure championship pedigree across three different decades—winning in 2011, 2022, and now 2025! Abe got twenty-three point eight fantasy points from Luther Burden the Third and nineteen from Stefon Diggs to close out the title. Dan put up a valiant one hundred and one points behind Aaron Jones and fifteen from the Giants defense, but fell just five point nine two points short!"),
+            ('CHRIS', "Abe now ties Commissioner Nick Christus for second place on the all-time championship leaderboard with three rings. He built a juggernaut and closed out the postseason like a true heavyweight champion.")
         ]
     })
 
@@ -74,8 +74,8 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
             ]
         },
         'dialogue': [
-            ('CHRIS', "And Dave, look at Dan's bench! This is going to haunt Dan all winter long. He had Brock Purdy sitting on his pine dropping thirty-six point nine two fantasy points! If Dan starts Purdy in his quarterback slot, he wins the championship by over seventeen points and hoists The Jabroni Trophy. Instead, Abe survives by five points!"),
-            ('DAVE', "Leaving thirty-seven points on your pine in the championship game is the ultimate dagger to the soul, Chris. Dan posted in the league chat saying: 'Thirty-six point nine points on my bench in the title game, I need a drink.' You cannot make that mistake against a champion like Abe. Abe hoists his second career Jabroni Trophy and officially enters the multi-ring royalty club!"),
+            ('CHRIS', "And Dave, look at Dan's bench! This is going to haunt Dan all winter long. He had Brock Purdy sitting on his pine dropping thirty-six point nine two fantasy points! If Dan starts Purdy in his quarterback slot, he wins the championship by over seventeen points and hoists his second career Jabroni Trophy. Instead, Abe survives by five points!"),
+            ('DAVE', "Leaving thirty-seven points on your pine in the championship game is the ultimate dagger to the soul, Chris. Dan posted in the league chat saying: 'Thirty-six point nine points on my bench in the title game, I need a drink.' You cannot make that mistake against a champion like Abe. Abe hoists his third career Jabroni Trophy and joins the elite three-ring pantheon!"),
             ('CHRIS', "Dan had an incredible season leading the league in efficiency, but that one lineup decision will be debated in the group chat until September.")
         ]
     })
@@ -98,7 +98,7 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
         'dialogue': [
             ('CHRIS', "Over in the Third Place Consolation Game for the bronze podium finish, Thor and Pat N' Pending took down four-time champion Shawn Lukose, one hundred and twelve to ninety!"),
             ('DAVE', "Thor was locked in! He got twenty-four point five points from Jacory Croskey-Merritt and nearly twenty from Christian Watson. Lukose got a massive thirty-two point four point performance from second-year quarterback Drake Maye, but the rest of his roster completely flatlined, leaving the four-time GOAT off the podium."),
-            ('CHRIS', "Lukose holds the record with four Jabroni Trophies, but walking away from Championship Sunday in fourth place is going to sting the GOAT all offseason.")
+            ('CHRIS', "Lukose holds the all-time record with four Jabroni Trophies, but walking away from Championship Sunday in fourth place is going to sting the GOAT all offseason.")
         ]
     })
 
@@ -222,14 +222,14 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
             'badge': "PRESS CONFERENCE",
             'accent': (243, 156, 18),
             'items': [
-                {'tag': "CHAMPION", 'header': "Abe Thomas (Back-to-Back Champ):", 'desc': "\"Back-to-back Jabroni Trophies! We built a dynasty. Put some respect on Crashee Bandicoot!\""},
+                {'tag': "3-TIME CHAMP", 'header': "Abe Thomas (3x BFL Champion):", 'desc': "\"3 championships across three decades (2011, 2022, 2025)! Put respect on Crashee Bandicoot!\""},
                 {'tag': "HEARTBREAK", 'header': "Dan Kruszewski (Runner-Up):", 'desc': "\"Leaving 37 points on my bench in the title game stings. We will be back next year.\""},
                 {'tag': "4-TIME GOAT", 'header': "Shawn Lukose (4th Place):", 'desc': "\"Missing the podium is unacceptable. Massive roster overhaul starting tomorrow.\""},
                 {'tag': "DROUGHT", 'header': "Saagar Gupta (8th Place):", 'desc': "\"18 years since 2008... The title drought continues, but 2026 is our year.\""}
             ]
         },
         'dialogue': [
-            ('CHRIS', "Now let's head down to the media press room for the final post-game soundbites of the season. Champion Abe Thomas was showered in champagne and told reporters: 'Going back-to-back in an eighteen-team league with this level of competition proves what we built. The Jabroni Trophy stays in our trophy case!'"),
+            ('CHRIS', "Now let's head down to the media press room for the final post-game soundbites of the season. Three-time champion Abe Thomas was showered in champagne and told reporters: 'Winning three championships across three different decades in this league proves what we built. The Jabroni Trophy stays in our trophy room!'"),
             ('DAVE', "And Dan Kruszewski was holding his head in his hands in the hallway, saying: 'Leaving thirty-seven points on my bench with Brock Purdy in the championship game is going to keep me up at night all offseason, but congratulations to Abe.'"),
             ('CHRIS', "Four-time champion Shawn Lukose was furious about missing the podium, stating: 'Finishing fourth is unacceptable for this franchise. We are holding an eight A M team meeting tomorrow morning to revamp the entire organization.'"),
             ('DAVE', "And Saagar Gupta sighed deeply into the microphone, saying: 'Eighteen years since 2008. The drought continues, but we will be back in 2026 hunting for ring number two.'")
@@ -242,20 +242,20 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
     scenes.append({
         'card': {
             'title': "ALL-TIME BFL TROPHY ROOM",
-            'subtitle': "18 Seasons of Jabroni Trophy Champions",
+            'subtitle': "18 Seasons of Jabroni Trophy Champions (2008-2025)",
             'badge': "HISTORIC DYNASTIES",
             'accent': (241, 196, 15),
             'items': [
-                {'tag': "4 RINGS", 'header': "Shawn Lukose (4 Titles)", 'desc': "All-time league GOAT with 4 Jabroni Trophies."},
-                {'tag': "3 RINGS", 'header': "Commissioner Nick Christus (3 Titles)", 'desc': "North Division powerhouse with 3 championship rings."},
-                {'tag': "2 RINGS", 'header': "Abe Thomas (2 Titles - Back-to-Back!)", 'desc': "Joins multi-ring royalty with consecutive championships."},
-                {'tag': "1 RING", 'header': "Sydney Miller, Saagar Gupta, Shawn Ullenbrauck", 'desc': "Elite champions in 18 seasons of BFL league history."}
+                {'tag': "4 RINGS", 'header': "Shawn Lukose (4 Titles: 2009, 2018, 2021, 2023)", 'desc': "All-time league GOAT with 4 Jabroni Trophies and 7 Super Bowl trips."},
+                {'tag': "3 RINGS", 'header': "Commissioner Nick Christus (3 Titles: 2012, 2015, 2016)", 'desc': "Dominant back-to-back champ & North Division anchor."},
+                {'tag': "3 RINGS", 'header': "Abe Thomas (3 Titles: 2011, 2022, 2025)", 'desc': "Reigning champion joins Nick with 3 titles across 3 decades."},
+                {'tag': "2 RINGS", 'header': "Dino Davros (2 Titles: 2014, 2020)", 'desc': "Won the closest Super Bowl in history (0.08 pt thriller over Rej)."}
             ]
         },
         'dialogue': [
-            ('CHRIS', "With Abe's back-to-back championship victory, let's take a look at the all-time BFL Trophy Room after eighteen legendary seasons."),
-            ('DAVE', "Shawn Lukose still leads the all-time leaderboard with four Jabroni Trophies, followed by Commissioner Nick Christus with three rings. Abe Thomas now officially moves into third place all-time with two back-to-back championships, joining Sydney Miller, Saagar Gupta, and Thor in the champions club!"),
-            ('CHRIS', "Eighteen seasons, dozens of bitter rivalries, and only six managers have ever touched The Jabroni Trophy. The bar for greatness in the BFL has never been higher.")
+            ('CHRIS', "With Abe securing his third career title, let's take a look at the all-time BFL Trophy Room after eighteen legendary seasons."),
+            ('DAVE', "Shawn Lukose still leads the all-time leaderboard with four Jabroni Trophies. Commissioner Nick Christus and Abe Thomas are now tied in second place with three championship rings each! Dino Davros sits in fourth with two titles, while Sydney Miller, Saagar Gupta, Thor, Adam Olen, and Dan Kruszewski all hold one championship ring!"),
+            ('CHRIS', "Eighteen seasons, dozens of bitter rivalries, and only eight managers have ever touched The Jabroni Trophy. The bar for greatness in the BFL has never been higher.")
         ]
     })
 
@@ -269,13 +269,13 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
             'badge': "SIGN-OFF",
             'accent': (41, 128, 185),
             'items': [
-                {'tag': "CHAMPION", 'header': "Congrats to Abe Thomas (2025 Champ)", 'desc': "Back-to-back champion hoists The Jabroni Trophy."},
+                {'tag': "CHAMPION", 'header': "Congrats to Abe Thomas (3x BFL Champion)", 'desc': "Hoists his 3rd career Jabroni Trophy (2011, 2022, 2025)."},
                 {'tag': "COMMISH", 'header': "Presented by Commissioner Nick Christus", 'desc': "18 years of premier fantasy football excellence."},
                 {'tag': "2026 ROAD", 'header': "Offseason Trades & Rookie Draft Ahead", 'desc': "We will see you in 2026 for the 19th season of BFL action!"}
             ]
         },
         'dialogue': [
-            ('CHRIS', "That officially wraps up our coverage of the 2025 BFL campaign! Huge congratulations to Abe Thomas for winning back-to-back Jabroni Trophies, and a massive thank you to Commissioner Nick Christus and every single franchise manager for another unforgettable eighteen-week season."),
+            ('CHRIS', "That officially wraps up our coverage of the 2025 BFL campaign! Huge congratulations to Abe Thomas for winning his third career Jabroni Trophy, and a massive thank you to Commissioner Nick Christus and every single franchise manager for another unforgettable eighteen-week season."),
             ('DAVE', "Enjoy the offseason, get your rookie scouting reports ready for the 2026 draft, and don't leave thirty-seven points on your pine all summer! For Chris, Dave, and the entire BFL Broadcast Network crew, have a wonderful offseason everybody!"),
             ('CHRIS', "We will see you back in the studio for the 2026 draft. So long from the BFL Broadcast Network!")
         ]
