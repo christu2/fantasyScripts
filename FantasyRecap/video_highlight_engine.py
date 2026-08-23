@@ -3,98 +3,119 @@
 BFL SportsCenter Video Reel Generator
 =====================================
 Generates Full HD 1080p (1920x1080) broadcast visual cards and compiles
-them with the podcast audio into a real MP4 video recap show.
+them with topic-synced audio into a dynamic MP4 video show with rapid transitions.
 """
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
+def strip_emojis(text: str) -> str:
+    """Removes emoji characters that cause missing glyph boxes in PIL TrueType rendering."""
+    emoji_pattern = re.compile(
+        "[\U00010000-\U0010ffff]|"
+        "[\uD800-\uDBFF][\uDC00-\uDFFF]|"
+        "[\u2600-\u27BF]|"
+        "[\u2300-\u23FF]|"
+        "[\u2B50-\u2B55]|"
+        "[\u203C-\u2049]|"
+        "[\u25A0-\u25FF]",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub(r'', text).strip()
+
 def create_slide_card(title: str, subtitle: str, content_items: list, output_path: str, badge_text: str = "SPORTSCENTER HIGHLIGHT", accent_color=(231, 76, 60)):
     """Creates a broadcast-quality Full HD 1920x1080 visual slide card."""
     width, height = 1920, 1080
-    img = Image.new('RGB', (width, height), color=(15, 20, 30))
+    img = Image.new('RGB', (width, height), color=(14, 18, 28))
     draw = ImageDraw.Draw(img)
-
-    # Top header bar
-    draw.rectangle([(0, 0), (width, 160)], fill=(22, 29, 44))
-    draw.rectangle([(0, 155), (width, 160)], fill=accent_color)
 
     # Fonts
     try:
-        font_badge = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
-        font_title = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 60)
-        font_sub = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 32)
-        font_card_title = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 36)
-        font_card_body = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 28)
-        font_footer = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 24)
+        font_badge = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
+        font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 64)
+        font_sub = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 30)
+        font_item_tag = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
+        font_item_header = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 34)
+        font_item_desc = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 26)
+        font_footer = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 22)
     except:
-        font_badge = font_title = font_sub = font_card_title = font_card_body = font_footer = ImageFont.load_default()
+        font_badge = font_title = font_sub = font_item_tag = font_item_header = font_item_desc = font_footer = ImageFont.load_default()
 
-    # Draw Badge
-    draw.rectangle([(60, 25), (60 + len(badge_text)*14, 60)], fill=accent_color)
-    draw.text((70, 30), badge_text, fill=(255, 255, 255), font=font_badge)
+    # Top Header Background
+    draw.rectangle([(0, 0), (width, 160)], fill=(20, 26, 40))
+    draw.rectangle([(0, 154), (width, 160)], fill=accent_color)
 
-    # Draw Title & Subtitle
-    draw.text((60, 70), title, fill=(255, 255, 255), font=font_title)
-    draw.text((width - 600, 85), subtitle, fill=(189, 195, 199), font=font_sub)
+    # Category Pill Badge
+    clean_badge = strip_emojis(badge_text).upper()
+    badge_bbox = draw.textbbox((0, 0), clean_badge, font=font_badge)
+    badge_w = badge_bbox[2] - badge_bbox[0]
+    draw.rounded_rectangle([(70, 24), (70 + badge_w + 24, 58)], radius=6, fill=accent_color)
+    draw.text((82, 29), clean_badge, fill=(255, 255, 255), font=font_badge)
 
-    # Draw Content Box
-    draw.rectangle([(60, 190), (width - 60, height - 80)], fill=(24, 32, 48), outline=(44, 62, 80), width=2)
+    # Title & Subtitle
+    clean_title = strip_emojis(title).upper()
+    draw.text((70, 70), clean_title, fill=(255, 255, 255), font=font_title)
 
-    # Draw Content Items
+    clean_sub = strip_emojis(subtitle)
+    sub_bbox = draw.textbbox((0, 0), clean_sub, font=font_sub)
+    sub_w = sub_bbox[2] - sub_bbox[0]
+    draw.text((width - 70 - sub_w, 95), clean_sub, fill=(160, 175, 200), font=font_sub)
+
+    # Main Card Container Box
+    draw.rounded_rectangle([(70, 190), (width - 70, height - 80)], radius=12, fill=(20, 26, 40), outline=(36, 48, 72), width=2)
+
+    # Render Content Items
     y = 230
     for item in content_items:
-        header = item.get('header', '')
-        desc = item.get('desc', '')
-        tag = item.get('tag', '')
+        raw_tag = strip_emojis(item.get('tag', '')).upper()
+        raw_header = strip_emojis(item.get('header', ''))
+        raw_desc = strip_emojis(item.get('desc', ''))
 
-        # Accent icon
-        draw.rectangle([(90, y + 5), (96, y + 45)], fill=accent_color)
-        if tag:
-            draw.rectangle([(110, y + 5), (110 + len(tag)*13, y + 38)], fill=(41, 128, 185))
-            draw.text((118, y + 10), tag, fill=(255, 255, 255), font=font_card_body)
-            draw.text((125 + len(tag)*13, y + 6), header, fill=(255, 255, 255), font=font_card_title)
-        else:
-            draw.text((115, y + 6), header, fill=(255, 255, 255), font=font_card_title)
+        x_cursor = 100
+        if raw_tag:
+            tag_bbox = draw.textbbox((0, 0), raw_tag, font=font_item_tag)
+            tag_w = tag_bbox[2] - tag_bbox[0]
+            draw.rounded_rectangle([(x_cursor, y), (x_cursor + tag_w + 20, y + 36)], radius=6, fill=(35, 95, 160))
+            draw.text((x_cursor + 10, y + 6), raw_tag, fill=(255, 255, 255), font=font_item_tag)
+            x_cursor += tag_w + 35
 
-        if desc:
-            draw.text((115, y + 50), desc, fill=(189, 195, 199), font=font_card_body)
+        draw.text((x_cursor, y + 2), raw_header, fill=(255, 255, 255), font=font_item_header)
+
+        if raw_desc:
+            draw.text((100, y + 46), raw_desc, fill=(170, 185, 205), font=font_item_desc)
             y += 115
         else:
             y += 75
 
     # Footer
-    draw.text((80, height - 55), "BEASTS FOOTBALL LEAGUE (BFL) • TUESDAY MORNING HANGOVER BROADCAST", fill=(127, 140, 141), font=font_footer)
+    draw.text((90, height - 55), "BEASTS FOOTBALL LEAGUE (BFL) • TUESDAY MORNING HANGOVER BROADCAST", fill=(100, 115, 140), font=font_footer)
+
     img.save(output_path)
     return output_path
 
-def generate_video_from_audio(slide_images: list, audio_path: str, output_mp4_path: str = "bfl_show.mp4"):
-    """Combines slide images with audio file using ffmpeg to produce an MP4 video."""
-    if not slide_images or not os.path.exists(audio_path):
-        print("❌ Missing slide images or audio file.")
+def generate_topic_synced_video(scene_slides: list, scene_durations: list, audio_path: str, output_mp4_path: str, pid: int = 0):
+    """
+    Compiles a dynamic MP4 video where slides transition synchronously with each spoken scene/topic.
+    """
+    if len(scene_slides) != len(scene_durations) or not os.path.exists(audio_path):
+        print("❌ Slide count does not match duration count or missing audio.")
         return ""
 
-    cmd_dur = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
-    res = subprocess.run(cmd_dur, stdout=subprocess.PIPE, text=True)
-    try:
-        duration = float(res.stdout.strip())
-    except:
-        duration = 60.0
+    total_dur = sum(scene_durations)
+    print(f"🎬 Compiling {len(scene_slides)} Topic-Synced Scenes ({total_dur:.1f}s total runtime)...")
 
-    per_slide_duration = duration / len(slide_images)
-    print(f"🎬 Compiling {len(slide_images)}-slide MP4 video ({duration:.1f}s total, {per_slide_duration:.1f}s per slide)...")
+    temp_dir = Path(__file__).resolve().parent / f"temp_video_sync_{pid}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
 
-    temp_dir = Path(__file__).resolve().parent / "temp_video"
-    temp_dir.mkdir(exist_ok=True)
-
-    concat_file = temp_dir / "img_concat.txt"
+    concat_file = temp_dir / "img_sync_concat.txt"
     with open(concat_file, 'w') as f:
-        for img_p in slide_images:
+        for img_p, dur in zip(scene_slides, scene_durations):
             f.write(f"file '{img_p}'\n")
-            f.write(f"duration {per_slide_duration:.2f}\n")
-        f.write(f"file '{slide_images[-1]}'\n")
+            f.write(f"duration {max(dur, 1.0):.2f}\n")
+        f.write(f"file '{scene_slides[-1]}'\n")
 
     cmd = [
         "ffmpeg", "-y",
@@ -110,5 +131,5 @@ def generate_video_from_audio(slide_images: list, audio_path: str, output_mp4_pa
     try: temp_dir.rmdir()
     except: pass
 
-    print(f"🎉 Master MP4 Video Reel Created: {output_mp4_path}")
+    print(f"🎉 Master Topic-Synced MP4 Video Reel Created: {output_mp4_path}")
     return output_mp4_path
