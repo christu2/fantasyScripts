@@ -34,15 +34,15 @@ if env_path.exists():
 else:
     load_dotenv()
 
-VOICE_HOST1 = 'en-US-AndrewMultilingualNeural' # Chris (Lead Anchor)
-VOICE_HOST2 = 'en-US-BrianMultilingualNeural'  # Dave (Color Analyst)
+VOICE_HOST1 = 'en-US-AndrewMultilingualNeural' # Chris (Lead Anchor - Professional & Sharp)
+VOICE_HOST2 = 'en-US-GuyNeural'                 # Dave (Color Analyst - Expressive, Warm & Conversational)
 
 MASTER_PHONETICS = [
     # --- Lore & Trophy ---
-    (r'\bThe Jabroni Trophy\b', 'The juh-bro-knee Trophy'),
-    (r'\bThe Jabroni\b', 'The juh-bro-knee'),
-    (r'\bJabroni\b', 'juh-bro-knee'),
-    (r'\bJabronis\b', 'juh-bro-knees'),
+    (r'\bThe Jabroni Trophy\b', 'The juh-BROH-nee Trophy'),
+    (r'\bThe Jabroni\b', 'The juh-BROH-nee'),
+    (r'\bJabroni\b', 'juh-BROH-nee'),
+    (r'\bJabronis\b', 'juh-BROH-nees'),
 
     # --- League Owners ---
     (r'\bShawn Lukose\b', 'Luke-ose'),
