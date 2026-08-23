@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-BFL Tuesday Morning Hangover (Master Podcast & Dynamic Video Pipeline)
-======================================================================
-Produces the definitive weekly review with topic-synced visual transitions:
+BFL Tuesday Morning Hangover (Master TV Studio Broadcast Pipeline)
+==================================================================
+Produces the definitive weekly television sports show:
 - Hosts: Chris (AndrewMultilingualNeural) & Dave (BrianMultilingualNeural)
+- Full Broadcast TV Studio layout with live anchor avatars & dynamic "ON AIR" speaker indicator
 - Dynamic Active Team Name & Owner Name Resolution from live ESPN API
 - Master phonetic pronunciation engine for NFL players and owners
 - Dynamic Slide Transitions synced to every matchup, blunder, and topic (~25-30s each)
 - Exact player stat lines (394 yds/4 TDs, 169 rush yds/2 TDs, 7 rec/143 yds, 1 rec/8 yds)
 - Jabroni Trophy championship lore and Week 2 Marquee Lookahead Matchups
-- Discord #trash-talk chat integration & real manager press conference quotes
+- Bottom TV ticker crawl with real-time league headlines
 - Uploads both MP3 and MP4 directly to Discord #press-room-podcast
 """
 
@@ -26,7 +27,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.discord_chat_harvester import get_sample_trash_talk_banter
-from FantasyRecap.video_highlight_engine import create_slide_card, generate_topic_synced_video
+from FantasyRecap.video_highlight_engine import render_tv_studio_frame, generate_tv_studio_video
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -109,7 +110,7 @@ def find_team_by_owner_substr(teams: dict, name_part: str) -> tuple:
 
 def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -> list:
     """
-    Returns the complete list of 18 structured scenes for the show.
+    Returns the complete list of structured scenes for the show.
     Each scene pairs a visual slide card with its matching spoken dialogue segment,
     dynamically resolving active team names and owner names.
     """
@@ -207,7 +208,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
                 'badge': "4-TIME GOAT DISASTER",
                 'accent': (192, 57, 43),
                 'items': [
-                    {'tag': "STARTED", 'header': "Drake Maye — 15.3 PTS", 'desc': "15.3 fantasy points in the starting quarterback slot."},
+                    {'tag': "STARTED", 'header': "Drake Maye — 15.3 PTS", 'desc': "Second-year Patriots QB started in the primary signal-caller slot."},
                     {'tag': "ON PINE", 'header': "Justin Fields — 29.5 PTS", 'desc': "Chilling on the bench dropping nearly 30 fantasy points (+14.2 pt loss)."},
                     {'tag': "REACTION", 'header': "Sydney in #trash-talk:", 'desc': "\"Who told Lukose to start Drake Maye over Justin Fields? Show yourself 😂\""}
                 ]
@@ -283,7 +284,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
                 'badge': "BREAKOUT STAR",
                 'accent': (46, 204, 113),
                 'items': [
-                    {'tag': "BOOM", 'header': "Keon Coleman — 21.2 PTS (+11.8 vs Proj)", 'desc': "Doubled projection with explosive touchdown grab."},
+                    {'tag': "BOOM", 'header': "Keon Coleman — 21.2 PTS (+11.8 vs Proj)", 'desc': "Second-year Bills weapon doubled projection with explosive TD."},
                     {'tag': "DUD", 'header': "Ja'Marr Chase — 3.1 PTS", 'desc': "Held under 4 fantasy points in a quiet week one."},
                     {'tag': "SALT", 'header': "Dino Davros in #trash-talk:", 'desc': "\"Nick only won because his kicker had 14 points.\""}
                 ]
@@ -337,14 +338,14 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
                 'badge': "GRUDGE MATCH",
                 'accent': (230, 126, 34),
                 'items': [
-                    {'tag': "RAMPAGE", 'header': "King Derrick Henry — 169 Rushing Yds, 2 TDs", 'desc': "30.7 fantasy points carrying Blake to a +3.28 point win."},
-                    {'tag': "ROOKIE", 'header': "Caleb Williams — 24.1 PTS", 'desc': "Impressive rookie debut for Alex, but McLaurin held to 3.8 pts."},
+                    {'tag': "RAMPAGE", 'header': "King Derrick Henry — 169 Rushing Yds, 2 TDs", 'desc': "31-year-old veteran rumbles for 30.7 fantasy points to seal the win."},
+                    {'tag': "YEAR 2 QB", 'header': "Caleb Williams — 24.1 PTS", 'desc': "Second-year Bears signal caller shines, but McLaurin held to 3.8 pts."},
                     {'tag': "RECORD", 'header': f"{t_disp('Blake')} Escapes at 1-0", 'desc': "Physical ground-and-pound battle."}
                 ]
             },
             'dialogue': [
                 ('CHRIS', "In other action, Blake edged out Alex ninety-five to ninety-two in a gritty defensive battle. King Derrick Henry ran over everybody, plowing for one hundred and sixty-nine rushing yards and two touchdowns to carry Blake to the finish line!"),
-                ('DAVE', "Derrick Henry is thirty years old and still running over human beings like a runaway freight train! Alex got twenty-four from rookie Caleb Williams, but Terry McLaurin was locked down for under four points. Blake escapes by three.")
+                ('DAVE', "Derrick Henry is thirty-one years old and still running over human beings like a runaway freight train! Alex got twenty-four points from his second-year quarterback Caleb Williams, but Terry McLaurin was locked down for under four points. Blake escapes by three.")
             ]
         },
 
@@ -357,13 +358,13 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
                 'accent': (39, 174, 96),
                 'items': [
                     {'tag': "MASTERCLASS", 'header': "Justin Herbert — 27.9 PTS", 'desc': "Dropping dimes all afternoon to push Nael over the century mark."},
-                    {'tag': "BRIGHT SPOT", 'header': "Emeka Egbuka — 21.4 PTS", 'desc': "Breakout receiving performance for Samran."},
+                    {'tag': "BRIGHT SPOT", 'header': "Emeka Egbuka — 21.4 PTS", 'desc': "Rookie receiving sensation shines for Samran."},
                     {'tag': "DISASTER", 'header': "Jerome Ford — 1.0 Single Point", 'desc': "Backfield collapse dooms Samran to an 0-1 start."}
                 ]
             },
             'dialogue': [
                 ('CHRIS', "Down in the cross-division matchup, Nael rolled over Samran one hundred and two to eighty-five behind a twenty-eight-point masterclass from Justin Herbert."),
-                ('DAVE', "Justin Herbert was dropping dimes all day! Samran got twenty-one from Emeka Egbuka, but Jerome Ford gave him literally one single point in his backfield. You cannot win in this league getting one point from your running back, period.")
+                ('DAVE', "Justin Herbert was dropping dimes all day! Samran got twenty-one from rookie Emeka Egbuka, but Jerome Ford gave him literally one single point in his backfield. You cannot win in this league getting one point from your running back, period.")
             ]
         },
 
@@ -469,7 +470,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
 async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1, post_to_discord: bool = True):
     pid = os.getpid()
     print("\n" + "="*75)
-    print(f"🎙️ BFL TUESDAY MORNING HANGOVER: TOPIC-SYNCED SHOW PRODUCTION (WEEK {week_num}, {season})")
+    print(f"🎙️ BFL TUESDAY MORNING HANGOVER: TV STUDIO BROADCAST (WEEK {week_num}, {season})")
     print("="*75)
 
     print("📡 Fetching active live team names & rosters from ESPN API...")
@@ -478,7 +479,7 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
     print(f"✅ Loaded {len(teams)} active BFL franchises dynamically!")
 
     scenes = get_show_scenes(season, week_num, teams)
-    print(f"📝 Loaded {len(scenes)} structured scenes with dynamic visual transitions!")
+    print(f"📝 Loaded {len(scenes)} structured TV studio scenes with dynamic host switching!")
 
     temp_audio_dir = Path(__file__).resolve().parent / f"temp_audio_{pid}"
     temp_slide_dir = Path(__file__).resolve().parent / f"temp_slides_{pid}"
@@ -486,30 +487,16 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
     temp_slide_dir.mkdir(parents=True, exist_ok=True)
 
     all_audio_files = []
-    scene_slide_paths = []
-    scene_durations = []
+    tv_frame_paths = []
+    tv_frame_durations = []
 
-    print("🎙️ Synthesizing neural audio and rendering clean broadcast slides for each scene...")
+    print("🎙️ Synthesizing neural audio and rendering TV studio frames with live host switching...")
 
     global_seg_idx = 0
     for scene_idx, sc in enumerate(scenes):
         card = sc['card']
         dialogue = sc['dialogue']
 
-        # 1. Render Visual Slide Card
-        slide_path = str(temp_slide_dir / f"scene_{scene_idx:02d}.png")
-        create_slide_card(
-            title=card['title'],
-            subtitle=card['subtitle'],
-            content_items=card['items'],
-            output_path=slide_path,
-            badge_text=card['badge'],
-            accent_color=card['accent']
-        )
-        scene_slide_paths.append(slide_path)
-
-        # 2. Synthesize Scene Audio
-        scene_dur = 0.0
         for speaker, raw_text in dialogue:
             clean_text = clean_for_spoken_audio(raw_text)
             voice = VOICE_HOST1 if speaker == 'CHRIS' else VOICE_HOST2
@@ -518,20 +505,34 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
             comm = edge_tts.Communicate(clean_text, voice, rate="+2%", pitch="+0Hz")
             await comm.save(seg_file)
             all_audio_files.append(seg_file)
-            global_seg_idx += 1
 
             # Check individual duration
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", seg_file]
             res = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
             try:
-                scene_dur += float(res.stdout.strip())
+                dur = float(res.stdout.strip())
             except:
-                scene_dur += 5.0
+                dur = 5.0
 
-        scene_durations.append(scene_dur)
-        print(f"  • Scene {scene_idx+1:02d}/{len(scenes):02d} [{card['badge']}]: {scene_dur:.1f}s")
+            # Render TV Studio Frame with Active Speaker highlighted
+            frame_path = str(temp_slide_dir / f"frame_{global_seg_idx:03d}_{speaker}.png")
+            render_tv_studio_frame(
+                title=card['title'],
+                subtitle=card['subtitle'],
+                category_badge=card['badge'],
+                items=card['items'],
+                speaker=speaker,
+                output_path=frame_path,
+                accent_color=card['accent']
+            )
 
-    # 3. Stitch Master Podcast MP3
+            tv_frame_paths.append(frame_path)
+            tv_frame_durations.append(dur)
+            global_seg_idx += 1
+
+        print(f"  • Scene {scene_idx+1:02d}/{len(scenes):02d} [{card['badge']}]: {sum(tv_frame_durations[-len(dialogue):]):.1f}s")
+
+    # Stitch Master Podcast MP3
     master_mp3 = str(Path(__file__).resolve().parent / f"bfl_tuesday_morning_hangover_week_{week_num}_{season}.mp3")
     concat_list = temp_audio_dir / "concat.txt"
     with open(concat_list, 'w') as f:
@@ -557,25 +558,25 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
     secs = int(dur_seconds % 60)
     print(f"🎉 Master Audio Rendered! Runtime: {mins}m {secs}s -> {master_mp3}")
 
-    # 4. Generate Topic-Synced MP4 Video Reel
+    # Generate TV Studio MP4 Video Reel with host speaker switching
     master_mp4 = str(Path(__file__).resolve().parent / f"bfl_tuesday_hangover_week_{week_num}_{season}.mp4")
-    print(f"🎬 Compiling Dynamic Topic-Synced MP4 Video Show (18 Transitions) -> {master_mp4}...")
-    generate_topic_synced_video(scene_slide_paths, scene_durations, master_mp3, master_mp4, pid)
+    print(f"🎬 Compiling TV Studio MP4 Video Show ({len(tv_frame_paths)} Live Speaker Cuts) -> {master_mp4}...")
+    generate_tv_studio_video(tv_frame_paths, tv_frame_durations, master_mp3, master_mp4, pid)
 
-    # 5. Post to Discord #press-room-podcast
+    # Post to Discord #press-room-podcast
     if post_to_discord and os.getenv("DISCORD_WEBHOOK_PODCAST"):
         print("🚀 Uploading Tuesday Morning Hangover (MP3 + MP4) to #press-room-podcast Forum...")
-        thread_title = f"☕ BFL Tuesday Morning Hangover: Week {week_num} Show ({mins}m {secs}s)"
+        thread_title = f"☕ BFL Tuesday Morning Hangover: Week {week_num} TV Show ({mins}m {secs}s)"
 
         # Post 1: Forum Thread Creation with MP3 Audio Podcast
         thread_id = None
         with open(master_mp3, 'rb') as f_mp3:
             files_mp3 = {'file': (f"bfl_tuesday_morning_hangover_week_{week_num}_{season}.mp3", f_mp3, 'audio/mpeg')}
             data_mp3 = {
-                'username': 'BFL Tuesday Morning Hangover Desk',
+                'username': 'BFL TV Studio Desk (Chris & Dave)',
                 'avatar_url': 'https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png',
                 'thread_name': thread_title,
-                'content': f"☕ **BFL TUESDAY MORNING HANGOVER: WEEK {week_num} OFFICIAL BROADCAST ({season})**\n*Chris & Dave break down all 8 matchups: Josh Allen's 394-yd 4-TD masterpiece, Derrick Henry's 169-yd rampage, A.J. Brown & Worthy duds, Sydney demolishing Lukose, Emelie's bench agony, real Discord group chat drama, and Week 2 Marquee Lookaheads!*\n\n⏱️ **Duration:** `{mins}m {secs}s`\n🎧 **Listen to the Full Audio Podcast below:** 👇"
+                'content': f"☕ **BFL TUESDAY MORNING HANGOVER: WEEK {week_num} TELEVISION BROADCAST ({season})**\n*Chris & Dave host from the studio desk with live anchor switching, active fantasy team names, exact player stat lines, and Week 2 Marquee Lookaheads!*\n\n⏱️ **Duration:** `{mins}m {secs}s`\n🎧 **Listen to the Audio Podcast or watch the Studio TV Show below:** 👇"
             }
             resp_mp3 = requests.post(os.getenv("DISCORD_WEBHOOK_PODCAST") + "?wait=true", data=data_mp3, files=files_mp3, timeout=45)
             
@@ -588,7 +589,7 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
             else:
                 print(f"❌ Discord MP3 upload error: {resp_mp3.status_code} - {resp_mp3.text}")
 
-        # Post 2: Attach MP4 SportsCenter Video Reel to the Thread
+        # Post 2: Attach MP4 SportsCenter TV Video Show to the Thread
         if os.path.exists(master_mp4):
             video_url = os.getenv("DISCORD_WEBHOOK_PODCAST")
             if thread_id:
@@ -597,13 +598,13 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
             with open(master_mp4, 'rb') as f_mp4:
                 files_mp4 = {'file': (f"bfl_tuesday_hangover_week_{week_num}_{season}.mp4", f_mp4, 'video/mp4')}
                 data_mp4 = {
-                    'username': 'BFL SportsCenter Video Reel Desk',
+                    'username': 'BFL TV Studio Broadcast Desk',
                     'avatar_url': 'https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png',
-                    'content': "🎬 **BFL SportsCenter Full HD (1080p) Video Show:**\n*Watch the animated scoreboard cards, boxscores, and Week 2 Marquee Matchups preview below:* 📺"
+                    'content': "🎬 **BFL Tuesday Morning Hangover Full Studio TV Show (1080p):**\n*Watch Chris & Dave on the studio desk with live 'ON AIR' host camera switching, active fantasy team names, and matchup boards:* 📺"
                 }
                 resp_mp4 = requests.post(video_url, data=data_mp4, files=files_mp4, timeout=60)
                 if resp_mp4.status_code in [200, 201, 204]:
-                    print("🎉 SUCCESS! SportsCenter MP4 Video Show uploaded directly to Discord!")
+                    print("🎉 SUCCESS! Studio TV MP4 Video Show uploaded directly to Discord!")
                 else:
                     print(f"❌ Discord MP4 upload error: {resp_mp4.status_code} - {resp_mp4.text}")
 

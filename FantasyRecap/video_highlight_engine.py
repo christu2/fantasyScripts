@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-BFL SportsCenter Video Reel Generator
-=====================================
-Generates Full HD 1080p (1920x1080) broadcast visual cards and compiles
-them with topic-synced audio into a dynamic MP4 video show with rapid transitions.
+BFL SportsCenter Studio Video Reel Generator
+============================================
+Generates Full HD 1080p (1920x1080) television broadcast frames featuring:
+- Top live broadcast network bar & category badge
+- Left Studio Desk with illustrated anchors (Chris & Dave) + active "ON AIR" speaker indicator
+- Main Broadcast Big Screen showing active Fantasy Team Names, Owner Names & Stat Lines
+- Bottom TV Ticker running real scores and headlines
+- Topic-synced slide transitions syncing with spoken dialogue segments
 """
 
 import os
@@ -26,101 +30,168 @@ def strip_emojis(text: str) -> str:
     )
     return emoji_pattern.sub(r'', text).strip()
 
-def create_slide_card(title: str, subtitle: str, content_items: list, output_path: str, badge_text: str = "SPORTSCENTER HIGHLIGHT", accent_color=(231, 76, 60)):
-    """Creates a broadcast-quality Full HD 1920x1080 visual slide card."""
+def render_tv_studio_frame(
+    title: str,
+    subtitle: str,
+    category_badge: str,
+    items: list,
+    speaker: str, # 'CHRIS' or 'DAVE'
+    output_path: str,
+    accent_color=(231, 76, 60),
+    ticker_text: str = "•  ABE DEFENDS JABRONI TROPHY (117.86)  •  JOSH ALLEN 394 YDS, 4 TDS (38.8 PTS)  •  SYDNEY DEMOLISHES LUKOSE (101-70)  •  ADAM ESCAPES EMELIE (91-88)"
+):
+    """Creates a broadcast-quality Full HD 1920x1080 TV Studio frame with live anchor switching."""
     width, height = 1920, 1080
-    img = Image.new('RGB', (width, height), color=(12, 16, 26))
+    img = Image.new('RGB', (width, height), color=(10, 14, 24))
     draw = ImageDraw.Draw(img)
 
     # Fonts
     try:
-        font_badge = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
-        font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 60)
-        font_sub = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 28)
+        font_live = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 20)
+        font_net = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 36)
+        font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 52)
+        font_sub = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 26)
         font_item_tag = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 20)
-        font_item_header = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 32)
-        font_item_desc = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 24)
-        font_footer = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 20)
+        font_item_header = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 28)
+        font_item_desc = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 22)
+        font_host_name = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 20)
+        font_ticker = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 20)
     except:
-        font_badge = font_title = font_sub = font_item_tag = font_item_header = font_item_desc = font_footer = ImageFont.load_default()
+        font_live = font_net = font_title = font_sub = font_item_tag = font_item_header = font_item_desc = font_host_name = font_ticker = ImageFont.load_default()
 
-    # Top Header Background
-    draw.rectangle([(0, 0), (width, 160)], fill=(18, 24, 38))
-    draw.rectangle([(0, 154), (width, 160)], fill=accent_color)
+    # --- TOP TV NETWORK BAR ---
+    draw.rectangle([(0, 0), (width, 100)], fill=(16, 22, 36))
+    draw.rectangle([(0, 96), (width, 100)], fill=accent_color)
 
-    # Category Pill Badge
-    clean_badge = strip_emojis(badge_text).upper()
-    badge_bbox = draw.textbbox((0, 0), clean_badge, font=font_badge)
+    # Live Badge
+    draw.rounded_rectangle([(40, 24), (130, 66)], radius=6, fill=(231, 76, 60))
+    draw.text((55, 33), "LIVE", fill=(255, 255, 255), font=font_live)
+
+    # Network Header
+    draw.text((150, 28), "BFL BROADCAST NETWORK", fill=(255, 255, 255), font=font_net)
+    draw.text((150 + 440, 36), "•  TUESDAY MORNING HANGOVER", fill=(180, 195, 220), font=font_sub)
+
+    # Category Pill (Top Right)
+    clean_badge = strip_emojis(category_badge).upper()
+    badge_bbox = draw.textbbox((0, 0), clean_badge, font=font_live)
     badge_w = badge_bbox[2] - badge_bbox[0]
-    draw.rounded_rectangle([(70, 22), (70 + badge_w + 28, 56)], radius=6, fill=accent_color)
-    draw.text((84, 27), clean_badge, fill=(255, 255, 255), font=font_badge)
+    draw.rounded_rectangle([(width - 60 - badge_w - 30, 26), (width - 60, 68)], radius=6, fill=accent_color)
+    draw.text((width - 60 - badge_w - 15, 34), clean_badge, fill=(255, 255, 255), font=font_live)
 
-    # Title & Subtitle
+    # --- LEFT DESK: HOST ANCHORS ---
+    draw.rounded_rectangle([(40, 125), (460, height - 90)], radius=12, fill=(16, 22, 36), outline=(28, 38, 58), width=2)
+    draw.text((60, 145), "STUDIO DESK", fill=(140, 160, 190), font=font_live)
+
+    # Chris Anchor Box
+    chris_active = (speaker.upper() == 'CHRIS')
+    chris_border = (46, 204, 113) if chris_active else (40, 52, 75)
+    chris_bg = (24, 32, 50) if chris_active else (18, 24, 38)
+    draw.rounded_rectangle([(60, 180), (440, 500)], radius=10, fill=chris_bg, outline=chris_border, width=3 if chris_active else 1)
+
+    assets_dir = Path(__file__).resolve().parent / "assets"
+    chris_path = assets_dir / "anchor_chris.jpg"
+    if chris_path.exists():
+        try:
+            chris_img = Image.open(chris_path).convert('RGB').resize((180, 180))
+            img.paste(chris_img, (80, 200))
+        except:
+            draw.rectangle([(80, 200), (260, 380)], fill=(30, 45, 70))
+    else:
+        draw.rectangle([(80, 200), (260, 380)], fill=(30, 45, 70))
+
+    draw.text((80, 400), "CHRIS", fill=(255, 255, 255), font=font_item_header)
+    draw.text((80, 435), "Lead Anchor", fill=(160, 175, 200), font=font_host_name)
+    if chris_active:
+        draw.rounded_rectangle([(80, 460), (220, 490)], radius=4, fill=(46, 204, 113))
+        draw.text((92, 465), "ON AIR", fill=(0, 0, 0), font=font_host_name)
+
+    # Dave Anchor Box
+    dave_active = (speaker.upper() == 'DAVE')
+    dave_border = (231, 76, 60) if dave_active else (40, 52, 75)
+    dave_bg = (24, 32, 50) if dave_active else (18, 24, 38)
+    draw.rounded_rectangle([(60, 530), (440, 850)], radius=10, fill=dave_bg, outline=dave_border, width=3 if dave_active else 1)
+
+    dave_path = assets_dir / "anchor_dave.jpg"
+    if dave_path.exists():
+        try:
+            dave_img = Image.open(dave_path).convert('RGB').resize((180, 180))
+            img.paste(dave_img, (80, 550))
+        except:
+            draw.rectangle([(80, 550), (260, 730)], fill=(30, 45, 70))
+    else:
+        draw.rectangle([(80, 550), (260, 730)], fill=(30, 45, 70))
+
+    draw.text((80, 750), "DAVE", fill=(255, 255, 255), font=font_item_header)
+    draw.text((80, 785), "Color Analyst & Roasts", fill=(160, 175, 200), font=font_host_name)
+    if dave_active:
+        draw.rounded_rectangle([(80, 810), (220, 840)], radius=4, fill=(231, 76, 60))
+        draw.text((92, 815), "ON AIR", fill=(255, 255, 255), font=font_host_name)
+
+    # --- RIGHT PANEL: MAIN BROADCAST SCREEN ---
+    main_x1, main_y1 = 490, 125
+    main_x2, main_y2 = width - 40, height - 90
+    draw.rounded_rectangle([(main_x1, main_y1), (main_x2, main_y2)], radius=12, fill=(16, 22, 36), outline=(28, 38, 58), width=2)
+
+    # Screen Header Bar
     clean_title = strip_emojis(title).upper()
-    draw.text((70, 72), clean_title, fill=(255, 255, 255), font=font_title)
+    draw.text((main_x1 + 35, main_y1 + 25), clean_title, fill=(255, 255, 255), font=font_title)
 
     clean_sub = strip_emojis(subtitle)
-    sub_bbox = draw.textbbox((0, 0), clean_sub, font=font_sub)
-    sub_w = sub_bbox[2] - sub_bbox[0]
-    draw.text((width - 70 - sub_w, 95), clean_sub, fill=(160, 175, 200), font=font_sub)
+    draw.text((main_x1 + 35, main_y1 + 85), clean_sub, fill=(170, 185, 210), font=font_sub)
+    draw.line([(main_x1 + 35, main_y1 + 125), (main_x2 - 35, main_y1 + 125)], fill=(32, 44, 68), width=2)
 
-    # Main Card Container Box
-    draw.rounded_rectangle([(70, 190), (width - 70, height - 70)], radius=12, fill=(18, 24, 38), outline=(32, 44, 68), width=2)
-
-    # Render Content Items
-    y = 225
-    for item in content_items:
+    # Screen Content Item Cards
+    y_card = main_y1 + 145
+    for item in items:
         raw_tag = strip_emojis(item.get('tag', '')).upper()
         raw_header = strip_emojis(item.get('header', ''))
         raw_desc = strip_emojis(item.get('desc', ''))
 
-        # Background card row
-        draw.rounded_rectangle([(95, y), (width - 95, y + 105)], radius=8, fill=(25, 33, 52))
+        card_h = 95
+        draw.rounded_rectangle([(main_x1 + 35, y_card), (main_x2 - 35, y_card + card_h)], radius=8, fill=(22, 30, 48), outline=(32, 44, 68), width=1)
 
-        # Tag Badge inside row
-        x_cursor = 115
+        x_cursor = main_x1 + 55
         if raw_tag:
             tag_bbox = draw.textbbox((0, 0), raw_tag, font=font_item_tag)
             tag_w = tag_bbox[2] - tag_bbox[0]
-            draw.rounded_rectangle([(x_cursor, y + 16), (x_cursor + tag_w + 18, y + 46)], radius=6, fill=(35, 95, 160))
-            draw.text((x_cursor + 9, y + 21), raw_tag, fill=(255, 255, 255), font=font_item_tag)
-            x_cursor += tag_w + 35
+            draw.rounded_rectangle([(x_cursor, y_card + 14), (x_cursor + tag_w + 18, y_card + 42)], radius=4, fill=(35, 95, 160))
+            draw.text((x_cursor + 9, y_card + 18), raw_tag, fill=(255, 255, 255), font=font_item_tag)
+            x_cursor += tag_w + 32
 
-        # Header (Team Name & Owner Name)
-        draw.text((x_cursor, y + 15), raw_header, fill=(255, 255, 255), font=font_item_header)
+        draw.text((x_cursor, y_card + 14), raw_header, fill=(255, 255, 255), font=font_item_header)
 
-        # Description / Narrative
         if raw_desc:
-            draw.text((115, y + 60), raw_desc, fill=(175, 190, 210), font=font_item_desc)
+            draw.text((main_x1 + 55, y_card + 54), raw_desc, fill=(160, 175, 200), font=font_item_desc)
 
-        y += 125
+        y_card += 115
 
-    # Footer
-    draw.text((95, height - 48), "BEASTS FOOTBALL LEAGUE (BFL) • TUESDAY MORNING HANGOVER BROADCAST", fill=(100, 115, 140), font=font_footer)
+    # --- BOTTOM TICKER / BOTTOM-LINE CRAWL ---
+    draw.rectangle([(0, height - 60), (width, height)], fill=(12, 16, 26))
+    draw.rectangle([(0, height - 60), (180, height)], fill=(231, 76, 60))
+    draw.text((25, height - 42), "BFL TICKER", fill=(255, 255, 255), font=font_ticker)
+    draw.text((210, height - 42), ticker_text, fill=(200, 215, 235), font=font_ticker)
 
     img.save(output_path)
     return output_path
 
-def generate_topic_synced_video(scene_slides: list, scene_durations: list, audio_path: str, output_mp4_path: str, pid: int = 0):
-    """
-    Compiles a dynamic MP4 video where slides transition synchronously with each spoken scene/topic.
-    """
-    if len(scene_slides) != len(scene_durations) or not os.path.exists(audio_path):
-        print("❌ Slide count does not match duration count or missing audio.")
+def generate_tv_studio_video(segment_frames: list, segment_durations: list, audio_path: str, output_mp4_path: str, pid: int = 0):
+    """Compiles TV studio broadcast frames with active speaker switching into an MP4 video."""
+    if len(segment_frames) != len(segment_durations) or not os.path.exists(audio_path):
+        print("❌ Frame count does not match duration count or missing audio.")
         return ""
 
-    total_dur = sum(scene_durations)
-    print(f"🎬 Compiling {len(scene_slides)} Topic-Synced Scenes ({total_dur:.1f}s total runtime)...")
+    total_dur = sum(segment_durations)
+    print(f"🎬 Compiling {len(segment_frames)} Dynamic TV Studio Shots ({total_dur:.1f}s total runtime)...")
 
-    temp_dir = Path(__file__).resolve().parent / f"temp_video_sync_{pid}"
+    temp_dir = Path(__file__).resolve().parent / f"temp_tv_sync_{pid}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    concat_file = temp_dir / "img_sync_concat.txt"
+    concat_file = temp_dir / "tv_sync_concat.txt"
     with open(concat_file, 'w') as f:
-        for img_p, dur in zip(scene_slides, scene_durations):
+        for img_p, dur in zip(segment_frames, segment_durations):
             f.write(f"file '{img_p}'\n")
-            f.write(f"duration {max(dur, 1.0):.2f}\n")
-        f.write(f"file '{scene_slides[-1]}'\n")
+            f.write(f"duration {max(dur, 0.5):.2f}\n")
+        f.write(f"file '{segment_frames[-1]}'\n")
 
     cmd = [
         "ffmpeg", "-y",
@@ -136,5 +207,5 @@ def generate_topic_synced_video(scene_slides: list, scene_durations: list, audio
     try: temp_dir.rmdir()
     except: pass
 
-    print(f"🎉 Master Topic-Synced MP4 Video Reel Created: {output_mp4_path}")
+    print(f"🎉 Master TV Studio Show Created: {output_mp4_path}")
     return output_mp4_path

@@ -89,15 +89,24 @@ def parse_league_members_and_teams(data):
     teams = {}
     for t in data.get('teams', []):
         tid = t['id']
-        t_name = f"{t.get('location', '')} {t.get('nickname', '')}".strip()
+        t_name = t.get('name')
+        if not t_name:
+            loc = t.get('location') or ''
+            nick = t.get('nickname') or ''
+            t_name = f"{loc} {nick}".strip()
+            
         owner_id = t.get('primaryOwner') or (t.get('owners', [None])[0])
         owner_name = members.get(owner_id, 'Unknown')
+        
+        if not t_name or t_name.lower() in ['none none', 'none', '']:
+            t_name = owner_name
+            
         div_id = t.get('divisionId', 0)
         div_name = divisions.get(div_id, 'General')
         
         teams[tid] = {
             'id': tid,
-            'name': t_name if t_name else owner_name,
+            'name': t_name.strip(),
             'owner': owner_name,
             'abbrev': t.get('abbrev', ''),
             'division': div_name,
