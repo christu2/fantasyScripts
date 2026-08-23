@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-BFL Tuesday Morning Hangover (Dynamic Animated TV Studio Broadcast Pipeline)
-=============================================================================
-Produces the weekly television sports show dynamically for ANY ESPN season/week:
+BFL Tuesday Morning Hangover (TV Studio Broadcast Pipeline)
+===========================================================
+Produces the television sports show dynamically for ANY ESPN season/week:
 - Hosts: Chris (AndrewMultilingualNeural) & Dave (BrianMultilingualNeural)
-- Fully Animated Sports Studio Anchors with real-time lip-flapping, gestures & VU meters
+- Static broadcast studio portraits with live "ON AIR" speaker highlight borders & VU meters (NO image flashing)
 - Dynamic Active Team Name & Owner Name Resolution from live ESPN API
 - Accurate Phonetics: 'Jabroni' -> 'juh-bro-knee', 'Lukose' -> 'Luke-ose', 'Thor', etc.
 - Combined Discord Forum Post with both Audio MP3 & Video MP4 attached in one thread
@@ -14,7 +14,6 @@ Produces the weekly television sports show dynamically for ANY ESPN season/week:
 import os
 import sys
 import re
-import random
 import argparse
 import asyncio
 import subprocess
@@ -26,7 +25,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.dynamic_show_builder import build_dynamic_scenes_from_espn
-from FantasyRecap.video_highlight_engine import render_animated_studio_frame, generate_animated_studio_video
+from FantasyRecap.video_highlight_engine import render_tv_studio_frame, generate_broadcast_video
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -73,6 +72,8 @@ MASTER_PHONETICS = [
     (r'\bXavier\b', 'Zay-vee-er'),
     (r'\bTyrone\b', 'Tie-rone'),
     (r'\bJalen\b', 'Jay-len'),
+    (r'\bChig Okonkwo\b', 'Chig Oh-konk-woh'),
+    (r'\bJacory\b', 'Juh-cor-ee'),
     
     # --- Terms & Numbers ---
     (r'\bdef\.\b', 'defeated'),
@@ -90,9 +91,11 @@ MASTER_PHONETICS = [
     (r'\bTNF\b', 'Thursday Night Football'),
     (r'\bMNF\b', 'Monday Night Football'),
     (r'\bSNF\b', 'Sunday Night Football'),
-    (r'\b0\.0\b', 'zero'),
-    (r'\b1\.3\b', 'one point three'),
-    (r'\b3\.04\b', 'three point zero four')
+    (r'\b0\.38\b', 'zero point three eight'),
+    (r'\b5\.92\b', 'five point nine two'),
+    (r'\b36\.92\b', 'thirty-six point nine two'),
+    (r'\b39\.4\b', 'thirty-nine point four'),
+    (r'\b45\.6\b', 'forty-five point six')
 ]
 
 def clean_for_spoken_audio(text: str) -> str:
@@ -105,7 +108,7 @@ def clean_for_spoken_audio(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-async def produce_full_hangover_broadcast(season: int = 2024, week_num: int = 17, post_to_discord: bool = True):
+async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 17, post_to_discord: bool = True):
     pid = os.getpid()
     print("\n" + "="*75)
     print(f"🎙️ BFL TUESDAY MORNING HANGOVER: TV STUDIO BROADCAST (WEEK {week_num}, {season})")
@@ -118,7 +121,7 @@ async def produce_full_hangover_broadcast(season: int = 2024, week_num: int = 17
 
     print("⚡ Building dynamic show scenes, storylines, and matchups...")
     scenes = build_dynamic_scenes_from_espn(raw_data, season, week_num)
-    print(f"📝 Generated {len(scenes)} dynamic TV studio scenes!")
+    print(f"📝 Generated {len(scenes)} rich TV studio scenes!")
 
     temp_audio_dir = Path(__file__).resolve().parent / f"temp_audio_{pid}"
     temp_slide_dir = Path(__file__).resolve().parent / f"temp_slides_{pid}"
@@ -126,12 +129,12 @@ async def produce_full_hangover_broadcast(season: int = 2024, week_num: int = 17
     temp_slide_dir.mkdir(parents=True, exist_ok=True)
 
     all_audio_files = []
-    animated_shots = []
+    tv_shots = []
+    tv_durations = []
 
-    print("🎙️ Synthesizing host dialogue audio and animating TV studio frames...")
+    print("🎙️ Synthesizing host dialogue audio and rendering TV studio shots...")
 
     global_seg_idx = 0
-    frame_counter = 0
 
     for scene_idx, sc in enumerate(scenes):
         card = sc['card']
@@ -156,38 +159,23 @@ async def produce_full_hangover_broadcast(season: int = 2024, week_num: int = 17
                 dur = 5.0
             scene_total_dur += dur
 
-            # Generate multi-frame animated shots during this speaker's dialogue turn
-            cur_time = 0.0
-            step_idx = 0
-            while cur_time < dur:
-                anim_state = 'TALK' if (step_idx % 2 == 0) else 'IDLE'
-                chunk_dur = random.uniform(0.35, 0.55) if anim_state == 'TALK' else random.uniform(0.20, 0.35)
-                if cur_time + chunk_dur > dur:
-                    chunk_dur = dur - cur_time
+            # Render clean static TV Studio frame with active speaker highlighted
+            frame_path = str(temp_slide_dir / f"frame_{global_seg_idx:03d}_{speaker}.png")
+            render_tv_studio_frame(
+                title=card['title'],
+                subtitle=card['subtitle'],
+                category_badge=card['badge'],
+                items=card['items'],
+                speaker=speaker,
+                output_path=frame_path,
+                accent_color=card['accent']
+            )
 
-                vu = [random.uniform(0.3, 1.0) for _ in range(5)] if anim_state == 'TALK' else [random.uniform(0.1, 0.3) for _ in range(5)]
-                frame_path = str(temp_slide_dir / f"anim_{frame_counter:04d}_{speaker}.png")
-
-                render_animated_studio_frame(
-                    title=card['title'],
-                    subtitle=card['subtitle'],
-                    category_badge=card['badge'],
-                    items=card['items'],
-                    speaker=speaker,
-                    anim_state=anim_state,
-                    vu_levels=vu,
-                    output_path=frame_path,
-                    accent_color=card['accent']
-                )
-
-                animated_shots.append((frame_path, chunk_dur))
-                cur_time += chunk_dur
-                step_idx += 1
-                frame_counter += 1
-
+            tv_shots.append(frame_path)
+            tv_durations.append(dur)
             global_seg_idx += 1
 
-        print(f"  • Scene {scene_idx+1:02d}/{len(scenes):02d} [{card['badge']}]: {scene_total_dur:.1f}s ({frame_counter} anim frames)")
+        print(f"  • Scene {scene_idx+1:02d}/{len(scenes):02d} [{card['badge']}]: {scene_total_dur:.1f}s")
 
     # Stitch Master Podcast MP3
     master_mp3 = str(Path(__file__).resolve().parent / f"bfl_tuesday_morning_hangover_week_{week_num}_{season}.mp3")
@@ -215,15 +203,15 @@ async def produce_full_hangover_broadcast(season: int = 2024, week_num: int = 17
     secs = int(dur_seconds % 60)
     print(f"🎉 Master Audio Rendered! Runtime: {mins}m {secs}s -> {master_mp3}")
 
-    # Generate Animated TV Studio MP4 Video Reel
+    # Generate Clean TV Studio MP4 Video Reel
     master_mp4 = str(Path(__file__).resolve().parent / f"bfl_tuesday_hangover_week_{week_num}_{season}.mp4")
-    print(f"🎬 Compiling Animated TV Studio MP4 Video Show ({len(animated_shots)} Animated Frames) -> {master_mp4}...")
-    generate_animated_studio_video(animated_shots, master_mp3, master_mp4, pid)
+    print(f"🎬 Compiling Clean TV Studio MP4 Video Show ({len(tv_shots)} Shots) -> {master_mp4}...")
+    generate_broadcast_video(tv_shots, tv_durations, master_mp3, master_mp4, pid)
 
     # Post to Discord #press-room-podcast as ONE COMBINED POST
     if post_to_discord and os.getenv("DISCORD_WEBHOOK_PODCAST"):
         print("🚀 Uploading Tuesday Morning Hangover (COMBINED MP3 + MP4 Post) to #press-room-podcast Forum...")
-        thread_title = f"☕ BFL Tuesday Morning Hangover: Week {week_num} Show ({mins}m {secs}s) [{season}]"
+        thread_title = f"☕ BFL Tuesday Morning Hangover: Week {week_num} Championship Show ({mins}m {secs}s) [{season}]"
 
         with open(master_mp3, 'rb') as f_mp3, open(master_mp4, 'rb') as f_mp4:
             files = {
@@ -234,7 +222,7 @@ async def produce_full_hangover_broadcast(season: int = 2024, week_num: int = 17
                 'username': 'BFL TV Studio Broadcast Desk (Chris & Dave)',
                 'avatar_url': 'https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png',
                 'thread_name': thread_title,
-                'content': f"☕ **BFL TUESDAY MORNING HANGOVER: WEEK {week_num} TELEVISION BROADCAST ({season})**\n*Chris & Dave host live from the animated broadcast desk breaking down all matchups, heartbreakers, blowouts, and the race for The Jabroni Trophy!*\n\n⏱️ **Duration:** `{mins}m {secs}s`\n📺 **Watch the Animated Video or Listen to the Audio Podcast below:** 👇"
+                'content': f"🏆 **BFL TUESDAY MORNING HANGOVER: {season} CHAMPIONSHIP TELEVISION FINALE**\n*Chris & Dave break down the entire championship slate: Abe winning back-to-back Jabroni Trophies over Dan, Thor taking bronze over Lukose, Bijan's 39.4-pt eruption, King Derrick Henry's 45.6-pt rampage, Rej's 0.38-pt cardiac win, and all-time BFL franchise history!*\n\n⏱️ **Duration:** `{mins}m {secs}s`\n📺 **Watch the Studio TV Video or Listen to the Audio Podcast below:** 👇"
             }
             resp = requests.post(os.getenv("DISCORD_WEBHOOK_PODCAST") + "?wait=true", data=data, files=files, timeout=90)
             
@@ -254,7 +242,7 @@ async def produce_full_hangover_broadcast(season: int = 2024, week_num: int = 17
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Produce weekly BFL Tuesday Morning Hangover broadcast")
-    parser.add_argument("--season", type=int, default=2024, help="NFL Season (e.g. 2024, 2025)")
+    parser.add_argument("--season", type=int, default=2025, help="NFL Season (e.g. 2024, 2025)")
     parser.add_argument("--week", type=int, default=17, help="Week number (e.g. 1-17)")
     args = parser.parse_args()
 

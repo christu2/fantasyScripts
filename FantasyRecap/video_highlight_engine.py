@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-BFL SportsCenter Studio Video Reel Generator (Animated Studio Edition)
-======================================================================
+BFL SportsCenter Studio Video Reel Generator (Broadcast Studio Edition)
+=======================================================================
 Generates Full HD 1080p (1920x1080) television broadcast frames featuring:
-- Animated Studio Anchors (Chris & Dave) with real-time lip-flapping & gesturing
-- Dynamic audio VU equalizer meters pulsing next to the active speaker
+- Static clean broadcast portraits for Chris & Dave (NO flashing or flickering)
+- Dynamic "ON AIR" speaker highlight borders & pulsing green/red audio VU meters
 - Top live broadcast network bar & category badge
 - Main Broadcast Big Screen showing active Fantasy Team Names, Owner Names & Stat Lines
 - Bottom TV Ticker running real scores and headlines
@@ -12,7 +12,6 @@ Generates Full HD 1080p (1920x1080) television broadcast frames featuring:
 
 import os
 import re
-import random
 import subprocess
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -31,19 +30,17 @@ def strip_emojis(text: str) -> str:
     )
     return emoji_pattern.sub(r'', text).strip()
 
-def render_animated_studio_frame(
+def render_tv_studio_frame(
     title: str,
     subtitle: str,
     category_badge: str,
     items: list,
     speaker: str, # 'CHRIS' or 'DAVE'
-    anim_state: str, # 'TALK' or 'IDLE'
-    vu_levels: list, # [h1, h2, h3, h4, h5]
     output_path: str,
     accent_color=(231, 76, 60),
-    ticker_text: str = "•  ABE DEFENDS JABRONI TROPHY (117.86)  •  JOSH ALLEN 394 YDS, 4 TDS (38.8 PTS)  •  SYDNEY DEMOLISHES LUKOSE (101-70)  •  ADAM ESCAPES EMELIE (91-88)"
+    ticker_text: str = "•  ABE WINS BACK-TO-BACK JABRONI TROPHIES (107.08)  •  DERRICK HENRY 45.6 PTS  •  BIJAN ROBINSON 39.4 PTS  •  THOR WINS PODIUM BRONZE"
 ):
-    """Creates a broadcast-quality Full HD 1920x1080 TV Studio frame with live anchor animation."""
+    """Creates a broadcast-quality Full HD 1920x1080 TV Studio frame with static high-res host portraits."""
     width, height = 1920, 1080
     img = Image.new('RGB', (width, height), color=(10, 14, 24))
     draw = ImageDraw.Draw(img)
@@ -81,7 +78,7 @@ def render_animated_studio_frame(
     draw.rounded_rectangle([(width - 60 - badge_w - 30, 26), (width - 60, 68)], radius=6, fill=accent_color)
     draw.text((width - 60 - badge_w - 15, 34), clean_badge, fill=(255, 255, 255), font=font_live)
 
-    # --- LEFT DESK: ANIMATED ANCHORS ---
+    # --- LEFT DESK: STUDIO ANCHORS ---
     draw.rounded_rectangle([(40, 125), (460, height - 90)], radius=12, fill=(16, 22, 36), outline=(28, 38, 58), width=2)
     draw.text((60, 145), "STUDIO DESK", fill=(140, 160, 190), font=font_live)
 
@@ -93,7 +90,7 @@ def render_animated_studio_frame(
     chris_bg = (24, 32, 50) if chris_speaking else (18, 24, 38)
     draw.rounded_rectangle([(60, 180), (440, 500)], radius=10, fill=chris_bg, outline=chris_border, width=3 if chris_speaking else 1)
 
-    chris_sprite = str(assets_dir / "anchor_chris_talk.jpg") if (chris_speaking and anim_state == 'TALK') else str(assets_dir / "anchor_chris_idle.jpg")
+    chris_sprite = str(assets_dir / "anchor_chris.jpg")
     try:
         chris_img = Image.open(chris_sprite).convert('RGB').resize((180, 180))
         img.paste(chris_img, (80, 200))
@@ -106,10 +103,10 @@ def render_animated_studio_frame(
     if chris_speaking:
         draw.rounded_rectangle([(80, 460), (200, 490)], radius=4, fill=(46, 204, 113))
         draw.text((92, 465), "ON AIR", fill=(0, 0, 0), font=font_host_name)
-        # Equalizer VU meter bars
-        for idx, lvl in enumerate(vu_levels):
+        # Static Equalizer VU indicator
+        vu_bars = [18, 12, 22, 14, 20]
+        for idx, bh in enumerate(vu_bars):
             bx = 220 + (idx * 16)
-            bh = int(lvl * 24)
             draw.rectangle([(bx, 488 - bh), (bx + 10, 488)], fill=(46, 204, 113))
 
     # Dave Anchor Box
@@ -118,7 +115,7 @@ def render_animated_studio_frame(
     dave_bg = (24, 32, 50) if dave_speaking else (18, 24, 38)
     draw.rounded_rectangle([(60, 530), (440, 850)], radius=10, fill=dave_bg, outline=dave_border, width=3 if dave_speaking else 1)
 
-    dave_sprite = str(assets_dir / "anchor_dave_talk.jpg") if (dave_speaking and anim_state == 'TALK') else str(assets_dir / "anchor_dave_idle.jpg")
+    dave_sprite = str(assets_dir / "anchor_dave.jpg")
     try:
         dave_img = Image.open(dave_sprite).convert('RGB').resize((180, 180))
         img.paste(dave_img, (80, 550))
@@ -131,10 +128,10 @@ def render_animated_studio_frame(
     if dave_speaking:
         draw.rounded_rectangle([(80, 810), (200, 840)], radius=4, fill=(231, 76, 60))
         draw.text((92, 815), "ON AIR", fill=(255, 255, 255), font=font_host_name)
-        # Equalizer VU meter bars
-        for idx, lvl in enumerate(vu_levels):
+        # Static Equalizer VU indicator
+        vu_bars = [16, 22, 14, 20, 18]
+        for idx, bh in enumerate(vu_bars):
             bx = 220 + (idx * 16)
-            bh = int(lvl * 24)
             draw.rectangle([(bx, 838 - bh), (bx + 10, 838)], fill=(231, 76, 60))
 
     # --- RIGHT PANEL: MAIN BROADCAST SCREEN ---
@@ -182,27 +179,24 @@ def render_animated_studio_frame(
     img.save(output_path)
     return output_path
 
-def generate_animated_studio_video(animated_shots: list, audio_path: str, output_mp4_path: str, pid: int = 0):
-    """
-    Compiles animated TV studio shots (frames + durations) into a broadcast MP4 video.
-    animated_shots: list of tuples (frame_png_path, duration_seconds)
-    """
-    if not animated_shots or not os.path.exists(audio_path):
-        print("❌ No animated shots provided or missing audio file.")
+def generate_broadcast_video(segment_frames: list, segment_durations: list, audio_path: str, output_mp4_path: str, pid: int = 0):
+    """Compiles TV studio broadcast cuts into an optimized 720p MP4 video with no image flashing."""
+    if len(segment_frames) != len(segment_durations) or not os.path.exists(audio_path):
+        print("❌ Frame count does not match duration count or missing audio.")
         return ""
 
-    total_dur = sum(s[1] for s in animated_shots)
-    print(f"🎬 Compiling {len(animated_shots)} Animated TV Studio Frames ({total_dur:.1f}s total runtime)...")
+    total_dur = sum(segment_durations)
+    print(f"🎬 Compiling {len(segment_frames)} TV Studio Shots ({total_dur:.1f}s total runtime)...")
 
-    temp_dir = Path(__file__).resolve().parent / f"temp_anim_sync_{pid}"
+    temp_dir = Path(__file__).resolve().parent / f"temp_tv_sync_{pid}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    concat_file = temp_dir / "anim_sync_concat.txt"
+    concat_file = temp_dir / "tv_sync_concat.txt"
     with open(concat_file, 'w') as f:
-        for img_p, dur in animated_shots:
+        for img_p, dur in zip(segment_frames, segment_durations):
             f.write(f"file '{img_p}'\n")
-            f.write(f"duration {max(dur, 0.15):.2f}\n")
-        f.write(f"file '{animated_shots[-1][0]}'\n")
+            f.write(f"duration {max(dur, 0.5):.2f}\n")
+        f.write(f"file '{segment_frames[-1]}'\n")
 
     cmd = [
         "ffmpeg", "-y",
@@ -219,5 +213,5 @@ def generate_animated_studio_video(animated_shots: list, audio_path: str, output
     try: temp_dir.rmdir()
     except: pass
 
-    print(f"🎉 Master Animated TV Studio Show Created: {output_mp4_path}")
+    print(f"🎉 Master TV Studio Show Created: {output_mp4_path}")
     return output_mp4_path
