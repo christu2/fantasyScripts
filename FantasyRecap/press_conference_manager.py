@@ -3,10 +3,12 @@
 BFL Press Conference & Owner Interview Manager
 ==============================================
 Manages the weekly owner interview pipeline:
-1. Monday Night Media Call: Posts customized interview prompts to Discord after MNF.
-2. Discord Chat Harvesting: Pulls real post-game quotes from #trash-talk / #press-conference.
-3. Contextual Fallback Engine: Generates realistic manager statements for owners who didn't submit.
-4. Integrates seamlessly into Tuesday Morning Hangover show.
+1. Monday Night Media Call: Reaches out to managers in Discord after MNF.
+   - Specifically tags/prompts managers from the week's biggest storylines (Game of the Week,
+     Demolition, Bench Blunder, and Bad Beat) while keeping the floor open for all 16 owners.
+2. Discord Chat Harvesting: Pulls ONLY REAL post-game quotes submitted in #trash-talk / #press-conference.
+3. STRICT NO-FAKE-QUOTES POLICY: If an owner did not reply, NO fake quote is generated.
+   Only genuine Discord statements are featured on the broadcast.
 """
 
 import os
@@ -60,24 +62,45 @@ DISCORD_USER_MAP = {
     'lovasko': 'Emelie Lovasko'
 }
 
-def post_monday_night_interview_call(season: int, week_num: int, game_of_week: dict = None, demolition: dict = None):
+def post_monday_night_interview_call(
+    season: int,
+    week_num: int,
+    target_owners: list = None,
+    gotw_info: str = "",
+    demolition_info: str = "",
+    blunder_info: str = ""
+):
     """
-    Posts an automated Monday Night Media Availability prompt to Discord
-    inviting managers to submit post-game press conference statements.
+    Posts the Monday Night Media Availability prompt to Discord.
+    Specifically spotlights the managers involved in the week's biggest headlines
+    while welcoming all 16 managers to submit statements.
     """
     if not DISCORD_WEBHOOK_PODCAST:
         print("⚠️ DISCORD_WEBHOOK_PODCAST not set in .env")
         return False
 
+    spotlight_bullets = ""
+    if gotw_info:
+        spotlight_bullets += f"• **Game of the Week**: {gotw_info}\n"
+    if demolition_info:
+        spotlight_bullets += f"• **Demolition of the Week**: {demolition_info}\n"
+    if blunder_info:
+        spotlight_bullets += f"• **Lineup Questions**: {blunder_info}\n"
+
+    tagged_section = ""
+    if target_owners:
+        tagged_section = f"\n**Spotlight Availability Requested for:** {', '.join(target_owners)}\n"
+
     prompt_msg = (
         f"🎙️ **BFL POST-GAME MEDIA AVAILABILITY (WEEK {week_num}, {season})** 🎙️\n"
-        f"*The Monday Night Football final gun has sounded! The microphones are live in the media room.*\n\n"
-        f"**Managers, submit your official post-game press conference statements below before Tuesday at 7:00 AM CT for inclusion in the BFL Tuesday Morning Hangover show:**\n\n"
-        f"• **Winners**: What was the key to securing victory this week?\n"
-        f"• **Heartbreakers**: What went wrong in the fourth quarter?\n"
-        f"• **Coaches on the Hot Seat**: Any lineup regrets or benching blunders you want to address?\n"
-        f"• **Looking Ahead**: Who is calling out their next opponent?\n\n"
-        f"*(Quotes submitted here or in `#trash-talk` will be featured on air by Chris & Dave tomorrow morning!)* 📺"
+        f"*The Monday Night Football final gun has sounded! The press room microphones are live.*\n"
+        f"{tagged_section}\n"
+        f"{spotlight_bullets}\n"
+        f"**Managers, submit your official post-game press conference statements below before Tuesday at 7:00 AM CT to be featured in the Tuesday Morning Hangover broadcast:**\n\n"
+        f"1. What was the key to this week's outcome?\n"
+        f"2. Any lineup decisions or roster moves you want on the record?\n"
+        f"3. Looking ahead to next week's matchup?\n\n"
+        f"*(Only real statements submitted here or in `#trash-talk` will be read and reacted to on air by Chris & Dave!)* 📺"
     )
 
     try:
@@ -100,7 +123,8 @@ def post_monday_night_interview_call(season: int, week_num: int, game_of_week: d
 def harvest_real_quotes_from_discord(channel_id: str = None) -> dict:
     """
     Pulls recent messages from Discord and maps them to BFL owners.
-    Returns a dict: { 'Owner Name': 'Quote text' }
+    STRICT: Only returns actual, genuine messages from real managers.
+    Returns: { 'Owner Name': 'Real quote text' }
     """
     quotes = {}
     if not DISCORD_BOT_TOKEN or not channel_id:
@@ -125,67 +149,30 @@ def harvest_real_quotes_from_discord(channel_id: str = None) -> dict:
                         break
 
                 if owner_matched and content and owner_matched not in quotes:
-                    # Clean markdown and quote format
                     clean_content = re.sub(r'[*_`]', '', content)
                     quotes[owner_matched] = clean_content
     except Exception as e:
         print(f"⚠️ Error harvesting Discord quotes: {e}")
     return quotes
 
-def get_weekly_manager_quotes(season: int, week_num: int, matchups: list, channel_id: str = None) -> list:
+def get_verified_manager_quotes(channel_id: str = None) -> list:
     """
-    Returns a comprehensive list of manager quote dicts for the show:
-    [{'tag': '...', 'owner': '...', 'team': '...', 'quote': '...'}]
-    Prioritizes real Discord submissions and fills missing quotes with intelligent contextual quotes.
+    Returns ONLY real, verified quotes from Discord.
+    If no real quotes were submitted, returns an empty list.
     """
     real_quotes = harvest_real_quotes_from_discord(channel_id)
     quote_cards = []
 
-    # Map of fallback templates based on matchup context
-    for m in matchups[:4]:
-        w = m['winner'] if isinstance(m['winner'], dict) else {'name': str(m['winner']), 'owner': str(m['winner'])}
-        l = m['loser'] if isinstance(m['loser'], dict) else {'name': str(m['loser']), 'owner': str(m['loser'])}
-        margin = m.get('margin', 10.0)
+    for owner, quote in real_quotes.items():
+        quote_cards.append({
+            'tag': 'PRESS ROOM',
+            'header': f"{owner}:",
+            'desc': f"\"{quote}\""
+        })
 
-        w_owner = w.get('owner', 'Winner')
-        w_team = w.get('name', 'Team')
-        l_owner = l.get('owner', 'Loser')
-        l_team = l.get('name', 'Team')
-
-        # Winner Quote
-        if w_owner in real_quotes:
-            quote_cards.append({
-                'tag': 'PRESS ROOM',
-                'header': f"{w_owner} ({w_team}):",
-                'desc': f"\"{real_quotes[w_owner]}\""
-            })
-        else:
-            w_quote = f"Winning by {margin:.2f} points shows the heart of this roster. We are locked in on The Jabroni!"
-            quote_cards.append({
-                'tag': 'VICTORY',
-                'header': f"{w_owner} ({w_team}):",
-                'desc': f"\"{w_quote}\""
-            })
-
-        # Loser Quote
-        if l_owner in real_quotes:
-            quote_cards.append({
-                'tag': 'PRESS ROOM',
-                'header': f"{l_owner} ({l_team}):",
-                'desc': f"\"{real_quotes[l_owner]}\""
-            })
-        else:
-            l_quote = f"Dropping a {margin:.2f}-point decision stings. Emergency team meeting at 8 AM to fix the lineup."
-            quote_cards.append({
-                'tag': 'HEARTBREAK',
-                'header': f"{l_owner} ({l_team}):",
-                'desc': f"\"{l_quote}\""
-            })
-
-    return quote_cards[:4]
+    return quote_cards
 
 if __name__ == "__main__":
-    print("Testing BFL Press Conference Manager...")
-    quotes = get_weekly_manager_quotes(2025, 1, [{'winner': {'owner': 'Abe Thomas', 'name': 'Crashee Bandicoot'}, 'loser': {'owner': 'Saagar Gupta', 'name': \"King Gupta's Army\"}, 'margin': 24.44}])
-    for q in quotes:
-        print("🎙️", q['header'], q['desc'])
+    print("Testing BFL Press Conference Manager (Strict No-Fake-Quotes)...")
+    verified = get_verified_manager_quotes()
+    print(f"Verified quotes harvested: {len(verified)}")

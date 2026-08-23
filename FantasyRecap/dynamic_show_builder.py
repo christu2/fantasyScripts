@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-BFL Dynamic Weekly Show Builder (Full 8-10+ Minute Championship Broadcast)
-==========================================================================
+BFL Dynamic Weekly Show Builder (Full 8-10+ Minute Broadcast Pipeline)
+======================================================================
 Dynamically constructs full 8.5 to 10+ minute television sports show storylines
 for ANY ESPN season and week, with deep historical intelligence, championship
-lore, player stat lines, and press conference roasts.
+lore, player stat lines, and strict real-only press conference quotes.
 """
 
 from FantasyRecap.league_recap_generator import analyze_week
+from FantasyRecap.press_conference_manager import get_verified_manager_quotes
 
-def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list:
+def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int, channel_id: str = None) -> list:
     matchups, perfs, teams = analyze_week(raw_data, week_num)
+    verified_quotes = get_verified_manager_quotes(channel_id)
 
     scenes = []
 
@@ -70,13 +72,13 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
             'items': [
                 {'tag': "ON BENCH", 'header': "Brock Purdy — 36.92 PTS on Pine", 'desc': "Left on Dan's bench while starting quarterback slot stalled."},
                 {'tag': "TITLE SWING", 'header': "+23.12 Point Net Swing", 'desc': "Starting Brock Purdy flips the championship to a Dan title win by +17.20 pts."},
-                {'tag': "HEARTBREAK", 'header': "Dan in #trash-talk:", 'desc': "\"36.9 pts on my bench in the championship game... I need a drink.\""}
+                {'tag': "SWING", 'header': "The Ultimate Title What-If", 'desc': "A single roster move separated Dan from his 2nd championship ring."}
             ]
         },
         'dialogue': [
             ('CHRIS', "And Dave, look at Dan's bench! This is going to haunt Dan all winter long. He had Brock Purdy sitting on his pine dropping thirty-six point nine two fantasy points! If Dan starts Purdy in his quarterback slot, he wins the championship by over seventeen points and hoists his second career Jabroni Trophy. Instead, Abe survives by five points!"),
-            ('DAVE', "Leaving thirty-seven points on your pine in the championship game is the ultimate dagger to the soul, Chris. Dan posted in the league chat saying: 'Thirty-six point nine points on my bench in the title game, I need a drink.' You cannot make that mistake against a champion like Abe. Abe hoists his third career Jabroni Trophy and joins the elite three-ring pantheon!"),
-            ('CHRIS', "Dan had an incredible season leading the league in efficiency, but that one lineup decision will be debated in the group chat until September.")
+            ('DAVE', "Leaving thirty-seven points on your pine in the championship game is the ultimate dagger to the soul, Chris! You cannot make that mistake against a champion like Abe. Abe hoists his third career Jabroni Trophy and joins the elite three-ring pantheon!"),
+            ('CHRIS', "Dan had an incredible season leading the league in efficiency, but that one lineup decision will be debated in the league history books for years to come.")
         ]
     })
 
@@ -213,28 +215,42 @@ def build_dynamic_scenes_from_espn(raw_data, season: int, week_num: int) -> list
     })
 
     # =========================================================================
-    # SCENE 10: MIDNIGHT MEDIA PRESS ROOM (Championship Soundbites)
+    # SCENE 10: VERIFIED PRESS ROOM QUOTES OR INDIVIDUAL SCORING LEADERS
     # =========================================================================
-    scenes.append({
-        'card': {
-            'title': "MIDNIGHT MEDIA PRESS ROOM",
-            'subtitle': "Post-Championship Manager Soundbites",
-            'badge': "PRESS CONFERENCE",
-            'accent': (243, 156, 18),
-            'items': [
-                {'tag': "3-TIME CHAMP", 'header': "Abe Thomas (3x BFL Champion):", 'desc': "\"3 championships across three decades (2011, 2022, 2025)! Put respect on Crashee Bandicoot!\""},
-                {'tag': "HEARTBREAK", 'header': "Dan Kruszewski (Runner-Up):", 'desc': "\"Leaving 37 points on my bench in the title game stings. We will be back next year.\""},
-                {'tag': "4-TIME GOAT", 'header': "Shawn Lukose (4th Place):", 'desc': "\"Missing the podium is unacceptable. Massive roster overhaul starting tomorrow.\""},
-                {'tag': "DROUGHT", 'header': "Saagar Gupta (8th Place):", 'desc': "\"18 years since 2008... The title drought continues, but 2026 is our year.\""}
+    if verified_quotes:
+        scenes.append({
+            'card': {
+                'title': "MIDNIGHT MEDIA PRESS ROOM",
+                'subtitle': "Verified Manager Soundbites from Discord",
+                'badge': "PRESS CONFERENCE",
+                'accent': (243, 156, 18),
+                'items': verified_quotes[:4]
+            },
+            'dialogue': [
+                ('CHRIS', "Now let's head down to the media room to review the official post-game soundbites submitted by our managers in Discord after midnight."),
+                ('DAVE', "The trash-talk and post-game reactions were flowing after the final whistle! Let's see what our managers had on their minds."),
+                ('CHRIS', "The accountability in this league is what makes the BFL great.")
             ]
-        },
-        'dialogue': [
-            ('CHRIS', "Now let's head down to the media press room for the final post-game soundbites of the season. Three-time champion Abe Thomas was showered in champagne and told reporters: 'Winning three championships across three different decades in this league proves what we built. The Jabroni Trophy stays in our trophy room!'"),
-            ('DAVE', "And Dan Kruszewski was holding his head in his hands in the hallway, saying: 'Leaving thirty-seven points on my bench with Brock Purdy in the championship game is going to keep me up at night all offseason, but congratulations to Abe.'"),
-            ('CHRIS', "Four-time champion Shawn Lukose was furious about missing the podium, stating: 'Finishing fourth is unacceptable for this franchise. We are holding an eight A M team meeting tomorrow morning to revamp the entire organization.'"),
-            ('DAVE', "And Saagar Gupta sighed deeply into the microphone, saying: 'Eighteen years since 2008. The drought continues, but we will be back in 2026 hunting for ring number two.'")
-        ]
-    })
+        })
+    else:
+        scenes.append({
+            'card': {
+                'title': "WEEK 17 INDIVIDUAL SCORING LEADERS",
+                'subtitle': "Top Fantasy MVP Performers of Championship Sunday",
+                'badge': "INDIVIDUAL MVPS",
+                'accent': (243, 156, 18),
+                'items': [
+                    {'tag': "MVP RB", 'header': "King Derrick Henry — 45.60 FANTASY PTS", 'desc': "Explosive 31-year-old veteran leads the entire league across all positions."},
+                    {'tag': "SUPERSTAR", 'header': "Bijan Robinson — 39.40 FANTASY PTS", 'desc': "Nuclear multi-touchdown masterclass carries Green and Golden."},
+                    {'tag': "AIR SHOW", 'header': "Brock Purdy — 36.92 FANTASY PTS", 'desc': "Dominant 4-touchdown aerial clinic in the final scoring period."}
+                ]
+            },
+            'dialogue': [
+                ('CHRIS', "Now let's look at our official Individual MVP Leaders for Championship Sunday, where some of the biggest stars in the NFL put on absolute video game clinics."),
+                ('DAVE', "King Derrick Henry led all players with an absurd forty-five point six fantasy points! Bijan Robinson went completely nuclear with thirty-nine point four points, and Brock Purdy delivered thirty-six point nine points through the air!"),
+                ('CHRIS', "When your elite studs show up on Championship Sunday, they can single-handedly win you a matchup.")
+            ]
+        })
 
     # =========================================================================
     # SCENE 11: ALL-TIME BFL TROPHY ROOM & DYNASTY RANKINGS
