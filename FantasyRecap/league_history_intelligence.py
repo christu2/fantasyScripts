@@ -80,64 +80,64 @@ OWNER_PROFILES = {
         'rings': 1,
         'champ_years': [2013],
         'runner_up_years': [],
-        'tagline': "2013 Champion (13-Year Drought)",
-        'summary': "Won the 2013 title over Tommy; seeking his 2nd ring."
+        'tagline': "2013 Champion (13-Year Jabroni Drought)",
+        'summary': "Won the 2013 Jabroni Trophy over Tommy; seeking his 2nd Jabroni."
     },
     'Adam Olen': {
         'rings': 1,
         'champ_years': [2017],
         'runner_up_years': [],
-        'tagline': "2017 Champion",
-        'summary': "Won the legendary 1-point Super Bowl thriller over Lukose in 2017."
+        'tagline': "2017 Jabroni Champion",
+        'summary': "Won the legendary 1-point Super Bowl thriller over Lukose to hoist The Jabroni in 2017."
     },
     'Saagar Gupta': {
         'rings': 1,
         'champ_years': [2008],
         'runner_up_years': [],
-        'tagline': "Inaugural Champion (18-Year Drought)",
-        'summary': "Won the first-ever BFL title in 2008; currently enduring the league's longest active title drought (18 years)."
+        'tagline': "Inaugural Champion (18-Year Jabroni Drought)",
+        'summary': "Won the first-ever Jabroni Trophy in 2008; currently enduring the league's longest active title drought (18 years)."
     },
     'Sydney Miller': {
         'rings': 1,
         'champ_years': [2024],
         'runner_up_years': [],
-        'tagline': "2024 Champion",
-        'summary': "Won the 2024 title; now competing as an independent franchise."
+        'tagline': "2024 Jabroni Champion",
+        'summary': "Hoisted the 2024 Jabroni Trophy; now competing as an independent franchise."
     },
     'Tommy Ehrlich': {
         'rings': 0,
         'champ_years': [],
         'runner_up_years': [2013, 2015],
-        'tagline': "2x Finalist Chasing Ring #1",
-        'summary': "Two Super Bowl runner-up finishes (2013, 2015); perpetually knocking on the door."
+        'tagline': "2x Finalist Chasing Jabroni #1",
+        'summary': "Two Super Bowl runner-up finishes (2013, 2015); perpetually hunting for his first Jabroni Trophy."
     },
     'Blake Whitehouse': {
         'rings': 0,
         'champ_years': [],
         'runner_up_years': [2011, 2016],
-        'tagline': "2x Finalist Chasing Ring #1",
-        'summary': "Two Super Bowl appearances (2011, 2016); searching for that elusive first Lombardi."
+        'tagline': "2x Finalist Chasing Jabroni #1",
+        'summary': "Two Super Bowl appearances (2011, 2016); searching for that elusive first Jabroni Trophy."
     },
     'Samran Mirza': {
         'rings': 0,
         'champ_years': [],
         'runner_up_years': [2018, 2023],
-        'tagline': "2x Finalist Chasing Ring #1",
-        'summary': "Twice reached the mountaintop only to fall to Lukose in 2018 and 2023."
+        'tagline': "2x Finalist Chasing Jabroni #1",
+        'summary': "Twice reached the mountaintop only to fall to Lukose; chasing his first career Jabroni."
     },
     'rej hoxha': {
         'rings': 0,
         'champ_years': [],
         'runner_up_years': [2020, 2021],
-        'tagline': "2x Finalist Chasing Ring #1",
-        'summary': "Back-to-back finalist (2020, 2021) including the heartbreaking 0.08-pt Super Bowl loss to Dino."
+        'tagline': "2x Finalist Chasing Jabroni #1",
+        'summary': "Back-to-back finalist (2020, 2021) including the heartbreaking 0.08-pt Super Bowl loss to Dino in the 2020 Jabroni clash."
     },
     'Nael Ahmed': {
         'rings': 0,
         'champ_years': [],
         'runner_up_years': [],
         'tagline': "Franchise Playoff Contender",
-        'summary': "Consistently competitive franchise searching for its first championship appearance."
+        'summary': "Consistently competitive franchise searching for its first Jabroni Trophy appearance."
     },
     'Alex Kite': {
         'rings': 0,
