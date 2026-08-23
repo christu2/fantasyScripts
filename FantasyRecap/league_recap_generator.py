@@ -108,10 +108,10 @@ def parse_league_members_and_teams(data):
         }
     return teams
 
-def calculate_optimal_lineup(roster_entries):
+def calculate_optimal_lineup(roster_entries, week_num: int = 1):
     """
     Computes the maximum theoretical score a team could have produced with their roster.
-    Returns: (optimal_score, optimal_lineup, starters, bench, bench_blunders)
+    Enforces strict positional legality and projection-based blunder sanity checks.
     """
     all_players = []
     for entry in roster_entries:
@@ -120,13 +120,20 @@ def calculate_optimal_lineup(roster_entries):
         pos_id = p.get('defaultPositionId', 0)
         slot_id = entry.get('lineupSlotId', 20)
         name = p.get('fullName', 'Unknown')
-        pro_team = p.get('proTeamId', 0)
         
+        # Extract pre-game projected points (statSourceId: 1)
+        proj = 0.0
+        for s in p.get('stats', []):
+            if s.get('statSourceId') == 1 and (s.get('scoringPeriodId') == week_num or s.get('seasonId')):
+                proj = round(s.get('appliedTotal', 0.0), 2)
+                break
+                
         all_players.append({
             'name': name,
             'pos_id': pos_id,
             'pos_name': POSITION_MAP.get(pos_id, 'FLEX'),
             'pts': pts,
+            'proj': proj,
             'slot_id': slot_id,
             'slot_name': SLOT_MAP.get(slot_id, 'Bench'),
             'is_starter': slot_id not in [20, 21]
@@ -158,16 +165,41 @@ def calculate_optimal_lineup(roster_entries):
     
     optimal_score = sum(p['pts'] for p in optimal_lineup)
     
-    # Identify bench blunders: bench players who scored more than starters at their position
+    # Identify legitimate, realistic bench blunders:
+    # 1. Strictly positionally legal (QB can ONLY replace QB; RB/WR/TE can replace pos or FLEX)
+    # 2. Projection sanity: Benched player had a realistic projection (within 4.5 pts or higher than starter)
     bench_blunders = []
     for b in bench:
-        worse_starters = [s for s in starters if (s['pos_id'] == b['pos_id'] or s['slot_id'] == 23) and b['pts'] > s['pts'] + 4.0]
-        if worse_starters:
-            worst = min(worse_starters, key=lambda x: x['pts'])
+        b_pos = b['pos_id']
+        b_pts = b['pts']
+        b_proj = b.get('proj', 0.0)
+        
+        eligible_starters = []
+        for s in starters:
+            s_pos = s['pos_id']
+            s_slot = s['slot_id']
+            s_proj = s.get('proj', 0.0)
+            
+            is_legal = False
+            if b_pos == 1 and s_pos == 1:
+                is_legal = True
+            elif b_pos in [2, 3, 4] and (s_pos == b_pos or s_slot == 23):
+                is_legal = True
+            elif b_pos in [5, 16] and s_pos == b_pos:
+                is_legal = True
+                
+            if is_legal and b_pts > s['pts'] + 3.0:
+                # Sanity check: Don't fault someone for starting an elite stud (proj >= 15) over a deep backup (proj <= 8)
+                is_reasonable_tossup = (b_proj >= s_proj - 4.5) or (s['pts'] <= 4.0 and b_proj >= 7.0)
+                if is_reasonable_tossup:
+                    eligible_starters.append(s)
+                    
+        if eligible_starters:
+            worst = min(eligible_starters, key=lambda x: x['pts'])
             bench_blunders.append({
                 'benched': b,
                 'started': worst,
-                'diff': round(b['pts'] - worst['pts'], 2)
+                'diff': round(b_pts - worst['pts'], 2)
             })
             
     bench_blunders = sorted(bench_blunders, key=lambda x: x['diff'], reverse=True)
@@ -193,8 +225,8 @@ def analyze_week(data, week_num: int):
         home_score = round(home_data.get('totalPoints', 0.0), 2)
         
         # Calculate optimal lineups
-        away_opt, away_opt_lineup, away_starters, away_bench, away_blunders = calculate_optimal_lineup(away_data.get('rosterForCurrentScoringPeriod', {}).get('entries', []))
-        home_opt, home_opt_lineup, home_starters, home_bench, home_blunders = calculate_optimal_lineup(home_data.get('rosterForCurrentScoringPeriod', {}).get('entries', []))
+        away_opt, away_opt_lineup, away_starters, away_bench, away_blunders = calculate_optimal_lineup(away_data.get('rosterForCurrentScoringPeriod', {}).get('entries', []), week_num)
+        home_opt, home_opt_lineup, home_starters, home_bench, home_blunders = calculate_optimal_lineup(home_data.get('rosterForCurrentScoringPeriod', {}).get('entries', []), week_num)
         
         away_eff = round((away_score / away_opt * 100), 1) if away_opt > 0 else 100.0
         home_eff = round((home_score / home_opt * 100), 1) if home_opt > 0 else 100.0
