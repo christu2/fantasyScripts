@@ -39,10 +39,10 @@ VOICE_HOST2 = 'en-US-GuyNeural'                 # Dave (Color Analyst - Expressi
 
 MASTER_PHONETICS = [
     # --- Lore & Trophy ---
-    (r'\bThe Jabroni Trophy\b', 'The juh-BROH-nee Trophy'),
-    (r'\bThe Jabroni\b', 'The juh-BROH-nee'),
-    (r'\bJabroni\b', 'juh-BROH-nee'),
-    (r'\bJabronis\b', 'juh-BROH-nees'),
+    (r'\bThe Jabroni Trophy\b', 'The Jahbroni Trophy'),
+    (r'\bThe Jabroni\b', 'The Jahbroni'),
+    (r'\bJabroni\b', 'Jahbroni'),
+    (r'\bJabronis\b', 'Jahbronis'),
 
     # --- League Owners ---
     (r'\bShawn Lukose\b', 'Luke-ose'),
@@ -54,7 +54,7 @@ MASTER_PHONETICS = [
     (r'\bSamran\b', 'Sum-rahn'),
     (r'\bRej\b', 'Ray'),
     (r'\brej\b', 'Ray'),
-    (r'\bSaagar\b', 'SAH-gur'),
+    (r'\bSaagar\b', 'Sah-gur'),
     (r'\bDino\b', 'Dee-no'),
     (r'\bEmelie\b', 'Emily'),
     (r'\bKruszewski\b', 'Cruise-sheff-skee'),
