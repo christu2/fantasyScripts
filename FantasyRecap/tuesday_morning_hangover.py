@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-BFL Tuesday Morning Hangover (Master TV Studio Broadcast Pipeline)
-==================================================================
+BFL Tuesday Morning Hangover (Master Animated TV Studio Broadcast Pipeline)
+===========================================================================
 Produces the definitive weekly television sports show:
 - Hosts: Chris (AndrewMultilingualNeural) & Dave (BrianMultilingualNeural)
-- Full Broadcast TV Studio layout with live anchor avatars & dynamic "ON AIR" speaker indicator
+- Fully Animated Sports Studio Anchors with real-time lip-flapping, gestures & VU meters
 - Dynamic Active Team Name & Owner Name Resolution from live ESPN API
 - Master phonetic pronunciation engine for NFL players and owners
 - Dynamic Slide Transitions synced to every matchup, blunder, and topic (~25-30s each)
@@ -17,6 +17,7 @@ Produces the definitive weekly television sports show:
 import os
 import sys
 import re
+import random
 import asyncio
 import subprocess
 import requests
@@ -27,7 +28,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.discord_chat_harvester import get_sample_trash_talk_banter
-from FantasyRecap.video_highlight_engine import render_tv_studio_frame, generate_tv_studio_video
+from FantasyRecap.video_highlight_engine import render_animated_studio_frame, generate_animated_studio_video
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -271,8 +272,8 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
                 ]
             },
             'dialogue': [
-                ('CHRIS', "Over in the North Division, our Commissioner Nick and the Mykonos Minotaurs took care of business, handling Dino one hundred to eighty-five!"),
-                ('DAVE', "Commissioner Nick top-scored in the North despite Ja'Marr Chase having a quiet three-point day! Keon Coleman exploded for twenty-one points, more than doubling his projection with a huge touchdown grab to bail out the Minotaurs. Dino got twenty-four from Jalen Hurts, but Dino was complaining in the chat at midnight saying: 'Nick only won because his kicker had fourteen points.'")
+                ('CHRIS', "Over in the North Division, our Commissioner Nick and the Melbourne Miscreant Mutts took care of business, handling Dino one hundred to eighty-five!"),
+                ('DAVE', "Commissioner Nick top-scored in the North despite Ja'Marr Chase having a quiet three-point day! Keon Coleman exploded for twenty-one points, more than doubling his projection with a huge touchdown grab to bail out the Mutts. Dino got twenty-four from Jalen Hurts, but Dino was complaining in the chat at midnight saying: 'Nick only won because his kicker had fourteen points.'")
             ]
         },
 
@@ -280,7 +281,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
         {
             'card': {
                 'title': "KEON COLEMAN BOOM & DINO SALT",
-                'subtitle': "21.2 PTS Bails Out Minotaurs",
+                'subtitle': "21.2 PTS Bails Out Miscreant Mutts",
                 'badge': "BREAKOUT STAR",
                 'accent': (46, 204, 113),
                 'items': [
@@ -470,7 +471,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -
 async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1, post_to_discord: bool = True):
     pid = os.getpid()
     print("\n" + "="*75)
-    print(f"🎙️ BFL TUESDAY MORNING HANGOVER: TV STUDIO BROADCAST (WEEK {week_num}, {season})")
+    print(f"🎙️ BFL TUESDAY MORNING HANGOVER: ANIMATED TV STUDIO BROADCAST (WEEK {week_num}, {season})")
     print("="*75)
 
     print("📡 Fetching active live team names & rosters from ESPN API...")
@@ -479,7 +480,7 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
     print(f"✅ Loaded {len(teams)} active BFL franchises dynamically!")
 
     scenes = get_show_scenes(season, week_num, teams)
-    print(f"📝 Loaded {len(scenes)} structured TV studio scenes with dynamic host switching!")
+    print(f"📝 Loaded {len(scenes)} structured animated TV scenes!")
 
     temp_audio_dir = Path(__file__).resolve().parent / f"temp_audio_{pid}"
     temp_slide_dir = Path(__file__).resolve().parent / f"temp_slides_{pid}"
@@ -487,15 +488,17 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
     temp_slide_dir.mkdir(parents=True, exist_ok=True)
 
     all_audio_files = []
-    tv_frame_paths = []
-    tv_frame_durations = []
+    animated_shots = []
 
-    print("🎙️ Synthesizing neural audio and rendering TV studio frames with live host switching...")
+    print("🎙️ Synthesizing neural audio and generating animated TV studio shots...")
 
     global_seg_idx = 0
+    frame_counter = 0
+
     for scene_idx, sc in enumerate(scenes):
         card = sc['card']
         dialogue = sc['dialogue']
+        scene_total_dur = 0.0
 
         for speaker, raw_text in dialogue:
             clean_text = clean_for_spoken_audio(raw_text)
@@ -506,31 +509,48 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
             await comm.save(seg_file)
             all_audio_files.append(seg_file)
 
-            # Check individual duration
+            # Measure segment audio duration
             cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", seg_file]
             res = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
             try:
                 dur = float(res.stdout.strip())
             except:
                 dur = 5.0
+            scene_total_dur += dur
 
-            # Render TV Studio Frame with Active Speaker highlighted
-            frame_path = str(temp_slide_dir / f"frame_{global_seg_idx:03d}_{speaker}.png")
-            render_tv_studio_frame(
-                title=card['title'],
-                subtitle=card['subtitle'],
-                category_badge=card['badge'],
-                items=card['items'],
-                speaker=speaker,
-                output_path=frame_path,
-                accent_color=card['accent']
-            )
+            # Generate multi-frame animated shots during this speaker's dialogue turn
+            # Alternates between TALK (0.35s-0.55s) and IDLE (0.2s-0.35s) with live VU meters
+            cur_time = 0.0
+            step_idx = 0
+            while cur_time < dur:
+                anim_state = 'TALK' if (step_idx % 2 == 0) else 'IDLE'
+                chunk_dur = random.uniform(0.35, 0.55) if anim_state == 'TALK' else random.uniform(0.20, 0.35)
+                if cur_time + chunk_dur > dur:
+                    chunk_dur = dur - cur_time
 
-            tv_frame_paths.append(frame_path)
-            tv_frame_durations.append(dur)
+                vu = [random.uniform(0.3, 1.0) for _ in range(5)] if anim_state == 'TALK' else [random.uniform(0.1, 0.3) for _ in range(5)]
+                frame_path = str(temp_slide_dir / f"anim_{frame_counter:04d}_{speaker}.png")
+
+                render_animated_studio_frame(
+                    title=card['title'],
+                    subtitle=card['subtitle'],
+                    category_badge=card['badge'],
+                    items=card['items'],
+                    speaker=speaker,
+                    anim_state=anim_state,
+                    vu_levels=vu,
+                    output_path=frame_path,
+                    accent_color=card['accent']
+                )
+
+                animated_shots.append((frame_path, chunk_dur))
+                cur_time += chunk_dur
+                step_idx += 1
+                frame_counter += 1
+
             global_seg_idx += 1
 
-        print(f"  • Scene {scene_idx+1:02d}/{len(scenes):02d} [{card['badge']}]: {sum(tv_frame_durations[-len(dialogue):]):.1f}s")
+        print(f"  • Scene {scene_idx+1:02d}/{len(scenes):02d} [{card['badge']}]: {scene_total_dur:.1f}s ({frame_counter} anim frames)")
 
     # Stitch Master Podcast MP3
     master_mp3 = str(Path(__file__).resolve().parent / f"bfl_tuesday_morning_hangover_week_{week_num}_{season}.mp3")
@@ -558,25 +578,25 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
     secs = int(dur_seconds % 60)
     print(f"🎉 Master Audio Rendered! Runtime: {mins}m {secs}s -> {master_mp3}")
 
-    # Generate TV Studio MP4 Video Reel with host speaker switching
+    # Generate Animated TV Studio MP4 Video Reel
     master_mp4 = str(Path(__file__).resolve().parent / f"bfl_tuesday_hangover_week_{week_num}_{season}.mp4")
-    print(f"🎬 Compiling TV Studio MP4 Video Show ({len(tv_frame_paths)} Live Speaker Cuts) -> {master_mp4}...")
-    generate_tv_studio_video(tv_frame_paths, tv_frame_durations, master_mp3, master_mp4, pid)
+    print(f"🎬 Compiling Animated TV Studio MP4 Video Show ({len(animated_shots)} Animated Frames) -> {master_mp4}...")
+    generate_animated_studio_video(animated_shots, master_mp3, master_mp4, pid)
 
     # Post to Discord #press-room-podcast
     if post_to_discord and os.getenv("DISCORD_WEBHOOK_PODCAST"):
         print("🚀 Uploading Tuesday Morning Hangover (MP3 + MP4) to #press-room-podcast Forum...")
-        thread_title = f"☕ BFL Tuesday Morning Hangover: Week {week_num} TV Show ({mins}m {secs}s)"
+        thread_title = f"☕ BFL Tuesday Morning Hangover: Week {week_num} Animated TV Show ({mins}m {secs}s)"
 
         # Post 1: Forum Thread Creation with MP3 Audio Podcast
         thread_id = None
         with open(master_mp3, 'rb') as f_mp3:
             files_mp3 = {'file': (f"bfl_tuesday_morning_hangover_week_{week_num}_{season}.mp3", f_mp3, 'audio/mpeg')}
             data_mp3 = {
-                'username': 'BFL TV Studio Desk (Chris & Dave)',
+                'username': 'BFL Animated TV Broadcast Desk',
                 'avatar_url': 'https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png',
                 'thread_name': thread_title,
-                'content': f"☕ **BFL TUESDAY MORNING HANGOVER: WEEK {week_num} TELEVISION BROADCAST ({season})**\n*Chris & Dave host from the studio desk with live anchor switching, active fantasy team names, exact player stat lines, and Week 2 Marquee Lookaheads!*\n\n⏱️ **Duration:** `{mins}m {secs}s`\n🎧 **Listen to the Audio Podcast or watch the Studio TV Show below:** 👇"
+                'content': f"☕ **BFL TUESDAY MORNING HANGOVER: WEEK {week_num} ANIMATED TV BROADCAST ({season})**\n*Chris & Dave host live from the animated studio desk with full talking gestures, pulsing audio VU meters, active fantasy team names, exact player stat lines, and Week 2 Marquee Lookaheads!*\n\n⏱️ **Duration:** `{mins}m {secs}s`\n🎧 **Listen to the Audio Podcast or watch the Animated TV Show below:** 👇"
             }
             resp_mp3 = requests.post(os.getenv("DISCORD_WEBHOOK_PODCAST") + "?wait=true", data=data_mp3, files=files_mp3, timeout=45)
             
@@ -598,13 +618,13 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
             with open(master_mp4, 'rb') as f_mp4:
                 files_mp4 = {'file': (f"bfl_tuesday_hangover_week_{week_num}_{season}.mp4", f_mp4, 'video/mp4')}
                 data_mp4 = {
-                    'username': 'BFL TV Studio Broadcast Desk',
+                    'username': 'BFL Animated Studio Broadcast Desk',
                     'avatar_url': 'https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png',
-                    'content': "🎬 **BFL Tuesday Morning Hangover Full Studio TV Show (1080p):**\n*Watch Chris & Dave on the studio desk with live 'ON AIR' host camera switching, active fantasy team names, and matchup boards:* 📺"
+                    'content': "🎬 **BFL Tuesday Morning Hangover Full Animated Studio TV Show (1080p):**\n*Watch animated anchors Chris & Dave on the studio desk with live talking animations, pulsing VU equalizer meters, active fantasy team names, and matchup boards:* 📺"
                 }
                 resp_mp4 = requests.post(video_url, data=data_mp4, files=files_mp4, timeout=60)
                 if resp_mp4.status_code in [200, 201, 204]:
-                    print("🎉 SUCCESS! Studio TV MP4 Video Show uploaded directly to Discord!")
+                    print("🎉 SUCCESS! Animated Studio TV MP4 Video Show uploaded directly to Discord!")
                 else:
                     print(f"❌ Discord MP4 upload error: {resp_mp4.status_code} - {resp_mp4.text}")
 
