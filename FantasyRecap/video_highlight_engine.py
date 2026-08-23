@@ -29,35 +29,35 @@ def strip_emojis(text: str) -> str:
 def create_slide_card(title: str, subtitle: str, content_items: list, output_path: str, badge_text: str = "SPORTSCENTER HIGHLIGHT", accent_color=(231, 76, 60)):
     """Creates a broadcast-quality Full HD 1920x1080 visual slide card."""
     width, height = 1920, 1080
-    img = Image.new('RGB', (width, height), color=(14, 18, 28))
+    img = Image.new('RGB', (width, height), color=(12, 16, 26))
     draw = ImageDraw.Draw(img)
 
     # Fonts
     try:
         font_badge = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
-        font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 64)
-        font_sub = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 30)
-        font_item_tag = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 22)
-        font_item_header = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 34)
-        font_item_desc = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 26)
-        font_footer = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 22)
+        font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Impact.ttf", 60)
+        font_sub = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 28)
+        font_item_tag = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 20)
+        font_item_header = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 32)
+        font_item_desc = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 24)
+        font_footer = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf", 20)
     except:
         font_badge = font_title = font_sub = font_item_tag = font_item_header = font_item_desc = font_footer = ImageFont.load_default()
 
     # Top Header Background
-    draw.rectangle([(0, 0), (width, 160)], fill=(20, 26, 40))
+    draw.rectangle([(0, 0), (width, 160)], fill=(18, 24, 38))
     draw.rectangle([(0, 154), (width, 160)], fill=accent_color)
 
     # Category Pill Badge
     clean_badge = strip_emojis(badge_text).upper()
     badge_bbox = draw.textbbox((0, 0), clean_badge, font=font_badge)
     badge_w = badge_bbox[2] - badge_bbox[0]
-    draw.rounded_rectangle([(70, 24), (70 + badge_w + 24, 58)], radius=6, fill=accent_color)
-    draw.text((82, 29), clean_badge, fill=(255, 255, 255), font=font_badge)
+    draw.rounded_rectangle([(70, 22), (70 + badge_w + 28, 56)], radius=6, fill=accent_color)
+    draw.text((84, 27), clean_badge, fill=(255, 255, 255), font=font_badge)
 
     # Title & Subtitle
     clean_title = strip_emojis(title).upper()
-    draw.text((70, 70), clean_title, fill=(255, 255, 255), font=font_title)
+    draw.text((70, 72), clean_title, fill=(255, 255, 255), font=font_title)
 
     clean_sub = strip_emojis(subtitle)
     sub_bbox = draw.textbbox((0, 0), clean_sub, font=font_sub)
@@ -65,33 +65,38 @@ def create_slide_card(title: str, subtitle: str, content_items: list, output_pat
     draw.text((width - 70 - sub_w, 95), clean_sub, fill=(160, 175, 200), font=font_sub)
 
     # Main Card Container Box
-    draw.rounded_rectangle([(70, 190), (width - 70, height - 80)], radius=12, fill=(20, 26, 40), outline=(36, 48, 72), width=2)
+    draw.rounded_rectangle([(70, 190), (width - 70, height - 70)], radius=12, fill=(18, 24, 38), outline=(32, 44, 68), width=2)
 
     # Render Content Items
-    y = 230
+    y = 225
     for item in content_items:
         raw_tag = strip_emojis(item.get('tag', '')).upper()
         raw_header = strip_emojis(item.get('header', ''))
         raw_desc = strip_emojis(item.get('desc', ''))
 
-        x_cursor = 100
+        # Background card row
+        draw.rounded_rectangle([(95, y), (width - 95, y + 105)], radius=8, fill=(25, 33, 52))
+
+        # Tag Badge inside row
+        x_cursor = 115
         if raw_tag:
             tag_bbox = draw.textbbox((0, 0), raw_tag, font=font_item_tag)
             tag_w = tag_bbox[2] - tag_bbox[0]
-            draw.rounded_rectangle([(x_cursor, y), (x_cursor + tag_w + 20, y + 36)], radius=6, fill=(35, 95, 160))
-            draw.text((x_cursor + 10, y + 6), raw_tag, fill=(255, 255, 255), font=font_item_tag)
+            draw.rounded_rectangle([(x_cursor, y + 16), (x_cursor + tag_w + 18, y + 46)], radius=6, fill=(35, 95, 160))
+            draw.text((x_cursor + 9, y + 21), raw_tag, fill=(255, 255, 255), font=font_item_tag)
             x_cursor += tag_w + 35
 
-        draw.text((x_cursor, y + 2), raw_header, fill=(255, 255, 255), font=font_item_header)
+        # Header (Team Name & Owner Name)
+        draw.text((x_cursor, y + 15), raw_header, fill=(255, 255, 255), font=font_item_header)
 
+        # Description / Narrative
         if raw_desc:
-            draw.text((100, y + 46), raw_desc, fill=(170, 185, 205), font=font_item_desc)
-            y += 115
-        else:
-            y += 75
+            draw.text((115, y + 60), raw_desc, fill=(175, 190, 210), font=font_item_desc)
+
+        y += 125
 
     # Footer
-    draw.text((90, height - 55), "BEASTS FOOTBALL LEAGUE (BFL) • TUESDAY MORNING HANGOVER BROADCAST", fill=(100, 115, 140), font=font_footer)
+    draw.text((95, height - 48), "BEASTS FOOTBALL LEAGUE (BFL) • TUESDAY MORNING HANGOVER BROADCAST", fill=(100, 115, 140), font=font_footer)
 
     img.save(output_path)
     return output_path

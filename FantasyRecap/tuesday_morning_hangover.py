@@ -4,6 +4,7 @@ BFL Tuesday Morning Hangover (Master Podcast & Dynamic Video Pipeline)
 ======================================================================
 Produces the definitive weekly review with topic-synced visual transitions:
 - Hosts: Chris (AndrewMultilingualNeural) & Dave (BrianMultilingualNeural)
+- Dynamic Active Team Name & Owner Name Resolution from live ESPN API
 - Master phonetic pronunciation engine for NFL players and owners
 - Dynamic Slide Transitions synced to every matchup, blunder, and topic (~25-30s each)
 - Exact player stat lines (394 yds/4 TDs, 169 rush yds/2 TDs, 7 rec/143 yds, 1 rec/8 yds)
@@ -23,6 +24,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.discord_chat_harvester import get_sample_trash_talk_banter
 from FantasyRecap.video_highlight_engine import create_slide_card, generate_topic_synced_video
 
@@ -97,11 +99,29 @@ def clean_for_spoken_audio(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
+def find_team_by_owner_substr(teams: dict, name_part: str) -> tuple:
+    """Finds active team dict and display name from live ESPN payload by owner substring."""
+    name_lower = name_part.lower()
+    for tid, t in teams.items():
+        if name_lower in t['owner'].lower() or name_lower in t['name'].lower():
+            return t['name'], t['owner']
+    return name_part, name_part
+
+def get_show_scenes(season: int = 2025, week_num: int = 1, teams: dict = None) -> list:
     """
     Returns the complete list of 18 structured scenes for the show.
-    Each scene pairs a visual slide card with its matching spoken dialogue segment.
+    Each scene pairs a visual slide card with its matching spoken dialogue segment,
+    dynamically resolving active team names and owner names.
     """
+    if not teams:
+        teams = {}
+
+    def t_disp(name_part: str) -> str:
+        tname, owner = find_team_by_owner_substr(teams, name_part)
+        if tname.lower() == owner.lower():
+            return f"{tname}"
+        return f"{tname} ({owner})"
+
     return [
         # Scene 1: Cold Open & The Race for The Jabroni
         {
@@ -126,12 +146,12 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "GAME OF THE WEEK THRILLER",
-                'subtitle': "Adam Olen (91.32) def. Emelie Lovasko (88.28)",
+                'subtitle': f"{t_disp('Adam')} 91.32 def. {t_disp('Emelie')} 88.28",
                 'badge': "WEST DIVISION",
                 'accent': (230, 126, 34),
                 'items': [
-                    {'tag': "WINNER", 'header': "Adam Olen — 91.32 PTS (1-0)", 'desc': "Bijan Robinson exploded for 6 rec, 100 yds, 1 TD (23.4 pts) to rescue the win."},
-                    {'tag': "RUNNER-UP", 'header': "Emelie Lovasko — 88.28 PTS (0-1)", 'desc': "Brock Purdy put up 16.8 pts, but Nico Collins struggled with just 4.0 pts."},
+                    {'tag': "WINNER", 'header': f"{t_disp('Adam')} — 91.32 PTS (1-0)", 'desc': "Bijan Robinson exploded for 6 rec, 100 yds, 1 TD (23.4 pts) to rescue the win."},
+                    {'tag': "RUNNER-UP", 'header': f"{t_disp('Emelie')} — 88.28 PTS (0-1)", 'desc': "Brock Purdy put up 16.8 pts, but Nico Collins struggled with just 4.0 pts."},
                     {'tag': "MARGIN", 'header': "+3.04 Point Heartbreaker", 'desc': "Decided by a single drive in the final quarter."}
                 ]
             },
@@ -149,7 +169,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
                 'badge': "BLUNDER REEL",
                 'accent': (231, 76, 60),
                 'items': [
-                    {'tag': "ON BENCH", 'header': "Wan'Dale Robinson — 14.5 PTS", 'desc': "Left on Emelie's bench while Nico Collins (4.0 pts) started."},
+                    {'tag': "ON BENCH", 'header': "Wan'Dale Robinson — 14.5 PTS", 'desc': f"Left on {t_disp('Emelie')}'s bench while Nico Collins (4.0 pts) started."},
                     {'tag': "SWAP IMPACT", 'header': "+10.5 Point Net Swing", 'desc': "Starting Wan'Dale flips the outcome to an Emelie win by +7.46 points."},
                     {'tag': "GROUP CHAT", 'header': "Adam Olen in #trash-talk:", 'desc': "\"Thank you Emelie for benching Wan'Dale! Best win of my life.\""}
                 ]
@@ -164,12 +184,12 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "DEMOLITION OF THE WEEK",
-                'subtitle': "Sydney Miller (101.14) def. Shawn Lukose (69.98)",
+                'subtitle': f"{t_disp('Sydney')} 101.14 def. {t_disp('Lukose')} 69.98",
                 'badge': "STATEMENT WIN",
                 'accent': (46, 204, 113),
                 'items': [
-                    {'tag': "DOMINANT", 'header': "Sydney Miller — 101.14 PTS (1-0)", 'desc': "Zay Flowers went nuclear with 7 rec, 143 yds, 1 TD (24.6 pts)."},
-                    {'tag': "BLOWOUT", 'header': "Shawn Lukose — 69.98 PTS (0-1)", 'desc': "Kenneth Walker held under 20 yards; 4-time GOAT routed by +31.16 pts."},
+                    {'tag': "DOMINANT", 'header': f"{t_disp('Sydney')} — 101.14 PTS (1-0)", 'desc': "Zay Flowers went nuclear with 7 rec, 143 yds, 1 TD (24.6 pts)."},
+                    {'tag': "BLOWOUT", 'header': f"{t_disp('Lukose')} — 69.98 PTS (0-1)", 'desc': "Kenneth Walker held under 20 yards; 4-time GOAT routed by +31.16 pts."},
                     {'tag': "QUEEN", 'header': "Hunting for Jabroni #2", 'desc': "Sydney establishes early control of the West Division."}
                 ]
             },
@@ -202,12 +222,12 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "DEFENDING THE JABRONI TROPHY",
-                'subtitle': "Abe Thomas (117.86) def. Saagar Gupta (93.42)",
+                'subtitle': f"{t_disp('Abe')} 117.86 def. {t_disp('Saagar')} 93.42",
                 'badge': "SOUTH DIVISION",
                 'accent': (155, 89, 182),
                 'items': [
-                    {'tag': "LEAGUE HIGH", 'header': "Abe Thomas — 117.86 PTS (1-0)", 'desc': "Lamar Jackson (209 pass yds, 70 rush yds, 3 total TDs) leads the BFL."},
-                    {'tag': "DROUGHT", 'header': "Saagar Gupta — 93.42 PTS (0-1)", 'desc': "Patrick Mahomes put up 26 pts, but A.J. Brown was completely erased."},
+                    {'tag': "LEAGUE HIGH", 'header': f"{t_disp('Abe')} — 117.86 PTS (1-0)", 'desc': "Lamar Jackson (209 pass yds, 70 rush yds, 3 total TDs) leads the BFL."},
+                    {'tag': "DROUGHT", 'header': f"{t_disp('Saagar')} — 93.42 PTS (0-1)", 'desc': "Patrick Mahomes put up 26 pts, but A.J. Brown was completely erased."},
                     {'tag': "STATEMENT", 'header': "Zero Championship Hangover", 'desc': "Reigning champion cruises to a 24.44-point victory."}
                 ]
             },
@@ -221,7 +241,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "18-YEAR JABRONI DROUGHT CONTINUES",
-                'subtitle': "Saagar Gupta Chasing Ring #2 Since 2008",
+                'subtitle': f"{t_disp('Saagar')} Chasing Ring #2 Since 2008",
                 'badge': "HISTORIC DROUGHT",
                 'accent': (241, 196, 15),
                 'items': [
@@ -240,12 +260,12 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "NORTH DIVISION SHOWDOWN",
-                'subtitle': "Nick Christus (100.82) def. Dino Davros (85.48)",
+                'subtitle': f"{t_disp('Nick')} 100.82 def. {t_disp('Dino')} 85.48",
                 'badge': "COMMISSIONER DESK",
                 'accent': (52, 152, 219),
                 'items': [
-                    {'tag': "LEADER", 'header': "Nick Christus — 100.82 PTS (1-0)", 'desc': "Keon Coleman (21.2 pts, TD grab) bails out Minotaurs atop North."},
-                    {'tag': "CHALLENGER", 'header': "Dino Davros — 85.48 PTS (0-1)", 'desc': "Jalen Hurts dropped 24.3 pts, but the supporting cast stalled."},
+                    {'tag': "LEADER", 'header': f"{t_disp('Nick')} — 100.82 PTS (1-0)", 'desc': "Keon Coleman (21.2 pts, TD grab) bails out Minotaurs atop North."},
+                    {'tag': "CHALLENGER", 'header': f"{t_disp('Dino')} — 85.48 PTS (0-1)", 'desc': "Jalen Hurts dropped 24.3 pts, but the supporting cast stalled."},
                     {'tag': "3 RINGS", 'header': "Defending 3 Jabroni Trophies", 'desc': "Commissioner Nick establishes first place in the North Division."}
                 ]
             },
@@ -277,12 +297,12 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "BAD BEAT OF THE WEEK",
-                'subtitle': "Daniel Kruszewski (105.42) def. rej hoxha (97.66)",
+                'subtitle': f"{t_disp('Daniel')} 105.42 def. {t_disp('rej')} 97.66",
                 'badge': "TOUGH LUCK",
                 'accent': (231, 76, 60),
                 'items': [
-                    {'tag': "WINNER", 'header': "Daniel Kruszewski — 105.42 PTS (1-0)", 'desc': "Balanced squad powered by Javonte Williams (19.4 pts)."},
-                    {'tag': "HEARTBREAK", 'header': "rej hoxha — 97.66 PTS (0-1)", 'desc': "4th highest score in entire 16-team league takes a brutal loss."},
+                    {'tag': "WINNER", 'header': f"{t_disp('Daniel')} — 105.42 PTS (1-0)", 'desc': "Balanced squad powered by Javonte Williams (19.4 pts)."},
+                    {'tag': "HEARTBREAK", 'header': f"{t_disp('rej')} — 97.66 PTS (0-1)", 'desc': "4th highest score in entire 16-team league takes a brutal loss."},
                     {'tag': "BAD BEAT", 'header': "High-Score Casualty", 'desc': "Rej would have beaten 12 other teams this week."}
                 ]
             },
@@ -301,7 +321,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
                 'items': [
                     {'tag': "AIR", 'header': "394 Passing Yards & 2 Passing TDs", 'desc': "Slinging lasers all over the field."},
                     {'tag': "GROUND", 'header': "30 Rushing Yards & 2 Rushing TDs", 'desc': "Bulldozing across the goal line for 4 total touchdowns."},
-                    {'tag': "PAIN", 'header': "Rej Hoxha in Press Room:", 'desc': "\"I scored 97.6 with Josh Allen dropping 39 and I still lost. I hate fantasy.\""}
+                    {'tag': "PAIN", 'header': f"{t_disp('rej')} in Press Room:", 'desc': "\"I scored 97.6 with Josh Allen dropping 39 and I still lost. I hate fantasy.\""}
                 ]
             },
             'dialogue': [
@@ -313,13 +333,13 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "DEFENSIVE SLUGFEST & KING HENRY",
-                'subtitle': "Blake Whitehouse (95.58) def. Alex Kite (92.30)",
+                'subtitle': f"{t_disp('Blake')} 95.58 def. {t_disp('Alex')} 92.30",
                 'badge': "GRUDGE MATCH",
                 'accent': (230, 126, 34),
                 'items': [
                     {'tag': "RAMPAGE", 'header': "King Derrick Henry — 169 Rushing Yds, 2 TDs", 'desc': "30.7 fantasy points carrying Blake to a +3.28 point win."},
                     {'tag': "ROOKIE", 'header': "Caleb Williams — 24.1 PTS", 'desc': "Impressive rookie debut for Alex, but McLaurin held to 3.8 pts."},
-                    {'tag': "RECORD", 'header': "Blake Escapes at 1-0", 'desc': "Physical ground-and-pound battle."}
+                    {'tag': "RECORD", 'header': f"{t_disp('Blake')} Escapes at 1-0", 'desc': "Physical ground-and-pound battle."}
                 ]
             },
             'dialogue': [
@@ -332,7 +352,7 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "CROSS-DIVISION GAUNTLET",
-                'subtitle': "Nael Ahmed (102.52) def. Samran Mirza (85.82)",
+                'subtitle': f"{t_disp('Nael')} 102.52 def. {t_disp('Samran')} 85.82",
                 'badge': "BLOWOUT",
                 'accent': (39, 174, 96),
                 'items': [
@@ -351,12 +371,12 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
         {
             'card': {
                 'title': "NORTH VS WEST GRUDGE MATCH",
-                'subtitle': "Shawn Thor (94.32) def. Tommy Ehrlich (85.02)",
+                'subtitle': f"{t_disp('Ullenbrauck')} 94.32 def. {t_disp('Tommy')} 85.02",
                 'badge': "RIVALRY",
                 'accent': (142, 68, 173),
                 'items': [
-                    {'tag': "WINNER", 'header': "Shawn Thor Ullenbrauck — 94.32 PTS (1-0)", 'desc': "Gritty win to join the leaders atop the North."},
-                    {'tag': "CHASING #1", 'header': "Tommy Ehrlich — 85.02 PTS (0-1)", 'desc': "J.J. McCarthy dropped 22.0 pts, but Worthy laid a zero-point doughnut."},
+                    {'tag': "WINNER", 'header': f"{t_disp('Ullenbrauck')} — 94.32 PTS (1-0)", 'desc': "Gritty win to join the leaders atop the North."},
+                    {'tag': "CHASING #1", 'header': f"{t_disp('Tommy')} — 85.02 PTS (0-1)", 'desc': "J.J. McCarthy dropped 22.0 pts, but Worthy laid a zero-point doughnut."},
                     {'tag': "3 AM MELTDOWN", 'header': "Thomas in #trash-talk:", 'desc': "\"Xavier Worthy gave me 0.0 pts. Dropping him to waivers at 3 AM.\""}
                 ]
             },
@@ -374,10 +394,10 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
                 'badge': "PRESS CONFERENCE",
                 'accent': (243, 156, 18),
                 'items': [
-                    {'tag': "SYDNEY", 'header': "\"Dropping 30 on the 4-time champ sets the standard.\"", 'desc': "\"We are here to win the whole damn thing!\""},
-                    {'tag': "ADAM", 'header': "\"Wan'Dale rotting on Emelie's bench was our MVP.\"", 'desc': "\"We survived by the skin of our teeth!\""},
-                    {'tag': "LUKOSE", 'header': "\"Starting Drake Maye over Fields cost us 14 points.\"", 'desc': "\"Emergency team meeting called for 8 AM.\""},
-                    {'tag': "REJ", 'header': "\"97.6 points with Josh Allen dropping 39 and I lose.\"", 'desc': "\"The fantasy gods are testing my sanity.\""}
+                    {'tag': "SYDNEY", 'header': f"{t_disp('Sydney')}:", 'desc': "\"Dropping 30 on the 4-time champ sets the standard. We want The Jabroni!\""},
+                    {'tag': "ADAM", 'header': f"{t_disp('Adam')}:", 'desc': "\"Wan'Dale rotting on Emelie's bench was our MVP. We survived!\""},
+                    {'tag': "LUKOSE", 'header': f"{t_disp('Lukose')}:", 'desc': "\"Starting Drake Maye over Fields cost us 14 pts. Team meeting at 8 AM.\""},
+                    {'tag': "REJ", 'header': f"{t_disp('rej')}:", 'desc': "\"97.6 pts with Josh Allen dropping 39 and I lose. Fantasy gods hate me.\""}
                 ]
             },
             'dialogue': [
@@ -388,17 +408,17 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
             ]
         },
 
-        # Scene 16: Week 2 Marquee Matchup: Nick vs Saagar & Lukose vs Adam
+        # Scene 16: Week 2 Marquee Matchups (Nick vs Saagar & Lukose vs Adam)
         {
             'card': {
-                'title': "WEEK 2 MARQUEE MATCHUPS",
+                'title': "WEEK 2 MARQUEE MATCHUPS TO WATCH",
                 'subtitle': "Rivalry Stakes & Redemption Battles",
                 'badge': "WEEK 2 LOOKAHEAD",
                 'accent': (52, 73, 94),
                 'items': [
-                    {'tag': "MARQUEE", 'header': "Nick Christus (1-0) vs. Saagar Gupta (0-1)", 'desc': "3-time champ vs inaugural champ fighting to snap his 18-year title drought."},
-                    {'tag': "REDEMPTION", 'header': "Shawn Lukose (0-1) vs. Adam Olen (1-0)", 'desc': "4-time GOAT looking for vengeance after the Drake Maye blunder."},
-                    {'tag': "STAKES", 'header': "Early Division Control", 'desc': "High-pressure spots across the conference."}
+                    {'tag': "MARQUEE", 'header': f"{t_disp('Nick')} (1-0)  vs.  {t_disp('Saagar')} (0-1)", 'desc': "3-time champ vs inaugural champ fighting to snap his 18-year title drought."},
+                    {'tag': "REDEMPTION", 'header': f"{t_disp('Lukose')} (0-1)  vs.  {t_disp('Adam')} (1-0)", 'desc': "4-time GOAT looking for vengeance after the Drake Maye blunder."},
+                    {'tag': "STAKES", 'header': "Early Conference Control", 'desc': "High-pressure spots across the league."}
                 ]
             },
             'dialogue': [
@@ -416,9 +436,9 @@ def get_show_scenes(season: int = 2025, week_num: int = 1) -> list:
                 'badge': "SCHEDULE SPOTLIGHT",
                 'accent': (231, 76, 60),
                 'items': [
-                    {'tag': "TITANS", 'header': "Abe Thomas (1-0) vs. Thor Shawn Ullenbrauck (1-0)", 'desc': "Defending champion battles former champion in a clash of unbeatens."},
-                    {'tag': "RIVALRY", 'header': "rej hoxha (0-1) vs. Dino Davros (0-1)", 'desc': "Century deadlock rivalry with both franchises hungry for win #1."},
-                    {'tag': "HUNT", 'header': "Tommy Ehrlich (0-1) vs. Samran Mirza (0-1)", 'desc': "Both two-time finalists battling to avoid an 0-2 hole."}
+                    {'tag': "TITANS", 'header': f"{t_disp('Abe')} (1-0)  vs.  {t_disp('Ullenbrauck')} (1-0)", 'desc': "Defending champion battles former champion in a clash of unbeatens."},
+                    {'tag': "RIVALRY", 'header': f"{t_disp('rej')} (0-1)  vs.  {t_disp('Dino')} (0-1)", 'desc': "Century deadlock rivalry with both franchises hungry for win #1."},
+                    {'tag': "HUNT", 'header': f"{t_disp('Tommy')} (0-1)  vs.  {t_disp('Samran')} (0-1)", 'desc': "Both two-time finalists battling to avoid an 0-2 hole."}
                 ]
             },
             'dialogue': [
@@ -452,7 +472,12 @@ async def produce_full_hangover_broadcast(season: int = 2025, week_num: int = 1,
     print(f"🎙️ BFL TUESDAY MORNING HANGOVER: TOPIC-SYNCED SHOW PRODUCTION (WEEK {week_num}, {season})")
     print("="*75)
 
-    scenes = get_show_scenes(season, week_num)
+    print("📡 Fetching active live team names & rosters from ESPN API...")
+    raw_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), week_num, ESPN_S2, ESPN_SWID)
+    teams = parse_league_members_and_teams(raw_data)
+    print(f"✅ Loaded {len(teams)} active BFL franchises dynamically!")
+
+    scenes = get_show_scenes(season, week_num, teams)
     print(f"📝 Loaded {len(scenes)} structured scenes with dynamic visual transitions!")
 
     temp_audio_dir = Path(__file__).resolve().parent / f"temp_audio_{pid}"
