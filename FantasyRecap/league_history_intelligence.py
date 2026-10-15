@@ -14,8 +14,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-
-CURRENT_YEAR = 2026
+from FantasyRecap.config import CURRENT_YEAR
 
 # Complete Official BFL Super Bowl Honor Roll (2008-2025)
 BFL_CHAMPIONSHIPS = [
@@ -53,42 +52,42 @@ OWNER_PROFILES = {
         'champ_years': [2012, 2015, 2016],
         'runner_up_years': [],
         'tagline': "3-Time Champion (10-Year Drought)",
-        'summary': "Dominant back-to-back champ (2015-2016), currently fighting a 10-year title drought."
+        'summary': "Dominant back-to-back champ (2015-2016), currently fighting a 10-year title drought. The league Commissioner and husband to Sydney Miller."
     },
     'Abe Thomas': {
         'rings': 3,
         'champ_years': [2011, 2022, 2025],
         'runner_up_years': [2014],
-        'tagline': "Defending BFL Champion",
-        'summary': "Reigning 2025 champion & 3-time titleholder with championships across three different decades."
+        'tagline': "Defending Champion (3 Rings)",
+        'summary': "Won the 2025 Super Bowl. Tied for 2nd all-time with 3 Jabroni Trophies."
     },
     'Dino Davros': {
         'rings': 2,
         'champ_years': [2014, 2020],
         'runner_up_years': [],
         'tagline': "2-Time Champion",
-        'summary': "Won the closest Super Bowl in league history in 2020 (0.08 pt win over Rej)."
+        'summary': "2-time champion (2014, 2020), famous for the 0.08-point miracle win in the 2020 Super Bowl."
     },
     'Daniel Kruszewski': {
         'rings': 1,
         'champ_years': [2010],
         'runner_up_years': [2022, 2025],
-        'tagline': "2010 Champion & 2x Recent Finalist",
-        'summary': "16-year title drought despite reaching the Super Bowl in both 2022 and 2025."
+        'tagline': "2010 Champ (Heartbreak Era)",
+        'summary': "Won in 2010, but suffered brutal Super Bowl losses to Abe in 2022 and 2025."
     },
     'Shawn Ullenbrauck': {
         'rings': 1,
         'champ_years': [2013],
         'runner_up_years': [],
-        'tagline': "2013 Champion (13-Year Jabroni Drought)",
-        'summary': "Won the 2013 Jabroni Trophy over Tommy; seeking his 2nd Jabroni."
+        'tagline': "2013 Jabroni Champion",
+        'summary': "Won the 2013 Super Bowl in a tight 4-point clash."
     },
     'Adam Olen': {
         'rings': 1,
         'champ_years': [2017],
         'runner_up_years': [],
         'tagline': "2017 Jabroni Champion",
-        'summary': "Won the legendary 1-point Super Bowl thriller over Lukose to hoist The Jabroni in 2017."
+        'summary': "Pulled off the narrow 1-point Super Bowl victory in 2017 to hoist his lone Jabroni Trophy."
     },
     'Saagar Gupta': {
         'rings': 1,
@@ -102,7 +101,7 @@ OWNER_PROFILES = {
         'champ_years': [2024],
         'runner_up_years': [],
         'tagline': "2024 Jabroni Champion",
-        'summary': "Hoisted the 2024 Jabroni Trophy; now competing as an independent franchise."
+        'summary': "Hoisted the 2024 Jabroni Trophy. She is the only female owner in the league, and is married to the Commissioner, Nick Christus."
     },
     'Tommy Ehrlich': {
         'rings': 0,
@@ -136,8 +135,8 @@ OWNER_PROFILES = {
         'rings': 0,
         'champ_years': [],
         'runner_up_years': [],
-        'tagline': "Franchise Playoff Contender",
-        'summary': "Consistently competitive franchise searching for its first Jabroni Trophy appearance."
+        'tagline': "Inaugural Solo Franchise",
+        'summary': "Split from the 'Big Nasties' franchise this year to launch his first solo campaign. Looking to prove he was the brains of the operation."
     },
     'Alex Kite': {
         'rings': 0,
@@ -150,8 +149,8 @@ OWNER_PROFILES = {
         'rings': 0,
         'champ_years': [],
         'runner_up_years': [],
-        'tagline': "Inaugural Solo Franchise",
-        'summary': "Co-owned NMAfia in 2025; launching his first solo franchise season with Big Nasties."
+        'tagline': "Co-Owner of Big Nasties",
+        'summary': "Co-owns the Big Nasties franchise with Edgar. Retooling the squad to prove they don't need Nael to win a Jabroni Trophy."
     }
 }
 

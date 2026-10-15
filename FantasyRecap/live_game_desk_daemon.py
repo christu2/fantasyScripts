@@ -101,21 +101,28 @@ def parse_live_matchup_state(raw_data, week_num: int) -> dict:
                 pos_id = p.get('defaultPositionId', 3)
                 
                 # Check status
-                # ESPN status: 0 = not started, 1 = in progress, 2 = final
                 status = 'PRE'
                 pct_rem = 1.0
-                if e.get('playerPoolEntry', {}).get('status') == 'FINAL':
-                    status = 'FINAL'
-                    pct_rem = 0.0
-                elif score > 0.0:
-                    status = 'IN_PROGRESS'
-                    pct_rem = 0.40 # approximation if game is active
-
-                base_proj = 12.0 # default baseline
+                
+                player_status = e.get('playerPoolEntry', {}).get('status')
+                
+                base_proj = 12.0
                 for stat in p.get('stats', []):
                     if stat.get('statSourceId') == 1 and stat.get('scoringPeriodId') == week_num:
                         base_proj = float(stat.get('appliedTotal', 12.0))
-                        break
+                    # Attempt to extract exact game clock progress from ESPN's live stat block
+                    if stat.get('statSourceId') == 0: # Live stats
+                        if 'percentComplete' in stat:
+                            pct_rem = 1.0 - (float(stat.get('percentComplete', 0)) / 100.0)
+                            if pct_rem < 1.0:
+                                status = 'IN_PROGRESS'
+
+                if player_status == 'FINAL':
+                    status = 'FINAL'
+                    pct_rem = 0.0
+                elif status == 'PRE' and score > 0.0:
+                    status = 'IN_PROGRESS'
+                    pct_rem = 0.5  # Fallback if ESPN API is lagging on percentComplete
 
                 starters.append({
                     'name': p.get('fullName', 'Unknown'),

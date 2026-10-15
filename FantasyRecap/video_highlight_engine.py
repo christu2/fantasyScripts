@@ -103,11 +103,7 @@ def render_tv_studio_frame(
     if chris_speaking:
         draw.rounded_rectangle([(80, 460), (200, 490)], radius=4, fill=(46, 204, 113))
         draw.text((92, 465), "ON AIR", fill=(0, 0, 0), font=font_host_name)
-        # Static Equalizer VU indicator
-        vu_bars = [18, 12, 22, 14, 20]
-        for idx, bh in enumerate(vu_bars):
-            bx = 220 + (idx * 16)
-            draw.rectangle([(bx, 488 - bh), (bx + 10, 488)], fill=(46, 204, 113))
+        # VU meter placeholder - will be drawn dynamically
 
     # Dave Anchor Box
     dave_speaking = (speaker.upper() == 'DAVE')
@@ -128,11 +124,7 @@ def render_tv_studio_frame(
     if dave_speaking:
         draw.rounded_rectangle([(80, 810), (200, 840)], radius=4, fill=(231, 76, 60))
         draw.text((92, 815), "ON AIR", fill=(255, 255, 255), font=font_host_name)
-        # Static Equalizer VU indicator
-        vu_bars = [16, 22, 14, 20, 18]
-        for idx, bh in enumerate(vu_bars):
-            bx = 220 + (idx * 16)
-            draw.rectangle([(bx, 838 - bh), (bx + 10, 838)], fill=(231, 76, 60))
+        # VU meter placeholder - will be drawn dynamically
 
     # --- RIGHT PANEL: MAIN BROADCAST SCREEN ---
     main_x1, main_y1 = 490, 125
@@ -179,36 +171,69 @@ def render_tv_studio_frame(
     img.save(output_path)
     return output_path
 
+import random
 def generate_broadcast_video(segment_frames: list, segment_durations: list, audio_path: str, output_mp4_path: str, pid: int = 0):
-    """Compiles TV studio broadcast cuts into an optimized 720p MP4 video with no image flashing."""
+    """Compiles TV studio broadcast cuts into an optimized 720p MP4 video with dynamic VU meters."""
     if len(segment_frames) != len(segment_durations) or not os.path.exists(audio_path):
         print("❌ Frame count does not match duration count or missing audio.")
         return ""
 
     total_dur = sum(segment_durations)
-    print(f"🎬 Compiling {len(segment_frames)} TV Studio Shots ({total_dur:.1f}s total runtime)...")
+    print(f"🎬 Compiling TV Studio Shots ({total_dur:.1f}s total runtime) at 5 FPS...")
 
     temp_dir = Path(__file__).resolve().parent / f"temp_tv_sync_{pid}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     concat_file = temp_dir / "tv_sync_concat.txt"
+    fps = 5
+    
     with open(concat_file, 'w') as f:
-        for img_p, dur in zip(segment_frames, segment_durations):
-            f.write(f"file '{img_p}'\n")
-            f.write(f"duration {max(dur, 0.5):.2f}\n")
-        f.write(f"file '{segment_frames[-1]}'\n")
+        for seg_idx, (img_p, dur) in enumerate(zip(segment_frames, segment_durations)):
+            base_img = Image.open(img_p).convert('RGB')
+            speaker = "CHRIS" if "CHRIS" in Path(img_p).name.upper() else "DAVE"
+            num_frames = max(1, int(dur * fps))
+            
+            for frame_idx in range(num_frames):
+                frame_img = base_img.copy()
+                draw = ImageDraw.Draw(frame_img)
+                
+                # Draw dynamic VU meters
+                if speaker == "CHRIS":
+                    color = (46, 204, 113)
+                    for i in range(5):
+                        bh = random.randint(4, 24)
+                        bx = 220 + (i * 16)
+                        draw.rectangle([(bx, 488 - bh), (bx + 10, 488)], fill=color)
+                else:
+                    color = (231, 76, 60)
+                    for i in range(5):
+                        bh = random.randint(4, 24)
+                        bx = 220 + (i * 16)
+                        draw.rectangle([(bx, 838 - bh), (bx + 10, 838)], fill=color)
+                
+                frame_path = temp_dir / f"frame_{seg_idx:03d}_{frame_idx:03d}.jpg"
+                frame_img.save(frame_path, quality=85)
+                f.write(f"file '{frame_path}'\n")
+                f.write(f"duration {1.0/fps:.2f}\n")
+                
+        # ffmpeg requires the last file to be repeated without duration
+        f.write(f"file '{frame_path}'\n")
 
     cmd = [
         "ffmpeg", "-y",
         "-f", "concat", "-safe", "0", "-i", str(concat_file),
         "-i", audio_path,
-        "-vf", "scale=1280:720",
-        "-c:v", "libx264", "-tune", "stillimage", "-crf", "30", "-preset", "fast", "-pix_fmt", "yuv420p", "-r", "5",
-        "-c:a", "aac", "-b:a", "64k", "-shortest",
+        "-vf", "scale=854:480", "-r", "1",
+        "-c:v", "libx264", "-crf", "35", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "48k", "-shortest",
         output_mp4_path
     ]
     subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    # Cleanup temp frames
+    for f in temp_dir.glob("*.jpg"):
+        try: f.unlink()
+        except: pass
     if concat_file.exists(): concat_file.unlink()
     try: temp_dir.rmdir()
     except: pass

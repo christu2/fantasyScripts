@@ -31,7 +31,8 @@ else:
 ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
 ESPN_S2 = os.getenv("ESPN_S2", "")
 ESPN_SWID = os.getenv("ESPN_SWID", "")
-CURRENT_YEAR = str(datetime.now().year)
+from FantasyRecap.config import CURRENT_YEAR, LEAGUE_ID
+CURRENT_YEAR = str(CURRENT_YEAR)
 
 POSITION_MAP = {
     1: 'QB',
@@ -104,16 +105,19 @@ def parse_league_members_and_teams(data):
         div_id = t.get('divisionId', 0)
         div_name = divisions.get(div_id, 'General')
         
+        overall = t.get('record', {}).get('overall', {})
         teams[tid] = {
             'id': tid,
             'name': t_name.strip(),
             'owner': owner_name,
             'abbrev': t.get('abbrev', ''),
             'division': div_name,
-            'wins': t.get('record', {}).get('overall', {}).get('wins', 0),
-            'losses': t.get('record', {}).get('overall', {}).get('losses', 0),
-            'ties': t.get('record', {}).get('overall', {}).get('ties', 0),
-            'points_for': t.get('record', {}).get('overall', {}).get('pointsFor', 0.0),
+            'wins': overall.get('wins', 0),
+            'losses': overall.get('losses', 0),
+            'ties': overall.get('ties', 0),
+            'points_for': overall.get('pointsFor', 0.0),
+            'points_against': overall.get('pointsAgainst', 0.0),
+            'playoff_seed': t.get('playoffSeed', 99),
         }
     return teams
 
@@ -130,19 +134,24 @@ def calculate_optimal_lineup(roster_entries, week_num: int = 1):
         slot_id = entry.get('lineupSlotId', 20)
         name = p.get('fullName', 'Unknown')
         
-        # Extract pre-game projected points (statSourceId: 1)
+        # Extract pre-game projected points and live stats
         proj = 0.0
+        stats_dict = {}
         for s in p.get('stats', []):
             if s.get('statSourceId') == 1 and (s.get('scoringPeriodId') == week_num or s.get('seasonId')):
                 proj = round(s.get('appliedTotal', 0.0), 2)
-                break
+            if s.get('statSourceId') == 0 and s.get('scoringPeriodId') == week_num:
+                stats_dict = s.get('stats', {})
                 
         all_players.append({
+            'id': p.get('id'),
             'name': name,
+            'pro_team_id': p.get('proTeamId', 0),
             'pos_id': pos_id,
             'pos_name': POSITION_MAP.get(pos_id, 'FLEX'),
             'pts': pts,
             'proj': proj,
+            'stats_dict': stats_dict,
             'slot_id': slot_id,
             'slot_name': SLOT_MAP.get(slot_id, 'Bench'),
             'is_starter': slot_id not in [20, 21]
@@ -248,7 +257,7 @@ def analyze_week(data, week_num: int):
         margin = round(abs(away_score - home_score), 2)
         
         team_performances[away_id] = {
-            'team': teams[away_id],
+            'team': teams.get(away_id, {}),
             'score': away_score,
             'optimal': away_opt,
             'efficiency': away_eff,
@@ -258,11 +267,13 @@ def analyze_week(data, week_num: int):
             'opponent_id': home_id,
             'opponent_score': home_score,
             'blunders': away_blunders,
+            'starters': away_starters,
+            'bench': away_bench,
             'top_scorer': max(away_starters, key=lambda x: x['pts']) if away_starters else None
         }
         
         team_performances[home_id] = {
-            'team': teams[home_id],
+            'team': teams.get(home_id, {}),
             'score': home_score,
             'optimal': home_opt,
             'efficiency': home_eff,
@@ -272,6 +283,8 @@ def analyze_week(data, week_num: int):
             'opponent_id': away_id,
             'opponent_score': away_score,
             'blunders': home_blunders,
+            'starters': home_starters,
+            'bench': home_bench,
             'top_scorer': max(home_starters, key=lambda x: x['pts']) if home_starters else None
         }
         

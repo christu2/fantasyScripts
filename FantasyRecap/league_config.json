@@ -1,0 +1,9 @@
+{
+    "league_id": 1693766,
+    "current_year": 2026,
+    "league_name": "Beasts Football League",
+    "divisions": ["North", "South", "East", "West"],
+    "regular_season_weeks": 14,
+    "total_playoff_teams": 7,
+    "discord_bot_enabled": true
+}
