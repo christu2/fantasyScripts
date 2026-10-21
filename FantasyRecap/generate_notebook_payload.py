@@ -279,17 +279,17 @@ def calculate_season_trajectories(raw_data: dict, current_week: int, teams: dict
 
         # Trajectory & Luck classification
         if r['overall_l'] == 0:
-            r['status_tag'] = "🔥 UNDEFEATED JUGGERNAUT"
+            r['status_tag'] = f"🔥 UNDEFEATED JUGGERNAUT ({r['overall_w']}-0)"
         elif r['overall_w'] == 0:
-            r['status_tag'] = "💔 WINLESS & SNAKEBITTEN (0-5 despite high scoring)"
+            r['status_tag'] = f"💔 WINLESS & SNAKEBITTEN (0-{r['overall_l']}, Faced Rank #{r['pa_rank']} Gauntlet)"
         elif r['overall_w'] < r['overall_l'] and r['pf_rank'] <= 5:
             r['status_tag'] = f"⚡ UNLUCKY POWERHOUSE (Rank #{r['pf_rank']} Scoring, but {r['overall_w']}-{r['overall_l']})"
         elif r['overall_w'] > r['overall_l'] and r['pf_rank'] >= 12:
             r['status_tag'] = f"🍀 LUCKY CHARM / PAPER TIGER (Rank #{r['pf_rank']} Scoring, yet {r['overall_w']}-{r['overall_l']})"
         elif r['streak_type'] == 'W' and r['streak_cnt'] >= 3:
-            r['status_tag'] = "🚀 SURGING (Red-Hot 3-Game Win Streak)"
+            r['status_tag'] = f"🚀 SURGING (Red-Hot {r['streak_cnt']}-Game Win Streak)"
         elif r['streak_type'] == 'L' and r['streak_cnt'] >= 3:
-            r['status_tag'] = "🧊 IN FREEFALL (Cold 3-Game Losing Skid)"
+            r['status_tag'] = f"🧊 IN FREEFALL (Cold {r['streak_cnt']}-Game Losing Skid)"
         else:
             r['status_tag'] = "⚖️ CONTENDER IN THE PACK"
 
@@ -347,6 +347,53 @@ def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies:
     trades_list = list(trade_events.values())
     return trades_list
 
+def fetch_recent_roster_moves(raw_data: dict, current_week: int, season: int, cookies: dict, teams: dict) -> list:
+    """Fetches notable recent waiver, drop, and free agent moves from ESPN mTransactions2."""
+    tx_url = f'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{ESPN_LEAGUE_ID}?view=mTransactions2'
+    moves = []
+    try:
+        r = requests.get(tx_url, cookies=cookies, timeout=5)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        
+        pnames = {}
+        for t in raw_data.get('teams', []):
+            for entry in t.get('roster', {}).get('entries', []):
+                pl = entry.get('playerPoolEntry', {}).get('player', {})
+                if pl.get('id'):
+                    pnames[pl['id']] = pl.get('fullName', f"Player {pl['id']}")
+
+        for t in data.get('transactions', []):
+            status = t.get('status')
+            tx_type = t.get('type')
+            for it in t.get('items', []):
+                it_type = it.get('type')
+                pid = it.get('playerId')
+                pname = pnames.get(pid)
+                if not pname:
+                    try:
+                        ar = requests.get(f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/{pid}", timeout=1).json()
+                        pname = ar.get('fullName', f"Player {pid}")
+                        pnames[pid] = pname
+                    except Exception:
+                        pname = f"Player {pid}"
+                from_id = it.get('fromTeamId')
+                to_id = it.get('toTeamId')
+                
+                if it_type == 'DROP' and from_id in teams:
+                    owner = teams[from_id]['owner']
+                    moves.append(f"✂️ **{owner}** cut **{pname}**")
+                elif it_type == 'ADD' and to_id in teams and status == 'EXECUTED':
+                    owner = teams[to_id]['owner']
+                    moves.append(f"⚡ **{owner}** signed **{pname}**")
+                elif it_type == 'ADD' and to_id in teams and status == 'PENDING':
+                    owner = teams[to_id]['owner']
+                    moves.append(f"⏳ **{owner}** placed a waiver claim on **{pname}**")
+    except Exception:
+        pass
+    return moves
+
 def build_previous_weeks_chronicle(raw_data: dict, current_week: int, teams: dict) -> str:
     """Builds a rich, concise narrative digest of all completed previous weeks."""
     weeks_data = {}
@@ -375,10 +422,11 @@ def build_previous_weeks_chronicle(raw_data: dict, current_week: int, teams: dic
         1: "Week 1: Opening Blitz & Overreactions. Shawn Lukose dropped 153.8 to lead the league; Saagar survived Abe in a 126-120 barnburner.",
         2: "Week 2: Blowouts & Beatdowns. Tommy Ehrlich exploded for 143.8 to crush Nael; Dino Davros edged Daniel by 0.54 points (79.1 to 78.5) to send Daniel to 0-2.",
         3: "Week 3: Turning Tides. Sydney Miller stunned Shawn Lukose (129.8 to 113.5); Daniel got off the schneid with a 1.0-point escape over Abe (84.8 to 83.8).",
-        4: "Week 4: The Separation & Injury Shocks. Saagar and Samran both improved to 4-0; Saquon Barkley (hamstring) and Rashee Rice (knee) suffered brutal in-game injuries; Nael and Daniel both won their second straight."
+        4: "Week 4: The Separation & Injury Shocks. Saagar and Samran both improved to 4-0; Saquon Barkley (hamstring) and Rashee Rice (knee) suffered brutal in-game injuries; Nael and Daniel both won their second straight.",
+        5: "Week 5: Mid-Quarter Reckoning & Blockbuster Trades. Samran remained the sole undefeated at 5-0; Daniel upset previously unbeaten Saagar (93.2 to 69.5); Shawn U blew out Blake (125.7 to 57.0); rej dropped 125.1 but lost an agonizing 3.9-pt duel to Samran; blockbuster trades reshaped rosters."
     }
 
-    md = "## 📜 SEASON CHRONICLE & PREVIOUS WEEKS DIGEST (WEEKS 1 TO 4)\n"
+    md = f"## 📜 SEASON CHRONICLE & PREVIOUS WEEKS DIGEST (WEEKS 1 TO {current_week - 1})\n"
     md += "*Use this background context to maintain ongoing storyline continuity. Reference past games naturally rather than reciting long history bios.*\n\n"
     
     for wk, games in weeks_data.items():
@@ -445,13 +493,46 @@ def generate_payload(season: int, week_num: int):
     
     payload += f"**THIS WEEK'S PODCAST THEME:** {weekly_theme}\n\n"
 
+    # --- STRICT PACING & BROADCAST TIME ALLOCATION (15% / 70% / 15%) ---
+    payload += "### ⏱️ STRICT BROADCAST STRUCTURE & TIME ALLOCATION (PACING GUIDE)\n"
+    payload += "To deliver a balanced, entertaining, and comprehensive episode, you MUST adhere to this exact 3-Act structure:\n\n"
+    payload += f"1. **ACT 1: THE OPENING DRIVE (FIRST ~15% OF THE EPISODE)**\n"
+    payload += "   - High-energy show intro and setting the tone for the week's theme.\n"
+    payload += "   - **League News, Trades & Significant Roster Moves:** Debate any completed trades, waiver wire coups, and major NFL injuries shaking up rosters (e.g. Terry McLaurin season-ending patellar tendon tear, Ladd McConkey concussion, Blake Grupe torn ACL, key waiver claims and cuts).\n"
+    payload += "   - **Division Standings & Luck Index Snapshot:** Quick overview of division leaders, hot streaks, losing skids, and calling out the 'Lucky Paper Tigers' vs 'Unlucky Powerhouses' (Points Scored vs Win-Loss Records).\n"
+    payload += "   - *Strict Pacing Rule:* Keep this high-level, fast-paced, and punchy! Do NOT spend more than ~15% of your total broadcast time here so you have ample time for the matchups.\n\n"
+    payload += f"2. **ACT 2: GAME-BY-GAME BREAKDOWNS (THE CORE ~70% OF THE EPISODE)**\n"
+    payload += "   - **MANDATORY EQUAL COVERAGE RULE:** You MUST cover **ALL 8 MATCHUPS and ALL 16 TEAMS**! Do NOT skip any matchup or relegate any team to an afterthought!\n"
+    payload += "   - **NO SKEWING HEAVILY TO A HANDFUL OF TEAMS:** Balance your coverage! Give every single matchup roughly 1.5 to 2 minutes of focused, entertaining attention.\n"
+    payload += "   - **WHAT TO COVER FOR EVERY GAME:**\n"
+    payload += "     a) Final score, winner, and margin of victory.\n"
+    payload += "     b) Key performers (studs and duds for BOTH teams).\n"
+    payload += "     c) In-game injuries during live play (DO NOT blame the manager—sympathize with them!).\n"
+    payload += "     d) Key managerial decisions, start/sit blunders, and bench points.\n"
+    payload += "     e) What the win or loss means for each owner's division standing and season trajectory.\n\n"
+    payload += f"3. **ACT 3: THE TWO-MINUTE DRILL & NEXT WEEK LOOKAHEAD (FINAL ~15% OF THE EPISODE)**\n"
+    payload += f"   - Comprehensive preview of Week {week_num + 1} matchups.\n"
+    payload += "   - Highlight the 'Game of the Week', critical division rivalry battles, and must-win bubble showdowns.\n"
+    payload += "   - Closing thoughts, sign-off banter, and parting barbs.\n\n"
+
     # --- CRITICAL HOST DIRECTIVES ---
     payload += "### ⚡ CRITICAL SHOW DIRECTIVES (MUST FOLLOW):\n"
     payload += "1. **NO FANTASY EXPLANATIONS:** Never explain what fantasy football is or how head-to-head works. The listeners are the 16 managers. Talk like seasoned sports talk radio hosts.\n"
-    payload += "2. **IN-GAME INJURIES (ABSOLUTE DIRECTIVE):** NFL players get injured during live games! League managers DO NOT intentionally start inactive or injured players! If a starter scored 0 to 2 points and has an in-game injury noted below (e.g., T.J. Hockenson concussion, Deebo Samuel hamstring, David Montgomery groin, Tre' Harris hamstring), NEVER accuse the manager of 'starting an injured player' or committing a 'blunder'! Explicitly recognize on-air that the player suffered an in-game injury during live play. Sympathize with the manager for brutal injury heartbreak and bad luck.\n"
-    payload += "3. **EPISODIC CONTINUITY & ANTI-REPETITION:** This is Episode 5! DO NOT repeat static multi-year owner biographies or ring counts from scratch. Instead, focus on the DYNAMIC 2026 SEASON STORY: Samran's 5-0 undefeated season, rej's tragic 0-5 slump despite dropping 125.1 points this week, Daniel's 3-game surge after an 0-2 start, Saagar suffering his first loss, and the wild 4-way tie in the West Division.\n"
-    payload += "4. **DEBATE THE BREAKING TRADES:** The league was rocked by trades this week! Dedicate airtime to debating the Abe Thomas / Nitesh Patel blockbuster and the Daniel Kruszewski / Shawn Ullenbrauck tight-end swap.\n"
-    payload += "5. **DISCUSS DIVISION DYNAMICS & STREAKS:** Talk about division races! Who leads? Who is tied? Point out who is riding hot winning streaks (Samran W5, Daniel W3, Nael W3) versus who is in freefall (rej L5, Blake L3, Dino L3, Abe L3).\n"
+    payload += "2. **BALANCED COVERAGE (ALL 16 TEAMS):** Touch on every single team and break down all 8 matchups. Do NOT focus solely on the undefeated team or high-profile owners.\n"
+    payload += "3. **IN-GAME INJURIES (ABSOLUTE DIRECTIVE):** NFL players get injured during live games! League managers DO NOT intentionally start inactive or injured players! If a starter scored 0 to 4 points and has an in-game injury noted below (e.g., Terry McLaurin patellar tendon tear, Ladd McConkey concussion, Blake Grupe ACL tear), NEVER accuse the manager of 'starting an injured player' or committing a 'blunder'! Explicitly recognize on-air that the player suffered an in-game injury during live play. Sympathize with the manager for brutal injury heartbreak and bad luck.\n"
+    
+    # Dynamic continuity highlights
+    undefeated_teams = [t['owner'] for t in teams.values() if trajectories[t['id']]['overall_l'] == 0]
+    winless_teams = [t['owner'] for t in teams.values() if trajectories[t['id']]['overall_w'] == 0]
+    continuity_snippets = []
+    if undefeated_teams:
+        continuity_snippets.append(f"{', '.join(undefeated_teams)} remaining undefeated")
+    if winless_teams:
+        continuity_snippets.append(f"{', '.join(winless_teams)} still searching for win #1")
+    continuity_str = f" This is Episode {week_num}! DO NOT repeat static multi-year owner biographies or ring counts from scratch. Instead, focus on the DYNAMIC {season} SEASON STORY: " + (", ".join(continuity_snippets) if continuity_snippets else "the tight playoff and division races taking shape") + ".\n"
+    payload += f"4. **EPISODIC CONTINUITY & ANTI-REPETITION:**{continuity_str}"
+    
+    payload += "5. **DISCUSS DIVISION DYNAMICS & STREAKS:** Talk about division races! Who leads? Who is tied? Point out who is riding hot winning streaks versus who is in freefall.\n"
     payload += "6. **BLAME THE PLAYER, NOT THE MANAGER:** When a star player underperforms while healthy, roast the player for disappearing, not the manager for starting their studs.\n"
     payload += "7. **TIMELINE REALITY & PLAYER TENURE (DO NOT CALL VETERANS ROOKIES):** The current NFL season is 2026!\n"
     payload += "   - Every player in this document now has their official NFL tenure tag right next to their name (e.g. `[2nd-Year Sophomore (Drafted 2025)]` or `[3rd-Year Player (Drafted 2024)]`).\n"
@@ -459,7 +540,22 @@ def generate_payload(season: int, week_num: int):
     payload += "   - **Caleb Williams, Jayden Daniels, Bo Nix, Marvin Harrison Jr, Malik Nabers, Rome Odunze, and Brock Bowers** were drafted in 2024 and ARE IN THEIR 3RD SEASON (ESTABLISHED VETERANS).\n"
     payload += "   - ONLY players explicitly labeled `[Rookie (1st Year, Class of 2026)]` are rookies. You are strictly forbidden from calling Colston Loveland or any 2024/2025 draft pick a rookie.\n"
     payload += "8. **CENTRAL TIME ZONE:** The BFL operates in Central Time (CT). Sunday games kick off at 12:00 PM CT (noon).\n"
-    payload += "9. **POINTS SCORED VS RECORDS (LUCK & FRAUD FACTOR):** Records alone are deceiving! You MUST explicitly compare teams' win-loss records to their total Points Scored (Points For). Roast the lucky paper tigers (Nitesh Patel is 3-2 despite being DEAD LAST in scoring with 411.6 pts; Daniel Kruszewski is 3-2 despite being 12th in scoring). Stand up for the unlucky powerhouses (Shawn Ullenbrauck has 560.8 pts, #3 in the league, and Adam Olen has 547.5 pts, #4 in the league, yet both are stuck at 2-3 because of brutal schedule luck). And mention Sydney Miller (#1 hardest schedule) and rej hoxha (#2 hardest schedule) who have faced the most points in the entire league!\n\n"
+    
+    # Dynamic Luck Directive
+    pt_callouts = [f"{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']} with {round(tr['points_for'], 1)} PF, #{tr['pf_rank']} scoring)" for tid, tr in trajectories.items() if tr['overall_w'] > tr['overall_l'] and tr['pf_rank'] >= 10]
+    unlucky_callouts = [f"{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']} despite {round(tr['points_for'], 1)} PF, #{tr['pf_rank']} scoring)" for tid, tr in trajectories.items() if tr['overall_w'] <= tr['overall_l'] and tr['pf_rank'] <= 6]
+    gauntlet_callouts = [f"{teams[tid]['owner']} ({round(tr['points_against'], 1)} PA, #{tr['pa_rank']} schedule)" for tid, tr in trajectories.items() if tr['pa_rank'] <= 2]
+    
+    luck_dir_str = " Records alone are deceiving! You MUST explicitly compare teams' win-loss records to their total Points Scored (Points For). "
+    if pt_callouts:
+        luck_dir_str += f"Roast the lucky paper tigers ({', '.join(pt_callouts)}). "
+    if unlucky_callouts:
+        luck_dir_str += f"Stand up for the unlucky powerhouses ({', '.join(unlucky_callouts)}). "
+    if gauntlet_callouts:
+        luck_dir_str += f"Mention the brutal schedule gauntlet faced by {', '.join(gauntlet_callouts)}!\n\n"
+    else:
+        luck_dir_str += "\n\n"
+    payload += f"9. **POINTS SCORED VS RECORDS (LUCK & FRAUD FACTOR):**{luck_dir_str}"
 
     # --- AUTOMATIC NFL GAME RECAPS ---
     try:
@@ -482,18 +578,25 @@ def generate_payload(season: int, week_num: int):
     except Exception as e:
         print(f"⚠️ Could not fetch NFL Game Recaps: {e}")
 
-    # --- BREAKING LEAGUE TRADES ---
-    if trades:
-        payload += "## 🔥 BREAKING LEAGUE TRADES & TRANSACTION CONTROVERSY\n"
-        payload += "*Discuss and debate these recent trades on air! Who won each trade? Who panicked?*\n"
-        for tr in trades:
-            payload += f"### 🔄 Trade on {tr['date']}: {tr['owner_a']} <---> {tr['owner_b']}\n"
-            payload += f"- **{tr['owner_a']} receives:** {', '.join(tr['b_sends']) if tr['b_sends'] else 'Assets'}\n"
-            payload += f"- **{tr['owner_b']} receives:** {', '.join(tr['a_sends']) if tr['a_sends'] else 'Assets'}\n"
-            if 'Abe Thomas' in [tr['owner_a'], tr['owner_b']] and 'Nitesh Patel' in [tr['owner_a'], tr['owner_b']]:
-                payload += "  *Context & Banter:* Defending champ Abe Thomas is 1-4, in full panic mode, and blown up his roster by shipping out veteran Aaron Rodgers, Justice Hill, and Keon Coleman to Nitesh Patel in exchange for 3rd-year starting QB Caleb Williams and 2nd-year tight end Colston Loveland! League members immediately cried collusion in the chat ('why does the trade commission allow collusion lmk'). Debate if Abe got fleeced or if this saves his season!\n"
-            elif 'Shawn Ullenbrauck' in [tr['owner_a'], tr['owner_b']] and 'Daniel Kruszewski' in [tr['owner_a'], tr['owner_b']]:
-                payload += "  *Context & Banter:* Daniel Kruszewski suffered an in-game concussion to T.J. Hockenson on Sunday, and immediately flipped Hockenson to Shawn Ullenbrauck for healthy TE Brenton Strange! Did Daniel sell high on a concussed asset, or did Shawn U pull off a masterclass buy-low for the playoffs?\n"
+    # --- LEAGUE TRANSACTIONS & ROSTER MOVES ---
+    roster_moves = fetch_recent_roster_moves(raw_data, week_num, season, cookies, teams)
+    if trades or roster_moves:
+        payload += "## 🔥 LEAGUE TRANSACTIONS: TRADES, WAIVERS & ROSTER SHIFTS\n"
+        payload += "*Discuss and debate these recent transactions and roster shakeups during Act 1!*\n\n"
+        if trades:
+            for tr in trades:
+                payload += f"### 🔄 Trade on {tr['date']}: {tr['owner_a']} <---> {tr['owner_b']}\n"
+                payload += f"- **{tr['owner_a']} receives:** {', '.join(tr['b_sends']) if tr['b_sends'] else 'Assets'}\n"
+                payload += f"- **{tr['owner_b']} receives:** {', '.join(tr['a_sends']) if tr['a_sends'] else 'Assets'}\n"
+                if 'Abe Thomas' in [tr['owner_a'], tr['owner_b']] and 'Nitesh Patel' in [tr['owner_a'], tr['owner_b']]:
+                    payload += "  *Context & Banter:* Defending champ Abe Thomas shipped out Aaron Rodgers, Justice Hill, and Keon Coleman to Nitesh Patel for Caleb Williams and 2nd-year TE Colston Loveland! Debate if this move has paid off.\n"
+                elif 'Shawn Ullenbrauck' in [tr['owner_a'], tr['owner_b']] and 'Daniel Kruszewski' in [tr['owner_a'], tr['owner_b']]:
+                    payload += "  *Context & Banter:* Daniel Kruszewski flipped injured T.J. Hockenson to Shawn Ullenbrauck for Brenton Strange!\n"
+                payload += "\n"
+        if roster_moves:
+            payload += "### 📋 Notable Recent Waiver & Roster Moves:\n"
+            for rm in roster_moves[:12]:
+                payload += f"- {rm}\n"
             payload += "\n"
 
     # --- LEAGUE-WIDE POINTS RANKINGS & LUCK INDEX ---
@@ -515,7 +618,7 @@ def generate_payload(season: int, week_num: int):
         elif tr['pa_rank'] <= 2 and tr['overall_w'] <= 2:
             diagnosis = "💀 **SCHEDULE VICTIM** (Faced Top 2 Most Points in BFL)"
         elif tr['overall_l'] == 0:
-            diagnosis = "👑 **THE UNDEFEATED KING** (Rank #1 Scoring, 5-0)"
+            diagnosis = f"👑 **THE UNDEFEATED KING** (Rank #{rank} Scoring, {tr['overall_w']}-{tr['overall_l']})"
         else:
             diagnosis = "⚖️ Fair Matchup Balance"
             
@@ -523,24 +626,42 @@ def generate_payload(season: int, week_num: int):
     payload += "\n"
     
     payload += "### 🗣️ TALKING POINTS ON POINTS VS LUCK:\n"
-    payload += "- **The Lucky Fraud of the Year:** Nitesh Patel is 3-2 despite ranking 16th out of 16 (DEAD LAST) with an anemic 411.6 points! He has also faced the fewest points in the league (413.4 PA). He is living on borrowed time!\n"
-    payload += "- **The Unlucky Powerhouses:** Shawn Ullenbrauck (560.8 PF, Rank #3) and Adam Olen (547.5 PF, Rank #4) are lighting up the scoreboard, outscoring almost the entire league, but are stuck at 2-3 because they've faced brutal opponent scoring. Call for justice for these high scorers!\n"
-    payload += "- **The Schedule Gauntlet:** Sydney Miller (566.3 PA, #1 most points against) and rej hoxha (564.7 PA, #2 most points against, 0-5 record). Opponents are averaging over 113 PPG against them!\n\n"
+    if pt_callouts:
+        payload += f"- **The Lucky Paper Tigers:** {', '.join(pt_callouts)}. Living on borrowed time and soft opponent scoring!\n"
+    if unlucky_callouts:
+        payload += f"- **The Unlucky Powerhouses:** {', '.join(unlucky_callouts)}. Scoring tons of points, outscoring most of the league, but stuck with losing records due to opponent schedule luck. Call for justice!\n"
+    if gauntlet_callouts:
+        payload += f"- **The Schedule Gauntlet:** {', '.join(gauntlet_callouts)}. Opponents are putting up season-highs against them week after week!\n\n"
 
     # --- DIVISION STANDINGS & TITLE RACE DYNAMICS ---
-    payload += "## 📊 DIVISION STANDINGS & TITLE RACE DYNAMICS (THROUGH WEEK 5)\n"
+    payload += f"## 📊 DIVISION STANDINGS & TITLE RACE DYNAMICS (THROUGH WEEK {week_num})\n"
     division_standings = {}
     for t in teams.values():
         div = t.get('division', 'Unknown')
         if div not in division_standings: division_standings[div] = []
         division_standings[div].append(t)
 
-    div_narratives = {
-        'East': "Samran Mirza stands alone as the ONLY undefeated team in the BFL at 5-0 (3-0 in division), holding a 2-game lead! Shawn Lukose is 3-2 and right on Samran's heels in total points (590.0 vs 590.4). Meanwhile, rej hoxha is snakebitten at 0-5 despite dropping 125.1 points this week.",
-        'North': "MASSIVE THREE-WAY TIE AT 3-2! Commissioner Nick Christus (3-2, 488.0 PF), Tommy Ehrlich (3-2, 535.1 PF), and Daniel Kruszewski (3-2, 455.9 PF) are deadlocked at the top! Blake Whitehouse is just one game back at 2-3.",
-        'South': "Saagar Gupta (4-1, 507.8 PF) suffered his first loss of the season, scoring a season-low 69.5 points. Nael Ahmed (3-2, 491.0 PF) is red-hot on a 3-game win streak! Nitesh Patel sits at 3-2, while defending champ Abe Thomas is in crisis at 1-4.",
-        'West': "UNPRECEDENTED 4-WAY DEADLOCK AT 2-3! Every single team in the West is 2-3! Alex Kite holds the tiebreaker at 2-1 in division. Shawn Ullenbrauck (560.8 PF) and Adam Olen (547.5 PF) are 3rd and 4th in the entire league in scoring, but are snakebitten by brutal matchups."
-    }
+    div_narratives = {}
+    for div in ['East', 'North', 'South', 'West']:
+        div_teams = division_standings.get(div, [])
+        div_teams.sort(key=lambda x: (
+            trajectories[x['id']]['overall_w'],
+            trajectories[x['id']]['div_w'],
+            trajectories[x['id']]['points_for']
+        ), reverse=True)
+        if div_teams:
+            leader_w = trajectories[div_teams[0]['id']]['overall_w']
+            leaders = [t for t in div_teams if trajectories[t['id']]['overall_w'] == leader_w]
+            if len(leaders) == 1:
+                gap = leader_w - trajectories[div_teams[1]['id']]['overall_w']
+                gap_str = f"holds a {gap}-game lead" if gap > 0 else "holds the tiebreaker"
+                div_narratives[div] = f"{leaders[0]['owner']} sits alone in 1st place at {leader_w}-{trajectories[leaders[0]['id']]['overall_l']} ({gap_str})! "
+            else:
+                names = ', '.join([t['owner'] for t in leaders])
+                div_narratives[div] = f"MASSIVE {len(leaders)}-WAY DEADLOCK AT THE TOP! {names} are all tied for 1st place at {leader_w}-{trajectories[leaders[0]['id']]['overall_l']}! "
+            chasers = [f"{t['owner']} ({trajectories[t['id']]['overall_w']}-{trajectories[t['id']]['overall_l']})" for t in div_teams[len(leaders):]]
+            if chasers:
+                div_narratives[div] += f"Chasing: {', '.join(chasers)}."
 
     for div in ['East', 'North', 'South', 'West']:
         div_teams = division_standings.get(div, [])
@@ -560,17 +681,24 @@ def generate_payload(season: int, week_num: int):
     # --- SEASON TRAJECTORIES & MOMENTUM ---
     payload += "## 📈 LEAGUE MOMENTUM & TRAJECTORIES\n"
     payload += "### 🔥 Surging Teams (On Fire):\n"
-    payload += "- **Samran Mirza (5-0, W5):** The sole unbeaten juggernaut. Survived a 125-point scare from rej in Week 5.\n"
-    payload += "- **Daniel Kruszewski (3-2, W3):** Started 0-2, now won 3 in a row! Just dethroned 4-0 Saagar Gupta with a commanding 93-69 win.\n"
-    payload += "- **Nael Ahmed (3-2, W3):** Surging on a 3-game win streak after an 0-2 start, taking down Adam Olen in a 3.4-point nailbiter.\n"
-    payload += "- **Nick Christus (3-2, W2):** Commissioner has won 2 straight, holding the 3-way tie for 1st in the North.\n"
-    payload += "- **Shawn Lukose (3-2, W2):** Putting up monster numbers (590.0 PF) and won a key divisional clash over Dino.\n\n"
+    surging_items = []
+    for tid, tr in sorted(trajectories.items(), key=lambda x: (x[1]['streak_cnt'], x[1]['overall_w']), reverse=True):
+        if tr['streak_type'] == 'W' and tr['streak_cnt'] >= 2:
+            surging_items.append(f"- **{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']}, {tr['streak_str']}):** Won {tr['streak_cnt']} straight ({round(tr['points_for'], 1)} PF, Rank #{tr['pf_rank']}).")
+    if surging_items:
+        payload += "\n".join(surging_items) + "\n\n"
+    else:
+        payload += "- No teams currently on a 2+ game winning streak.\n\n"
     
     payload += "### 🧊 Teams in Freefall (Losing Skids):\n"
-    payload += "- **rej hoxha (0-5, L5):** The lone winless team. Had his best game of the season (125.1 pts) and still lost by 3.9 points to Samran. Pure heartbreak.\n"
-    payload += "- **Abe Thomas (1-4, L3):** Defending champ has lost 3 straight, offense struggling, blowing up the team via trades.\n"
-    payload += "- **Blake Whitehouse (2-3, L3):** Started 2-0, now dropped 3 in a row, blown out by Shawn U in Week 5.\n"
-    payload += "- **Dino Davros (2-3, L3):** Started 2-0, now dropped 3 straight after falling to Shawn Lukose.\n\n"
+    freefall_items = []
+    for tid, tr in sorted(trajectories.items(), key=lambda x: (x[1]['streak_cnt'], -x[1]['overall_w']), reverse=True):
+        if tr['streak_type'] == 'L' and tr['streak_cnt'] >= 2:
+            freefall_items.append(f"- **{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']}, {tr['streak_str']}):** Dropped {tr['streak_cnt']} straight ({round(tr['points_for'], 1)} PF, Rank #{tr['pf_rank']}; {round(tr['points_against'], 1)} PA, Rank #{tr['pa_rank']} hardest).")
+    if freefall_items:
+        payload += "\n".join(freefall_items) + "\n\n"
+    else:
+        payload += "- No teams currently on a 2+ game losing skid.\n\n"
 
     # --- BUILD RICH PLAYER CONTEXT ---
     player_context = {}
@@ -604,7 +732,7 @@ def generate_payload(season: int, week_num: int):
     save_tenure_cache()
 
     # --- MATCHUPS & BOX SCORES ---
-    payload += "## 🏈 WEEK 5 MATCHUPS, IN-GAME INJURIES & BOX SCORES\n"
+    payload += f"## 🏈 WEEK {week_num} MATCHUPS, IN-GAME INJURIES & BOX SCORES\n"
     seen_owners = set()
     history_str = "## 📚 LEAGUE LORE & OWNER CONTEXT (MINIMAL RECAP)\n"
     
@@ -782,6 +910,6 @@ def generate_payload(season: int, week_num: int):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--season", type=int, default=int(CURRENT_YEAR))
-    parser.add_argument("--week", type=int, default=5)
+    parser.add_argument("--week", type=int, default=6)
     args = parser.parse_args()
     generate_payload(args.season, args.week)
