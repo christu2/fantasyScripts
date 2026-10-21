@@ -366,7 +366,8 @@ def fetch_recent_roster_moves(raw_data: dict, current_week: int, season: int, co
 
         for t in data.get('transactions', []):
             status = t.get('status')
-            tx_type = t.get('type')
+            if status != 'EXECUTED':
+                continue  # STRICT RULE: Never process pending waiver bids or unexecuted moves!
             for it in t.get('items', []):
                 it_type = it.get('type')
                 pid = it.get('playerId')
@@ -383,13 +384,14 @@ def fetch_recent_roster_moves(raw_data: dict, current_week: int, season: int, co
                 
                 if it_type == 'DROP' and from_id in teams:
                     owner = teams[from_id]['owner']
-                    moves.append(f"✂️ **{owner}** cut **{pname}**")
-                elif it_type == 'ADD' and to_id in teams and status == 'EXECUTED':
+                    move_str = f"✂️ **{owner}** cut **{pname}**"
+                    if move_str not in moves:
+                        moves.append(move_str)
+                elif it_type == 'ADD' and to_id in teams:
                     owner = teams[to_id]['owner']
-                    moves.append(f"⚡ **{owner}** signed **{pname}**")
-                elif it_type == 'ADD' and to_id in teams and status == 'PENDING':
-                    owner = teams[to_id]['owner']
-                    moves.append(f"⏳ **{owner}** placed a waiver claim on **{pname}**")
+                    move_str = f"⚡ **{owner}** signed **{pname}**"
+                    if move_str not in moves:
+                        moves.append(move_str)
     except Exception:
         pass
     return moves
@@ -498,7 +500,7 @@ def generate_payload(season: int, week_num: int):
     payload += "To deliver a balanced, entertaining, and comprehensive episode, you MUST adhere to this exact 3-Act structure:\n\n"
     payload += f"1. **ACT 1: THE OPENING DRIVE (FIRST ~15% OF THE EPISODE)**\n"
     payload += "   - High-energy show intro and setting the tone for the week's theme.\n"
-    payload += "   - **League News, Trades & Significant Roster Moves:** Debate any completed trades, waiver wire coups, and major NFL injuries shaking up rosters (e.g. Terry McLaurin season-ending patellar tendon tear, Ladd McConkey concussion, Blake Grupe torn ACL, key waiver claims and cuts).\n"
+    payload += "   - **League News, Trades & Significant Roster Moves:** Debate any completed trades, waiver wire coups, and major NFL injuries shaking up rosters (e.g. Terry McLaurin season-ending patellar tendon tear, Ladd McConkey concussion, Blake Grupe torn ACL, official completed roster cuts and signings).\n"
     payload += "   - **Division Standings & Luck Index Snapshot:** Quick overview of division leaders, hot streaks, losing skids, and calling out the 'Lucky Paper Tigers' vs 'Unlucky Powerhouses' (Points Scored vs Win-Loss Records).\n"
     payload += "   - *Strict Pacing Rule:* Keep this high-level, fast-paced, and punchy! Do NOT spend more than ~15% of your total broadcast time here so you have ample time for the matchups.\n\n"
     payload += f"2. **ACT 2: GAME-BY-GAME BREAKDOWNS (THE CORE ~70% OF THE EPISODE)**\n"
@@ -556,6 +558,7 @@ def generate_payload(season: int, week_num: int):
     else:
         luck_dir_str += "\n\n"
     payload += f"9. **POINTS SCORED VS RECORDS (LUCK & FRAUD FACTOR):**{luck_dir_str}"
+    payload += "10. **NO PENDING WAIVER CLAIMS OR UNEXECUTED MOVES:** Only discuss transactions that have officially EXECUTED and are public league knowledge. Never speculate on or reference pending waiver claims, bids, or unexecuted moves. Only talk about finalized cuts, signings, and trades.\n\n"
 
     # --- AUTOMATIC NFL GAME RECAPS ---
     try:
