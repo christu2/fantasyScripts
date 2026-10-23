@@ -472,7 +472,7 @@ def generate_payload(season: int, week_num: int):
 
     payload += "## 🎙️ HOST INSTRUCTIONS & SHOW IDENTITY\n"
     payload += "You are hosting the 'Tuesday Morning Hangover', the premier fantasy football post-game show for the Beasts Football League (BFL).\n"
-    payload += "Hosts: Chris & Dave. Style: High energy, sharp comedic banter, authentic sports radio debates, laughing with and roasting the managers.\n\n"
+    payload += "Hosts: Chris & Dave. Style: High energy, sharp comedic banter, authentic television/radio sports desk style (like ESPN's SportsCenter or NFL Live) where the anchors introduce themselves and immediately dive into the real action.\n\n"
     
     themes = {
         1: "Overreactions and Panic. Everyone is freaking out over Week 1.",
@@ -495,13 +495,22 @@ def generate_payload(season: int, week_num: int):
     
     payload += f"**THIS WEEK'S PODCAST THEME:** {weekly_theme}\n\n"
 
+    # --- MANDATORY SHOW COLD OPEN ---
+    payload += "### 📺 MANDATORY BROADCAST COLD OPEN (SPORTSCENTER / SPORTS RADIO STYLE):\n"
+    payload += "- **STRICTLY BANNED OPENING SHTICK:** ABSOLUTELY DO NOT open the show with rhetorical questions, hypothetical scenarios, or philosophical musings (e.g. 'Imagine scoring a high number of points but still losing, how would you feel?', 'Picture this...', 'Have you ever wondered...'). NO hypothetical opening monologues!\n"
+    payload += "- **MANDATORY BROADCAST INTRO:** You MUST start the episode immediately as a clean, authentic broadcast desk introduction:\n"
+    payload += f"  1. Welcome the audience: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover!'\n"
+    payload += "  2. The hosts MUST introduce themselves right away: 'I'm Chris alongside Dave...'\n"
+    payload += f"  3. Deliver a punchy 2-sentence teaser of Week {week_num}'s biggest headlines, upsets, and division shifts.\n"
+    payload += "  4. Immediately transition straight into the action and the recap of the week!\n\n"
+
     # --- STRICT PACING & BROADCAST TIME ALLOCATION (15% / 70% / 15%) ---
     payload += "### ⏱️ STRICT BROADCAST STRUCTURE & TIME ALLOCATION (PACING GUIDE)\n"
     payload += "To deliver a balanced, entertaining, and comprehensive episode, you MUST adhere to this exact 3-Act structure:\n\n"
     payload += f"1. **ACT 1: THE OPENING DRIVE (FIRST ~15% OF THE EPISODE)**\n"
-    payload += "   - High-energy show intro and setting the tone for the week's theme.\n"
+    payload += f"   - **SportsCenter Desk Welcome:** Welcome listeners to the Week {week_num} edition of the Tuesday Morning Hangover, Chris & Dave introduce themselves, and immediately tease the biggest headlines and storylines of the week.\n"
     payload += "   - **League News, Trades & Significant Roster Moves:** Debate any completed trades, waiver wire coups, and major NFL injuries shaking up rosters (e.g. Terry McLaurin season-ending patellar tendon tear, Ladd McConkey concussion, Blake Grupe torn ACL, official completed roster cuts and signings).\n"
-    payload += "   - **Division Standings & Luck Index Snapshot:** Quick overview of division leaders, hot streaks, losing skids, and calling out the 'Lucky Paper Tigers' vs 'Unlucky Powerhouses' (Points Scored vs Win-Loss Records).\n"
+    payload += "   - **Division Standings & Scoring Snapshot:** Brief analytical look at division leaders, win streaks, losing skids, and points scored (treat points scored strictly as factual statistics, NOT as an opening philosophical debate on luck vs skill).\n"
     payload += "   - *Strict Pacing Rule:* Keep this high-level, fast-paced, and punchy! Do NOT spend more than ~15% of your total broadcast time here so you have ample time for the matchups.\n\n"
     payload += f"2. **ACT 2: GAME-BY-GAME BREAKDOWNS (THE CORE ~70% OF THE EPISODE)**\n"
     payload += "   - **MANDATORY EQUAL COVERAGE RULE:** You MUST cover **ALL 8 MATCHUPS and ALL 16 TEAMS**! Do NOT skip any matchup or relegate any team to an afterthought!\n"
@@ -519,9 +528,10 @@ def generate_payload(season: int, week_num: int):
 
     # --- CRITICAL HOST DIRECTIVES ---
     payload += "### ⚡ CRITICAL SHOW DIRECTIVES (MUST FOLLOW):\n"
-    payload += "1. **NO FANTASY EXPLANATIONS:** Never explain what fantasy football is or how head-to-head works. The listeners are the 16 managers. Talk like seasoned sports talk radio hosts.\n"
-    payload += "2. **BALANCED COVERAGE (ALL 16 TEAMS):** Touch on every single team and break down all 8 matchups. Do NOT focus solely on the undefeated team or high-profile owners.\n"
-    payload += "3. **IN-GAME INJURIES (ABSOLUTE DIRECTIVE):** NFL players get injured during live games! League managers DO NOT intentionally start inactive or injured players! If a starter scored 0 to 4 points and has an in-game injury noted below (e.g., Terry McLaurin patellar tendon tear, Ladd McConkey concussion, Blake Grupe ACL tear), NEVER accuse the manager of 'starting an injured player' or committing a 'blunder'! Explicitly recognize on-air that the player suffered an in-game injury during live play. Sympathize with the manager for brutal injury heartbreak and bad luck.\n"
+    payload += f"1. **MANDATORY SPORTSCENTER DESK INTRO & NO HYPOTHETICAL SHTICK:** Never open the episode asking listeners to 'imagine' a scenario or asking rhetorical questions ('Imagine scoring 120 points and losing, how would you feel?'). Open like professional sports anchors: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover, I'm Chris alongside Dave!' Introduce yourselves, tease the week's wild results, and get straight into the action.\n"
+    payload += "2. **NO FANTASY EXPLANATIONS:** Never explain what fantasy football is or how head-to-head works. The listeners are the 16 managers. Talk like seasoned sports talk radio hosts.\n"
+    payload += "3. **BALANCED COVERAGE (ALL 16 TEAMS):** Touch on every single team and break down all 8 matchups. Do NOT focus solely on the undefeated team or high-profile owners.\n"
+    payload += "4. **IN-GAME INJURIES (ABSOLUTE DIRECTIVE):** NFL players get injured during live games! League managers DO NOT intentionally start inactive or injured players! If a starter scored 0 to 4 points and has an in-game injury noted below (e.g., Terry McLaurin patellar tendon tear, Ladd McConkey concussion, Blake Grupe ACL tear), NEVER accuse the manager of 'starting an injured player' or committing a 'blunder'! Explicitly recognize on-air that the player suffered an in-game injury during live play. Sympathize with the manager for brutal injury heartbreak and bad luck.\n"
     
     # Dynamic continuity highlights
     undefeated_teams = [t['owner'] for t in teams.values() if trajectories[t['id']]['overall_l'] == 0]
@@ -532,33 +542,25 @@ def generate_payload(season: int, week_num: int):
     if winless_teams:
         continuity_snippets.append(f"{', '.join(winless_teams)} still searching for win #1")
     continuity_str = f" This is Episode {week_num}! DO NOT repeat static multi-year owner biographies or ring counts from scratch. Instead, focus on the DYNAMIC {season} SEASON STORY: " + (", ".join(continuity_snippets) if continuity_snippets else "the tight playoff and division races taking shape") + ".\n"
-    payload += f"4. **EPISODIC CONTINUITY & ANTI-REPETITION:**{continuity_str}"
+    payload += f"5. **EPISODIC CONTINUITY & ANTI-REPETITION:**{continuity_str}"
     
-    payload += "5. **DISCUSS DIVISION DYNAMICS & STREAKS:** Talk about division races! Who leads? Who is tied? Point out who is riding hot winning streaks versus who is in freefall.\n"
-    payload += "6. **BLAME THE PLAYER, NOT THE MANAGER:** When a star player underperforms while healthy, roast the player for disappearing, not the manager for starting their studs.\n"
-    payload += "7. **TIMELINE REALITY & PLAYER TENURE (DO NOT CALL VETERANS ROOKIES):** The current NFL season is 2026!\n"
+    payload += "6. **DISCUSS DIVISION DYNAMICS & STREAKS:** Talk about division races! Who leads? Who is tied? Point out who is riding hot winning streaks versus who is in freefall.\n"
+    payload += "7. **BLAME THE PLAYER, NOT THE MANAGER:** When a star player underperforms while healthy, roast the player for disappearing, not the manager for starting their studs.\n"
+    payload += "8. **TIMELINE REALITY & PLAYER TENURE (DO NOT CALL VETERANS ROOKIES):** The current NFL season is 2026!\n"
     payload += "   - Every player in this document now has their official NFL tenure tag right next to their name (e.g. `[2nd-Year Sophomore (Drafted 2025)]` or `[3rd-Year Player (Drafted 2024)]`).\n"
     payload += "   - **Colston Loveland, Luther Burden III, Tyler Warren, Jeremiyah Love, and Quinshon Judkins** were drafted in 2025 and ARE IN THEIR 2ND SEASON (SOPHOMORES). THEY ARE NOT ROOKIES! DO NOT CALL COLSTON LOVELAND A ROOKIE!\n"
     payload += "   - **Caleb Williams, Jayden Daniels, Bo Nix, Marvin Harrison Jr, Malik Nabers, Rome Odunze, and Brock Bowers** were drafted in 2024 and ARE IN THEIR 3RD SEASON (ESTABLISHED VETERANS).\n"
     payload += "   - ONLY players explicitly labeled `[Rookie (1st Year, Class of 2026)]` are rookies. You are strictly forbidden from calling Colston Loveland or any 2024/2025 draft pick a rookie.\n"
-    payload += "8. **CENTRAL TIME ZONE:** The BFL operates in Central Time (CT). Sunday games kick off at 12:00 PM CT (noon).\n"
+    payload += "9. **CENTRAL TIME ZONE:** The BFL operates in Central Time (CT). Sunday games kick off at 12:00 PM CT (noon).\n"
     
     # Dynamic Luck Directive
     pt_callouts = [f"{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']} with {round(tr['points_for'], 1)} PF, #{tr['pf_rank']} scoring)" for tid, tr in trajectories.items() if tr['overall_w'] > tr['overall_l'] and tr['pf_rank'] >= 10]
     unlucky_callouts = [f"{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']} despite {round(tr['points_for'], 1)} PF, #{tr['pf_rank']} scoring)" for tid, tr in trajectories.items() if tr['overall_w'] <= tr['overall_l'] and tr['pf_rank'] <= 6]
     gauntlet_callouts = [f"{teams[tid]['owner']} ({round(tr['points_against'], 1)} PA, #{tr['pa_rank']} schedule)" for tid, tr in trajectories.items() if tr['pa_rank'] <= 2]
     
-    luck_dir_str = " Records alone are deceiving! You MUST explicitly compare teams' win-loss records to their total Points Scored (Points For). "
-    if pt_callouts:
-        luck_dir_str += f"Roast the lucky paper tigers ({', '.join(pt_callouts)}). "
-    if unlucky_callouts:
-        luck_dir_str += f"Stand up for the unlucky powerhouses ({', '.join(unlucky_callouts)}). "
-    if gauntlet_callouts:
-        luck_dir_str += f"Mention the brutal schedule gauntlet faced by {', '.join(gauntlet_callouts)}!\n\n"
-    else:
-        luck_dir_str += "\n\n"
-    payload += f"9. **POINTS SCORED VS RECORDS (LUCK & FRAUD FACTOR):**{luck_dir_str}"
-    payload += "10. **NO PENDING WAIVER CLAIMS OR UNEXECUTED MOVES:** Only discuss transactions that have officially EXECUTED and are public league knowledge. Never speculate on or reference pending waiver claims, bids, or unexecuted moves. Only talk about finalized cuts, signings, and trades.\n\n"
+    luck_dir_str = " When checking the standings in Act 1, mention teams' Points For alongside their records as factual stats (e.g. noting paper tigers with low scoring or powerhouses who ran into buzzsaws). Treat this strictly as sports statistics, NEVER as an opening philosophical debate on luck vs skill.\n\n"
+    payload += f"10. **ANALYTICAL SCORING CHECK (NOT AN OPENING ESSAY):**{luck_dir_str}"
+    payload += "11. **NO PENDING WAIVER CLAIMS OR UNEXECUTED MOVES:** Only discuss transactions that have officially EXECUTED and are public league knowledge. Never speculate on or reference pending waiver claims, bids, or unexecuted moves. Only talk about finalized cuts, signings, and trades.\n\n"
 
     # --- AUTOMATIC NFL GAME RECAPS ---
     try:
@@ -602,10 +604,10 @@ def generate_payload(season: int, week_num: int):
                 payload += f"- {rm}\n"
             payload += "\n"
 
-    # --- LEAGUE-WIDE POINTS RANKINGS & LUCK INDEX ---
-    payload += "## 🎯 LEAGUE-WIDE POINTS RANKINGS & THE LUCK INDEX\n"
-    payload += "*CRITICAL TOPIC FOR THE HOSTS: Debate how misleading win-loss records are by looking at Points For vs Points Against!*\n\n"
-    payload += "| Rank | Owner | Team | Record | Points For (Avg PPG) | Points Against (Opp PPG) | Luck Diagnosis |\n"
+    # --- LEAGUE-WIDE POINTS RANKINGS & SCORING SUMMARY ---
+    payload += "## 📊 LEAGUE-WIDE SCORING & POINTS SUMMARY\n"
+    payload += "*Analytical reference for Act 1: Quick data comparison of total points scored (PF) versus points allowed (PA). Use purely as statistical context, not as an opening philosophical debate.*\n\n"
+    payload += "| Rank | Owner | Team | Record | Points For (Avg PPG) | Points Against (Opp PPG) | Scoring Profile |\n"
     payload += "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
     
     all_teams_by_pf = sorted(teams.values(), key=lambda t: trajectories[t['id']]['points_for'], reverse=True)
@@ -615,26 +617,26 @@ def generate_payload(season: int, week_num: int):
         opp_ppg = tr['points_against'] / week_num
         
         if tr['overall_w'] < tr['overall_l'] and rank <= 5:
-            diagnosis = "⚡ **UNLUCKY POWERHOUSE** (Top 5 Scoring, Losing Record)"
+            diagnosis = "⚡ **HIGH SCORER / UNLUCKY** (Top 5 Scoring, Losing Record)"
         elif tr['overall_w'] > tr['overall_l'] and rank >= 12:
-            diagnosis = "🍀 **PAPER TIGER / LUCKY CHARM** (Bottom 5 Scoring, Winning Record)"
+            diagnosis = "🍀 **LOW SCORER / WINNING** (Bottom 5 Scoring, Winning Record)"
         elif tr['pa_rank'] <= 2 and tr['overall_w'] <= 2:
-            diagnosis = "💀 **SCHEDULE VICTIM** (Faced Top 2 Most Points in BFL)"
+            diagnosis = "💀 **TOUGH SCHEDULE** (Faced Top 2 Most Points in BFL)"
         elif tr['overall_l'] == 0:
-            diagnosis = f"👑 **THE UNDEFEATED KING** (Rank #{rank} Scoring, {tr['overall_w']}-{tr['overall_l']})"
+            diagnosis = f"👑 **THE UNDEFEATED LEADER** (Rank #{rank} Scoring, {tr['overall_w']}-{tr['overall_l']})"
         else:
-            diagnosis = "⚖️ Fair Matchup Balance"
+            diagnosis = "⚖️ Balanced Matchups"
             
         payload += f"| #{rank} | **{t['owner']}** | {t['name']} | **{tr['overall_w']}-{tr['overall_l']}** | {round(tr['points_for'], 1)} ({round(avg_ppg, 1)} PPG) | {round(tr['points_against'], 1)} ({round(opp_ppg, 1)} PPG) | {diagnosis} |\n"
     payload += "\n"
     
-    payload += "### 🗣️ TALKING POINTS ON POINTS VS LUCK:\n"
+    payload += "### 🗣️ TALKING POINTS ON POINTS & SCORING:\n"
     if pt_callouts:
-        payload += f"- **The Lucky Paper Tigers:** {', '.join(pt_callouts)}. Living on borrowed time and soft opponent scoring!\n"
+        payload += f"- **Low-Scoring Winning Teams:** {', '.join(pt_callouts)}. Winning with clutch defense and low-scoring dogfights!\n"
     if unlucky_callouts:
-        payload += f"- **The Unlucky Powerhouses:** {', '.join(unlucky_callouts)}. Scoring tons of points, outscoring most of the league, but stuck with losing records due to opponent schedule luck. Call for justice!\n"
+        payload += f"- **High-Scoring Losing Teams:** {', '.join(unlucky_callouts)}. Scoring big points but running into high opponent totals.\n"
     if gauntlet_callouts:
-        payload += f"- **The Schedule Gauntlet:** {', '.join(gauntlet_callouts)}. Opponents are putting up season-highs against them week after week!\n\n"
+        payload += f"- **Hardest Schedules:** {', '.join(gauntlet_callouts)}. Opponents are putting up big totals against them.\n\n"
 
     # --- DIVISION STANDINGS & TITLE RACE DYNAMICS ---
     payload += f"## 📊 DIVISION STANDINGS & TITLE RACE DYNAMICS (THROUGH WEEK {week_num})\n"
