@@ -1,0 +1,202 @@
+{
+  "season": 2026,
+  "trades": [
+    {
+      "week": 3,
+      "owner_a": "Nick Christus",
+      "owner_b": "Shawn Lukose",
+      "a_sends": [
+        {
+          "name": "Makai Lemon",
+          "pos": "WR",
+          "injury": "ACTIVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "MarShawn Lloyd",
+          "pos": "RB",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Wan'Dale Robinson",
+          "pos": "WR",
+          "injury": "ACTIVE"
+        }
+      ]
+    },
+    {
+      "week": 3,
+      "owner_a": "Shawn Lukose",
+      "owner_b": "Blake Whitehouse",
+      "a_sends": [
+        {
+          "name": "Chris Godwin Jr.",
+          "pos": "WR",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Jonah Coleman",
+          "pos": "RB",
+          "injury": "INJURY_RESERVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "Rachaad White",
+          "pos": "RB",
+          "injury": "ACTIVE"
+        }
+      ]
+    },
+    {
+      "week": 3,
+      "owner_a": "Nael Ahmed",
+      "owner_b": "Nitesh Patel",
+      "a_sends": [
+        {
+          "name": "De'Von Achane",
+          "pos": "RB",
+          "injury": "INJURY_RESERVE"
+        },
+        {
+          "name": "Jadarian Price",
+          "pos": "RB",
+          "injury": "INJURY_RESERVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "James Cook III",
+          "pos": "RB",
+          "injury": "ACTIVE"
+        }
+      ]
+    },
+    {
+      "week": 5,
+      "owner_a": "Nick Christus",
+      "owner_b": "Shawn Lukose",
+      "a_sends": [
+        {
+          "name": "Marvin Harrison Jr.",
+          "pos": "WR",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Emmett Johnson",
+          "pos": "RB",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "MarShawn Lloyd",
+          "pos": "RB",
+          "injury": "ACTIVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "Ladd McConkey",
+          "pos": "WR",
+          "injury": "QUESTIONABLE"
+        }
+      ]
+    },
+    {
+      "week": 5,
+      "owner_a": "rej hoxha",
+      "owner_b": "Nitesh Patel",
+      "a_sends": [
+        {
+          "name": "Jakobi Meyers",
+          "pos": "WR",
+          "injury": "ACTIVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "Matthew Golden",
+          "pos": "WR",
+          "injury": "QUESTIONABLE"
+        }
+      ]
+    },
+    {
+      "week": 6,
+      "owner_a": "Shawn Lukose",
+      "owner_b": "rej hoxha",
+      "a_sends": [
+        {
+          "name": "Rachaad White",
+          "pos": "RB",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Dallas Goedert",
+          "pos": "TE",
+          "injury": "QUESTIONABLE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "Tyler Warren",
+          "pos": "TE",
+          "injury": "QUESTIONABLE"
+        }
+      ]
+    },
+    {
+      "week": 6,
+      "owner_a": "Shawn Ullenbrauck",
+      "owner_b": "Daniel Kruszewski",
+      "a_sends": [
+        {
+          "name": "Brenton Strange",
+          "pos": "TE",
+          "injury": "ACTIVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "T.J. Hockenson",
+          "pos": "TE",
+          "injury": "QUESTIONABLE"
+        }
+      ]
+    },
+    {
+      "week": 6,
+      "owner_a": "Abe Thomas",
+      "owner_b": "Nitesh Patel",
+      "a_sends": [
+        {
+          "name": "Justice Hill",
+          "pos": "RB",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Aaron Rodgers",
+          "pos": "QB",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Keon Coleman",
+          "pos": "WR",
+          "injury": "ACTIVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "Colston Loveland",
+          "pos": "TE",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Caleb Williams",
+          "pos": "QB",
+          "injury": "ACTIVE"
+        }
+      ]
+    }
+  ]
+}

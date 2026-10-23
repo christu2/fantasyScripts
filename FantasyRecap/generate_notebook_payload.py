@@ -295,60 +295,209 @@ def calculate_season_trajectories(raw_data: dict, current_week: int, teams: dict
 
     return records
 
-def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies: dict, teams: dict):
-    """Pulls verified trades and chat drama from ESPN API."""
-    comm_url = f'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{ESPN_LEAGUE_ID}?view=kona_league_communication'
-    try:
-        r = requests.get(comm_url, cookies=cookies, timeout=5)
-        if r.status_code != 200:
-            return [], []
-        comm = r.json()
-    except Exception:
-        return [], []
+def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: dict = None) -> dict:
+    """Generates deep strategic explanations for why each manager made the move."""
+    a = tr['owner_a']
+    b = tr['owner_b']
+    a_sends = tr['a_sends']
+    b_sends = tr['b_sends']
+    
+    a_names = [p['name'] if isinstance(p, dict) else p for p in a_sends]
+    b_names = [p['name'] if isinstance(p, dict) else p for p in b_sends]
+    all_names_str = ' '.join(a_names + b_names)
+    
+    a_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in a_sends])
+    b_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in b_sends])
+    
+    # Specific verified league trade narratives & strategic motives
+    if 'Brenton Strange' in all_names_str and 'Hockenson' in all_names_str:
+        return {
+            'theme': 'Win-Now Emergency Starter vs. Injured IR Playoff Stash',
+            'owner_a_why': f"{a} flipped active TE Brenton Strange to Daniel Kruszewski for T.J. Hockenson. Shawn U had the standings cushion and luxury to stash injured Pro-Bowl TE Hockenson on IR as an elite TE1 lottery ticket for the fantasy playoffs, trading immediate production for championship ceiling.",
+            'owner_b_why': f"{b} desperately needed live, healthy starting fantasy points at tight end right now to stop a losing skid and stay afloat in the playoff race. Daniel could not afford an empty roster spot or waiting on Hockenson's return, opting for Brenton Strange as an immediate plug-and-play starter.",
+            'debate': "Did Daniel panic-sell an elite weapon too early for a short-term bandaid, or was dumping an injured player the only pragmatic move to keep his season alive? Who wins this deal come playoff time?"
+        }
+    if 'Caleb Williams' in all_names_str and ('Aaron Rodgers' in all_names_str or 'Colston Loveland' in all_names_str):
+        return {
+            'theme': 'Blockbuster Franchise Overhaul: Youth & Elite Ceilings vs. Veteran Depth',
+            'owner_a_why': f"{a} went all-in on dynamic youth and explosive ceiling! Shipped out veteran QB Aaron Rodgers, RB depth piece Justice Hill, and WR Keon Coleman to acquire 3rd-year franchise QB Caleb Williams and 2nd-year athletic phenom TE Colston Loveland, locking in two high-ceiling positional centerpieces.",
+            'owner_b_why': f"{b} prioritized multi-position depth and starting stability. Nitesh absorbed veteran QB Aaron Rodgers to stabilize his signal-caller floor while adding Justice Hill (immediate backfield touches) and Keon Coleman to patch multiple lineup holes and cover upcoming bye weeks.",
+            'debate': "Blockbuster of the year! Did Abe pull off a masterclass securing two young high-ceiling cornerstones, or did Nitesh fleece him by turning two players into a balanced haul of starting depth?"
+        }
+    if 'Tyler Warren' in all_names_str and ('Rachaad White' in all_names_str or 'Dallas Goedert' in all_names_str):
+        return {
+            'theme': '2-for-1 Elite TE Consolidation vs. Multi-Position Roster Refuel',
+            'owner_a_why': f"{a} executed a textbook 2-for-1 consolidation! Shawn packaged starting RB2 Rachaad White and veteran TE Dallas Goedert to land breakout sophomore TE Tyler Warren, securing an every-week mismatch at tight end while trimming excess depth.",
+            'owner_b_why': f"{b} was bleeding in the standings and desperately needed to turn a single star into multiple starting pieces. rej received starting RB Rachaad White and proven veteran TE Dallas Goedert to instantly raise his weekly scoring floor and fill two starting vacancies.",
+            'debate': "Did rej sell his brightest young star out of desperation, or did the 2-for-1 haul give him the balanced starting lineup he desperately needed to stop his slide?"
+        }
+    if 'Ladd McConkey' in all_names_str and 'Marvin Harrison' in all_names_str:
+        return {
+            'theme': 'The 3-for-1 Mega-Consolidation Blockbuster',
+            'owner_a_why': f"{a} targeted Ladd McConkey aggressively, paying a massive depth toll (Marvin Harrison Jr., Emmett Johnson, and MarShawn Lloyd) to consolidate his roster and secure McConkey as his preferred WR anchor.",
+            'owner_b_why': f"{b} capitalized on an aggressive buyer to restock his entire roster with three high-upside weapons, adding massive insulation across multiple positions.",
+            'debate': "A colossal 3-for-1! Did Nick overpay for McConkey, or did Shawn Lukose win the trade on sheer asset value and depth?"
+        }
+    if 'Jakobi Meyers' in all_names_str and 'Matthew Golden' in all_names_str:
+        return {
+            'theme': 'Youth / Upside Flyer for Proven Veteran Floor',
+            'owner_a_why': f"{a} acquired young talent to take a flyer on upside.",
+            'owner_b_why': f"{b} acquired proven veteran Jakobi Meyers to provide reliable weekly PPR targets.",
+            'debate': "Who gets more value: the steady veteran floor or the youthful upside flyer?"
+        }
+    if 'James Cook' in all_names_str and 'Achane' in all_names_str:
+        return {
+            'theme': 'RB Bellcow Consolidation vs. Explosive 2-for-1 Upside',
+            'owner_a_why': f"{a} traded De'Von Achane and Jadarian Price to secure James Cook III as a true workhorse RB1.",
+            'owner_b_why': f"{b} took on two explosive backs in Achane and Price to diversify his backfield depth and upside.",
+            'debate': "Workhorse stability versus explosive multi-back depth: who won the backfield swap?"
+        }
 
-    pnames = {}
-    for t in raw_data.get('teams', []):
-        for entry in t.get('roster', {}).get('entries', []):
-            pl = entry.get('playerPoolEntry', {}).get('player', {})
-            if pl.get('id'):
-                pnames[pl['id']] = pl.get('fullName', f"Player {pl['id']}")
+    # Dynamic Heuristic Engine for automated analysis
+    a_len = len(a_sends)
+    b_len = len(b_sends)
+    
+    a_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR'] for p in a_sends)
+    b_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR'] for p in b_sends)
+    
+    if a_has_inj and not b_has_inj:
+        theme = "Win-Now Rental / Starter Acquisition vs. Injured Playoff Stash"
+        a_why = f"{a} moved an injured asset ({a_str}) to acquire healthy, active talent ({b_str}) to score immediate points and survive a must-win stretch."
+        b_why = f"{b} took on an injured player ({a_str}) at a discount to stash on IR for the late-season playoff push, sacrificing current production for high-ceiling playoff upside."
+        debate = f"Can {a} stay alive in the playoff race with {b_str}, or will {b}'s injured stash pay off in a championship run?"
+    elif b_has_inj and not a_has_inj:
+        theme = "Injured Playoff Stash vs. Win-Now Rental / Starter Acquisition"
+        a_why = f"{a} took on an injured player ({b_str}) to stash for a late-season playoff push, using current roster depth to absorb the downtime."
+        b_why = f"{b} moved injured {b_str} to land healthy, immediate starting points ({a_str}) to plug lineup holes."
+        debate = f"Did {b} give away an elite playoff asset too cheaply to survive the regular season?"
+    elif a_len > b_len:
+        theme = f"Consolidation Trade ({a_len}-for-{b_len} Upgrade)"
+        a_why = f"{a} bundled multiple depth assets ({a_str}) to consolidate into an upgraded, higher-tier starter ({b_str}) to maximize starting lineup firepower."
+        b_why = f"{b} parted with a marquee piece ({b_str}) to restock bench depth and patch multiple starting vacancies with {a_str}."
+        debate = f"Did {a} sacrifice too much roster depth, or did {b} give up the best player in the deal?"
+    elif b_len > a_len:
+        theme = f"Depth Replenishment ({b_len}-for-{a_len} Multi-Asset Haul)"
+        a_why = f"{a} traded a key starter ({a_str}) to acquire multiple starting-caliber pieces ({b_str}) to patch lineup holes and survive bye weeks."
+        b_why = f"{b} packaged multiple bench pieces ({b_str}) to target a single premium centerpiece ({a_str})."
+        debate = f"Did {b} consolidate successfully, or does {a}'s multi-piece haul provide better weekly floor?"
+    else:
+        theme = "Positional Need & Lineup Realignment"
+        a_why = f"{a} acquired {b_str} to address a specific starting positional deficit or bye-week scheduling crunch."
+        b_why = f"{b} acquired {a_str} to rebalance roster depth and fit preferred weekly matchups."
+        debate = f"A classic one-for-one positional challenge: which manager got the bigger immediate upgrade?"
 
-    trade_events = {}
-    topics = comm.get('communication', {}).get('topics', [])
-    for top in topics:
-        if top.get('type') == 'ACTIVITY_TRANSACTIONS':
-            for m in top.get('messages', []):
-                if m.get('messageTypeId') == 244: # Upheld trade
-                    pid = int(m.get('targetId', 0))
-                    pname = pnames.get(pid, f"Player {pid}")
-                    from_t = m.get('from')
-                    to_t = m.get('to')
-                    from_owner = teams.get(from_t, {}).get('owner', f"Team {from_t}")
-                    to_owner = teams.get(to_t, {}).get('owner', f"Team {to_t}")
-                    date_ms = m.get('date', 0)
-                    date_str = datetime.datetime.fromtimestamp(date_ms/1000).strftime('%Y-%m-%d')
-                    
-                    pair_key = tuple(sorted([from_owner, to_owner])) + (date_str,)
-                    if pair_key not in trade_events:
-                        trade_events[pair_key] = {
-                            'date': date_str,
-                            'owner_a': from_owner,
-                            'owner_b': to_owner,
-                            'a_sends': [],
-                            'b_sends': []
-                        }
-                    if from_owner == trade_events[pair_key]['owner_a']:
-                        if pname not in trade_events[pair_key]['a_sends']:
-                            trade_events[pair_key]['a_sends'].append(pname)
-                    else:
-                        if pname not in trade_events[pair_key]['b_sends']:
-                            trade_events[pair_key]['b_sends'].append(pname)
-                            
-    trades_list = list(trade_events.values())
-    return trades_list
+    return {
+        'theme': theme,
+        'owner_a_why': a_why,
+        'owner_b_why': b_why,
+        'debate': debate
+    }
+
+def format_in_depth_trade(tr: dict) -> str:
+    """Formats an individual trade into an analytical, debate-sparking segment for Act 1."""
+    a = tr['owner_a']
+    b = tr['owner_b']
+    wk = tr.get('week', '?')
+    a_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in tr['a_sends']])
+    b_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in tr['b_sends']])
+    an = tr.get('analysis', {})
+    
+    out = f"#### 🔄 Trade (Week {wk}): {a} <---> {b} [{an.get('theme', 'Blockbuster Swap')}]\n"
+    out += f"- **{a} acquired:** {b_str} (from {b})\n"
+    out += f"- **{b} acquired:** {a_str} (from {a})\n"
+    out += f"- **Why {a} made the move:** {an.get('owner_a_why', 'Upgraded starting lineup.')}\n"
+    out += f"- **Why {b} made the move:** {an.get('owner_b_why', 'Acquired roster depth.')}\n"
+    out += f"- **Host Debate & Trade Grade:** {an.get('debate', 'Debate who won!')}\n\n"
+    return out
+
+def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies: dict, teams: dict, trajectories: dict = None) -> list:
+    """Pulls verified trades via multi-week roster reconciliation diffing with disk caching and strategic motive analysis."""
+    cache_path = Path(__file__).resolve().parent / f"trade_history_{season}.json"
+    cached_trades = []
+    cached_weeks = set()
+    
+    if cache_path.exists():
+        try:
+            with open(cache_path, 'r') as cf:
+                data = json.load(cf)
+                cached_trades = data.get('trades', [])
+                for tr in cached_trades:
+                    cached_weeks.add(tr.get('week', 0))
+        except Exception:
+            cached_trades = []
+            cached_weeks = set()
+
+    max_target_week = current_week + 1
+    needs_scan = False
+    for w in range(2, max_target_week + 1):
+        if w not in cached_weeks:
+            needs_scan = True
+            break
+
+    if needs_scan or not cached_trades:
+        all_raw = {current_week: raw_data}
+        for w in range(1, max_target_week + 1):
+            if w == current_week: continue
+            try:
+                all_raw[w] = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), w, ESPN_S2, ESPN_SWID)
+            except Exception:
+                pass
+
+        def get_roster_dict(raw):
+            rosters = {}
+            player_info = {}
+            for t in raw.get('teams', []):
+                tid = t['id']
+                rosters[tid] = {}
+                for e in t.get('roster', {}).get('entries', []):
+                    p = e.get('playerPoolEntry', {}).get('player', {})
+                    pid = p.get('id')
+                    pos_id = p.get('defaultPositionId', 0)
+                    pos_name = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}.get(pos_id, 'FLEX')
+                    name = p.get('fullName', f"Player {pid}")
+                    injury = p.get('injuryStatus', 'ACTIVE')
+                    rosters[tid][pid] = name
+                    player_info[pid] = {'name': name, 'pos': pos_name, 'injury': injury}
+            return rosters, player_info
+
+        discovered_trades = []
+        for w in range(2, max(all_raw.keys()) + 1):
+            if w not in all_raw or (w - 1) not in all_raw: continue
+            r_prev, info_prev = get_roster_dict(all_raw[w - 1])
+            r_curr, info_curr = get_roster_dict(all_raw[w])
+            
+            all_tids = list(r_curr.keys())
+            for i in range(len(all_tids)):
+                for j in range(i + 1, len(all_tids)):
+                    t1, t2 = all_tids[i], all_tids[j]
+                    t1_sends = [info_prev.get(pid, {'name': name, 'pos': 'FLEX', 'injury': 'ACTIVE'}) for pid, name in r_prev[t1].items() if pid in r_curr[t2]]
+                    t2_sends = [info_prev.get(pid, {'name': name, 'pos': 'FLEX', 'injury': 'ACTIVE'}) for pid, name in r_prev[t2].items() if pid in r_curr[t1]]
+                    if t1_sends and t2_sends:
+                        owner_1 = teams.get(t1, {}).get('owner', f"Team {t1}")
+                        owner_2 = teams.get(t2, {}).get('owner', f"Team {t2}")
+                        discovered_trades.append({
+                            'week': w,
+                            'owner_a': owner_1,
+                            'owner_b': owner_2,
+                            'a_sends': t1_sends,
+                            'b_sends': t2_sends
+                        })
+        if discovered_trades:
+            cached_trades = discovered_trades
+            try:
+                with open(cache_path, 'w') as cf:
+                    json.dump({'season': season, 'trades': cached_trades}, cf, indent=2)
+            except Exception:
+                pass
+
+    # Enrich each trade with strategic motives
+    for tr in cached_trades:
+        tr['analysis'] = analyze_trade_strategic_motives(tr, teams, trajectories)
+
+    return cached_trades
 
 def fetch_recent_roster_moves(raw_data: dict, current_week: int, season: int, cookies: dict, teams: dict) -> list:
-    """Fetches notable recent waiver, drop, and free agent moves from ESPN mTransactions2."""
+    """Fetches notable recent waiver and free agent moves for skill positions, strictly filtering out kickers, D/ST, and minor churn."""
     tx_url = f'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{ESPN_LEAGUE_ID}?view=mTransactions2'
     moves = []
     try:
@@ -357,12 +506,19 @@ def fetch_recent_roster_moves(raw_data: dict, current_week: int, season: int, co
             return []
         data = r.json()
         
-        pnames = {}
+        pinfo = {}
         for t in raw_data.get('teams', []):
             for entry in t.get('roster', {}).get('entries', []):
                 pl = entry.get('playerPoolEntry', {}).get('player', {})
-                if pl.get('id'):
-                    pnames[pl['id']] = pl.get('fullName', f"Player {pl['id']}")
+                pid = pl.get('id')
+                if pid:
+                    pos_id = pl.get('defaultPositionId', 0)
+                    pos_name = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}.get(pos_id, 'FLEX')
+                    pinfo[pid] = {
+                        'name': pl.get('fullName', f"Player {pid}"),
+                        'pos': pos_name,
+                        'pos_id': pos_id
+                    }
 
         for t in data.get('transactions', []):
             status = t.get('status')
@@ -371,25 +527,35 @@ def fetch_recent_roster_moves(raw_data: dict, current_week: int, season: int, co
             for it in t.get('items', []):
                 it_type = it.get('type')
                 pid = it.get('playerId')
-                pname = pnames.get(pid)
-                if not pname:
+                info = pinfo.get(pid)
+                if not info:
                     try:
                         ar = requests.get(f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/athletes/{pid}", timeout=1).json()
-                        pname = ar.get('fullName', f"Player {pid}")
-                        pnames[pid] = pname
+                        pos_abbr = ar.get('position', {}).get('abbreviation', 'FLEX')
+                        info = {'name': ar.get('fullName', f"Player {pid}"), 'pos': pos_abbr, 'pos_id': 0}
+                        pinfo[pid] = info
                     except Exception:
-                        pname = f"Player {pid}"
+                        info = {'name': f"Player {pid}", 'pos': 'FLEX', 'pos_id': 0}
+                
+                pname = info['name']
+                pos = info['pos']
+                pos_id = info['pos_id']
+                
+                # STRICT FILTER: Exclude Kickers, D/ST, and minor special teams churn
+                if pos in ['PK', 'K', 'DEF', 'DST', 'D/ST'] or pos_id in [5, 16] or 'D/ST' in pname or pid < 0:
+                    continue
+                    
                 from_id = it.get('fromTeamId')
                 to_id = it.get('toTeamId')
                 
                 if it_type == 'DROP' and from_id in teams:
                     owner = teams[from_id]['owner']
-                    move_str = f"✂️ **{owner}** cut **{pname}**"
+                    move_str = f"✂️ **{owner}** cut **{pname}** ({pos})"
                     if move_str not in moves:
                         moves.append(move_str)
                 elif it_type == 'ADD' and to_id in teams:
                     owner = teams[to_id]['owner']
-                    move_str = f"⚡ **{owner}** signed **{pname}**"
+                    move_str = f"⚡ **{owner}** signed **{pname}** ({pos})"
                     if move_str not in moves:
                         moves.append(move_str)
     except Exception:
@@ -449,7 +615,7 @@ def generate_payload(season: int, week_num: int):
     cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
 
     trajectories = calculate_season_trajectories(raw_data, week_num, teams)
-    trades = fetch_league_trades(raw_data, week_num, season, cookies, teams)
+    trades = fetch_league_trades(raw_data, week_num, season, cookies, teams, trajectories)
 
     payload = f"# BFL (Beasts Football League) - Season {season}, Week {week_num} Data Sheet\n\n"
     
@@ -509,7 +675,9 @@ def generate_payload(season: int, week_num: int):
     payload += "To deliver a balanced, entertaining, and comprehensive episode, you MUST adhere to this exact 3-Act structure:\n\n"
     payload += f"1. **ACT 1: THE OPENING DRIVE (FIRST ~15% OF THE EPISODE)**\n"
     payload += f"   - **SportsCenter Desk Welcome:** Welcome listeners to the Week {week_num} edition of the Tuesday Morning Hangover, Chris & Dave introduce themselves, and immediately tease the biggest headlines and storylines of the week.\n"
-    payload += "   - **League News, Trades & Significant Roster Moves:** Debate any completed trades, waiver wire coups, and major NFL injuries shaking up rosters (e.g. Terry McLaurin season-ending patellar tendon tear, Ladd McConkey concussion, Blake Grupe torn ACL, official completed roster cuts and signings).\n"
+    payload += "   - **In-Depth Trade Breakdown & Strategic Debate:** Dedicate the bulk of your transaction discussion to recent trades! Walk through each trade in-depth: explain why each manager made the move (e.g. consolidation upgrade, one-week rental, bye-week coverage, injury stash for a playoff run, or depth replenishment), debate who won the deal, and discuss the ripple effects across the league.\n"
+    payload += "   - **Minor Free Agent Moves (Strict 10-Second Passing Mention Only):** Spend LESS time on minor waiver wire and free agent moves! Give them at most a 10-second rapid mention or gloss over them. Do NOT dwell on minor bench flyers or cuts.\n"
+    payload += "   - **Major NFL Injury News:** Mention any catastrophic NFL injuries impacting starting lineups (e.g. season-ending tears, concussions).\n"
     payload += "   - **Division Standings & Scoring Snapshot:** Brief analytical look at division leaders, win streaks, losing skids, and points scored (treat points scored strictly as factual statistics, NOT as an opening philosophical debate on luck vs skill).\n"
     payload += "   - *Strict Pacing Rule:* Keep this high-level, fast-paced, and punchy! Do NOT spend more than ~15% of your total broadcast time here so you have ample time for the matchups.\n\n"
     payload += f"2. **ACT 2: GAME-BY-GAME BREAKDOWNS (THE CORE ~70% OF THE EPISODE)**\n"
@@ -560,7 +728,13 @@ def generate_payload(season: int, week_num: int):
     
     luck_dir_str = " When checking the standings in Act 1, mention teams' Points For alongside their records as factual stats (e.g. noting paper tigers with low scoring or powerhouses who ran into buzzsaws). Treat this strictly as sports statistics, NEVER as an opening philosophical debate on luck vs skill.\n\n"
     payload += f"10. **ANALYTICAL SCORING CHECK (NOT AN OPENING ESSAY):**{luck_dir_str}"
-    payload += "11. **NO PENDING WAIVER CLAIMS OR UNEXECUTED MOVES:** Only discuss transactions that have officially EXECUTED and are public league knowledge. Never speculate on or reference pending waiver claims, bids, or unexecuted moves. Only talk about finalized cuts, signings, and trades.\n\n"
+    payload += "11. **NO PENDING WAIVER CLAIMS OR UNEXECUTED MOVES:** Only discuss transactions that have officially EXECUTED and are public league knowledge. Never speculate on or reference pending waiver claims, bids, or unexecuted moves. Only talk about finalized cuts, signings, and trades.\n"
+    payload += "12. **IN-DEPTH TRADE ANALYSIS & MINIMAL TIME ON MINOR FREE AGENTS:**\n"
+    payload += "   - When discussing trades in Act 1, GO IN-DEPTH! Do not just read off player names. Explain the strategic rationale for BOTH managers:\n"
+    payload += "     * Why Team A made the move (e.g. consolidation upgrade, acquiring an elite weekly starter, playoff injury stash).\n"
+    payload += "     * Why Team B made the move (e.g. 2-for-1 depth replenishment, one-week rental to cover a bye week, immediate win-now starting points to survive a losing streak).\n"
+    payload += "     * Host debate: Have Chris and Dave take opposing sides on who won the trade, grade the trade, and note any league controversy.\n"
+    payload += "   - Spend LESS time on minor free agent pickups. Dismiss minor waiver moves in 10 seconds or less—never treat a backup free agent signing with the same weight as a blockbuster trade.\n\n"
 
     # --- AUTOMATIC NFL GAME RECAPS ---
     try:
@@ -586,21 +760,36 @@ def generate_payload(season: int, week_num: int):
     # --- LEAGUE TRANSACTIONS & ROSTER MOVES ---
     roster_moves = fetch_recent_roster_moves(raw_data, week_num, season, cookies, teams)
     if trades or roster_moves:
-        payload += "## 🔥 LEAGUE TRANSACTIONS: TRADES, WAIVERS & ROSTER SHIFTS\n"
-        payload += "*Discuss and debate these recent transactions and roster shakeups during Act 1!*\n\n"
-        if trades:
-            for tr in trades:
-                payload += f"### 🔄 Trade on {tr['date']}: {tr['owner_a']} <---> {tr['owner_b']}\n"
-                payload += f"- **{tr['owner_a']} receives:** {', '.join(tr['b_sends']) if tr['b_sends'] else 'Assets'}\n"
-                payload += f"- **{tr['owner_b']} receives:** {', '.join(tr['a_sends']) if tr['a_sends'] else 'Assets'}\n"
-                if 'Abe Thomas' in [tr['owner_a'], tr['owner_b']] and 'Nitesh Patel' in [tr['owner_a'], tr['owner_b']]:
-                    payload += "  *Context & Banter:* Defending champ Abe Thomas shipped out Aaron Rodgers, Justice Hill, and Keon Coleman to Nitesh Patel for Caleb Williams and 2nd-year TE Colston Loveland! Debate if this move has paid off.\n"
-                elif 'Shawn Ullenbrauck' in [tr['owner_a'], tr['owner_b']] and 'Daniel Kruszewski' in [tr['owner_a'], tr['owner_b']]:
-                    payload += "  *Context & Banter:* Daniel Kruszewski flipped injured T.J. Hockenson to Shawn Ullenbrauck for Brenton Strange!\n"
-                payload += "\n"
+        payload += "## 🔥 LEAGUE TRANSACTIONS: TRADES & ROSTER SHIFTS (ACT 1 SPOTLIGHT)\n"
+        payload += "*DEDICATE AIRTIME IN ACT 1 TO DEEP DIVE ON TRADES! Explain why each team made the move and debate who won. Keep minor free agent waiver moves to a brief 10-second passing mention.*\n\n"
+        
+        recent_weeks = [week_num, week_num - 1] if week_num > 1 else [1]
+        recent_trades = [tr for tr in trades if tr.get('week') in recent_weeks]
+        earlier_trades = [tr for tr in trades if tr.get('week') not in recent_weeks]
+        
+        if recent_trades:
+            payload += f"### 🚨 RECENT TRADES IN THE SPOTLIGHT (GO IN-DEPTH ON AIR):\n"
+            payload += "*Hosts MUST walk through each of these trades, explain the tactical motives for both owners (consolidation, rental, stash, depth), and take opposing sides on who won the deal:*\n\n"
+            for tr in recent_trades:
+                payload += format_in_depth_trade(tr)
+        elif trades:
+            payload += f"### 🚨 LATEST LEAGUE TRADES (IN-DEPTH ANALYSIS):\n\n"
+            for tr in trades[-2:]:
+                payload += format_in_depth_trade(tr)
+                
+        if earlier_trades:
+            payload += "### 📜 PREVIOUS SEASON TRADES LEDGER (HISTORICAL CONTEXT):\n"
+            payload += "*Reference these past deals naturally if relevant to ongoing storylines:*\n"
+            for tr in earlier_trades:
+                a_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in tr['a_sends']])
+                b_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in tr['b_sends']])
+                payload += f"- **Week {tr['week']} Trade:** **{tr['owner_a']}** sent {a_str} to **{tr['owner_b']}** for {b_str}\n"
+            payload += "\n"
+            
         if roster_moves:
-            payload += "### 📋 Notable Recent Waiver & Roster Moves:\n"
-            for rm in roster_moves[:12]:
+            payload += "### 📋 Notable Free Agent Pickups (Brief 10-Second Mention Only - Do NOT Dwell):\n"
+            payload += "*Strict Rule: Spend less than 10 seconds total on these. Mention them as rapid-fire roster maintenance, then move on. Focus the transaction discussion on the trades above!*\n"
+            for rm in roster_moves[:4]:
                 payload += f"- {rm}\n"
             payload += "\n"
 
