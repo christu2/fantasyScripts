@@ -334,29 +334,85 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
         lead_str = f"**{lead_name} leads {max(a_wins, h_wins)}-{min(a_wins, h_wins)}**" if a_wins != h_wins else f"**Series Deadlocked {a_wins}-{h_wins}**"
         lines.append(f"* 📜 **18-Year Series:** {lead_str} across **{total_meetings} meetings** (2008–{target_season})")
         
-        # 3. Dynamic Narrative
-        last_game = sorted(history, key=lambda x: (x['year'], x['week']))[-1] if history else None
-        
+        # 3. Dynamic Narrative (100% Data-Driven from 2008-Present History & In-Season Context)
+        sorted_hist = sorted(history, key=lambda x: (x['year'], x['week']))
+        last_game = sorted_hist[-1] if sorted_hist else None
+        champ_playoffs = [g for g in sorted_hist if g.get('is_champ_playoff')]
+        in_season_games = [g for g in sorted_hist if g['year'] == target_season]
+
+        # Calculate current H2H winning streak
+        streak_winner = None
+        streak_len = 0
+        for g in reversed(sorted_hist):
+            if streak_winner is None:
+                streak_winner = g['winner']
+                streak_len = 1
+            elif g['winner'] == streak_winner:
+                streak_len += 1
+            else:
+                break
+
+        # Check if they met in an official BFL Super Bowl
+        sb_meetings = [
+            sb for sb in BFL_CHAMPIONSHIPS
+            if {sb['champ'], sb['runner_up']} == {a_owner, h_owner}
+        ]
+
         if total_meetings == 0:
-            narrative = f"🆕 Inaugural franchise showdown! First-ever meeting in BFL history."
-        elif pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
-            narrative = f"👑 THE BATTLE OF THE SHAWNS. Thor won their 2025 finale by 22 pts; Lukose looks to defend home turf."
-        elif pair == ('Adam Olen', 'Samran Mirza'):
-            narrative = f"🔥 The BFL's most evenly contested rivalry. AMO took their last clash in 2025 by just 1.04 pts."
-        elif pair == ('Dino Davros', 'rej hoxha'):
-            narrative = f"⚖️ Century Rivalry. Rej won their last clash in Week 17 by a razor-thin 0.38 pts!"
-        elif pair == ('Tommy Ehrlich', 'Nick Christus'):
-            narrative = f"🎯 North Division Showdown. Tommy took their last battle in Week 16 by 0.70 pts as he continues his hunt for Ring #1."
-        elif pair == ('Abe Thomas', 'Saagar Gupta'):
-            narrative = f"🌴 South Division Grudge Match. Defending champ Abe blew out Saagar in Week 1 last season; King Gupta seeks revenge."
-        elif pair == ('Daniel Kruszewski', 'Nitesh Patel'):
-            narrative = f"⚡ Nitesh's official debut as solo owner of Big Nasties against former champ Dan Kruszewski."
-        elif pair == ('Blake Whitehouse', 'Nael Ahmed'):
-            narrative = f"⚔️ Cross-Division Clash with heavy playoff pedigree (4 postseason battles). Blake won their last meeting."
-        elif pair == ('Alex Kite', 'Sydney Miller'):
-            narrative = f"💥 West Division Showdown. Sydney clipped Alex by exactly 2.0 pts in their last clash."
+            narrative = f"🆕 Inaugural franchise showdown! {a_owner} and {h_owner} meet for the very first time in BFL history."
+        elif in_season_games:
+            ig = in_season_games[-1]
+            rev_owner = a_owner if ig['winner'] == h_owner else h_owner
+            ig_hi = max(ig['score_a'], ig['score_b'])
+            ig_lo = min(ig['score_a'], ig['score_b'])
+            extra_flav = ""
+            if streak_len >= 3:
+                extra_flav = f" {streak_winner} has now won {streak_len} straight in this series!"
+            elif a_wins == h_wins:
+                extra_flav = f" The victory knotted their all-time series at {a_wins}-{h_wins}!"
+            narrative = (
+                f"🔁 **In-Season Division Rematch!** **{ig['winner']}** took their Week {ig['week']} clash earlier this season "
+                f"(`{ig_hi:.1f}` - `{ig_lo:.1f}`, +{ig['margin']:.2f} pts); **{rev_owner}** looks to even the {target_season} season series.{extra_flav}"
+            )
         else:
-            narrative = f"Classic rivalry renewal heading into Week {target_week}."
+            lg_hi = max(last_game['score_a'], last_game['score_b'])
+            lg_lo = min(last_game['score_a'], last_game['score_b'])
+            lg_stage = " in the Championship Playoffs" if last_game.get('is_champ_playoff') else (" in Consolation play" if last_game.get('is_consolation') else "")
+            last_str = f"**{last_game['winner']}** won their last meeting in {last_game['year']} Week {last_game['week']}{lg_stage} (`{lg_hi:.1f}` - `{lg_lo:.1f}`, +{last_game['margin']:.2f} pts)."
+
+            if sb_meetings:
+                sb = sb_meetings[-1]
+                narrative = (
+                    f"🏆 **Super Bowl Rematch Pedigree!** Faced off in the {sb['year']} BFL Championship (won by **{sb['champ']}**, {sb['score']}). "
+                    f"{last_str}"
+                )
+            elif pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
+                narrative = f"👑 **The Battle of the Shawns ({total_meetings + 1}th Meeting):** {last_str}"
+            elif streak_len >= 3:
+                loser_streak = h_owner if streak_winner == a_owner else a_owner
+                narrative = (
+                    f"🔥 **Series Dominance:** **{streak_winner}** has won **{streak_len} straight** against {loser_streak}! {last_str}"
+                )
+            elif a_wins == h_wins:
+                playoff_note = f" (including {len(champ_playoffs)} playoff clashes)" if champ_playoffs else ""
+                narrative = (
+                    f"⚖️ **All-Time Deadlock ({a_wins}-{h_wins}):** Perfectly tied across {total_meetings} lifetime meetings{playoff_note}—winner takes the series lead! {last_str}"
+                )
+            elif last_game['margin'] <= 5.0:
+                narrative = (
+                    f"💓 **Cardiac Rivalry:** Their last clash ({last_game['year']} Week {last_game['week']}{lg_stage}) was decided by a razor-thin **{last_game['margin']:.2f} pts** "
+                    f"(`{lg_hi:.1f}` - `{lg_lo:.1f}` in favor of **{last_game['winner']}**)!"
+                )
+            elif champ_playoffs:
+                a_pw = sum(1 for g in champ_playoffs if g['winner'] == a_owner)
+                h_pw = sum(1 for g in champ_playoffs if g['winner'] == h_owner)
+                pw_str = f"{a_owner} {a_pw}-{h_pw} {h_owner}" if a_pw != h_pw else f"tied {a_pw}-{h_pw}"
+                m_word = "Meeting" if len(champ_playoffs) == 1 else "Meetings"
+                narrative = (
+                    f"⚔️ **Postseason History ({len(champ_playoffs)} Playoff {m_word}, {pw_str}):** {last_str}"
+                )
+            else:
+                narrative = f"📜 **Matchup # {total_meetings + 1} Since 2008:** {last_str}"
             
         lines.append(f"* ⚔️ **Key Storyline:** {narrative}\n")
         

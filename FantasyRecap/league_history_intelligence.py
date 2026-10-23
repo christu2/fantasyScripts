@@ -208,6 +208,7 @@ MANAGER_SYNONYMS = {
     'edgar': 'Nitesh Patel',
     'rej hoxha': 'rej hoxha',
     'samran mirza': 'Samran Mirza',
+    'gabriel zbaala': 'Gabriel Zabala',
     'dino davros': 'Dino Davros',
     'adam olen': 'Adam Olen',
     'ryan olen': 'Ryan Olen',
@@ -245,7 +246,12 @@ OWNER_TO_CODE_2026 = {v['owner']: k for k, v in TEAM_DETAILS_2026.items()}
 def standardize_name(name: str) -> str:
     if not name:
         return 'Unknown'
-    return MANAGER_SYNONYMS.get(name.lower().strip(), name.strip().title())
+    clean = name.lower().strip()
+    if clean in MANAGER_SYNONYMS:
+        return MANAGER_SYNONYMS[clean]
+    if clean == 'rej hoxha':
+        return 'rej hoxha'
+    return name.strip().title()
 
 def _process_season_games(data, year: int, h2h: dict, career_stats: dict, max_week: int = 99):
     """Parses season data and attributes games across co-owners with playoff tier classification."""
