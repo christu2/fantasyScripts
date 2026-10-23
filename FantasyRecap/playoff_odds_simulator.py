@@ -18,12 +18,16 @@ import json
 import random
 import argparse
 import requests
+import math
+import statistics
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from FantasyRecap.league_preview_generator import TEAM_DETAILS_2026, standardize_name
+from FantasyRecap.league_history_intelligence import TEAM_DETAILS_2026, standardize_name
+from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
+from FantasyRecap.config import CURRENT_YEAR as CONFIG_YEAR
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -32,10 +36,8 @@ if env_path.exists():
 else:
     load_dotenv()
 
-ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
-ESPN_S2 = os.getenv("ESPN_S2", "")
-ESPN_SWID = os.getenv("ESPN_SWID", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+CURRENT_YEAR = int(os.getenv("SEASON_YEAR") or CONFIG_YEAR)
 
 DIVISIONS = {
     'North': ['Nick Christus', 'Tommy Ehrlich', 'Daniel Kruszewski', 'Blake Whitehouse'],
@@ -130,12 +132,83 @@ def resolve_wildcard_tiebreakers(tied_members: list, records: dict, h2h_matrix: 
     # 3+ team Wild Card tie: Fall back to Points Scored
     return sorted(tied_members, key=lambda t: records[t]['pf'], reverse=True)
 
+def extract_live_state_from_espn(raw_data: dict, completed_through_week: int):
+    """
+    Extracts completed games (weeks 1..completed_through_week), full 14-week schedule,
+    and empirical team scoring power (mean & std dev blended with league prior) from ESPN API data.
+    """
+    teams = parse_league_members_and_teams(raw_data)
+    completed_games = []
+    full_schedule = []
+    team_scores = {t: [] for t in OWNER_TO_DIV}
+
+    for g in sorted(raw_data.get('schedule', []), key=lambda x: x.get('matchupPeriodId', 0)):
+        wk = g.get('matchupPeriodId', 0)
+        if wk < 1 or wk > 14:
+            continue
+        aid = g.get('away', {}).get('teamId')
+        hid = g.get('home', {}).get('teamId')
+        if aid not in teams or hid not in teams:
+            continue
+
+        a_own = standardize_name(teams[aid]['owner'])
+        if a_own.lower() == 'rej hoxha':
+            a_own = 'rej hoxha'
+        h_own = standardize_name(teams[hid]['owner'])
+        if h_own.lower() == 'rej hoxha':
+            h_own = 'rej hoxha'
+
+        a_pts = float(g.get('away', {}).get('totalPoints', 0.0))
+        h_pts = float(g.get('home', {}).get('totalPoints', 0.0))
+        is_div = OWNER_TO_DIV.get(a_own) == OWNER_TO_DIV.get(h_own)
+
+        full_schedule.append({
+            'week': wk,
+            'away_code': a_own,
+            'home_code': h_own,
+            'away': a_own,
+            'home': h_own,
+            'type': 'Division' if is_div else 'Cross-Division'
+        })
+
+        if wk <= completed_through_week and (a_pts > 0 or h_pts > 0):
+            completed_games.append({
+                'week': wk,
+                'away': a_own,
+                'home': h_own,
+                'away_score': a_pts,
+                'home_score': h_pts
+            })
+            if a_own in team_scores:
+                team_scores[a_own].append(a_pts)
+            if h_own in team_scores:
+                team_scores[h_own].append(h_pts)
+
+    # Calculate league average score to blend as a Bayesian prior (2 prior games at league avg)
+    all_pts = [pt for sc in team_scores.values() for pt in sc]
+    league_mean = statistics.mean(all_pts) if all_pts else 102.0
+
+    team_power = {}
+    for owner, scores in team_scores.items():
+        if scores:
+            emp_mean = statistics.mean(scores)
+            # Blend empirical mean with 2 games of league average so early-season outliers don't skew
+            reg_mean = ((emp_mean * len(scores)) + (league_mean * 2.0)) / (len(scores) + 2.0)
+            emp_std = statistics.stdev(scores) if len(scores) >= 3 else 15.0
+            reg_std = max(11.0, min(22.0, emp_std))
+            team_power[owner] = {'mean': round(reg_mean, 2), 'std': round(reg_std, 2), 'raw_avg': round(emp_mean, 1)}
+        else:
+            team_power[owner] = {'mean': round(league_mean, 2), 'std': 15.0, 'raw_avg': round(league_mean, 1)}
+
+    return completed_games, full_schedule, team_power
+
 def run_playoff_simulation(current_week: int, completed_games: list, schedule: list, team_power: dict = None, n_sims: int = 10000):
     """
     Runs Monte Carlo simulation for remaining weeks (current_week through 14).
+    Also tracks conditional Playoff % if a team WINS vs LOSES their current_week matchup (Playoff Leverage).
     """
     if not team_power:
-        team_power = {t: {'mean': 100.0, 'std': 14.0} for t in OWNER_TO_DIV}
+        team_power = {t: {'mean': 100.0, 'std': 14.0, 'raw_avg': 100.0} for t in OWNER_TO_DIV}
         
     # Tally base completed records
     base_records = {t: {'wins': 0, 'losses': 0, 'pf': 0.0} for t in OWNER_TO_DIV}
@@ -146,7 +219,7 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
         h_own = g['home']
         a_pts = g['away_score']
         h_pts = g['home_score']
-        if a_pts > 0 and h_pts > 0:
+        if a_pts > 0 or h_pts > 0:
             base_records[a_own]['pf'] += a_pts
             base_records[h_own]['pf'] += h_pts
             if a_pts > h_pts:
@@ -159,6 +232,11 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
                 base_h2h[(h_own, a_own)] = base_h2h.get((h_own, a_own), 0) + 1
 
     remaining_schedule = [g for g in schedule if g['week'] >= current_week]
+    next_week_opponents = {}
+    for g in schedule:
+        if g['week'] == current_week:
+            next_week_opponents[g['away']] = g['home']
+            next_week_opponents[g['home']] = g['away']
     
     playoff_counts = {t: 0 for t in OWNER_TO_DIV}
     div_champ_counts = {t: 0 for t in OWNER_TO_DIV}
@@ -167,10 +245,17 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
     payout_count = {t: 0 for t in OWNER_TO_DIV}
     draft_pick_count = {t: 0 for t in OWNER_TO_DIV}
     seed_distribution = {t: {s: 0 for s in range(1, 17)} for t in OWNER_TO_DIV}
+
+    # Conditional leverage trackers for current_week
+    cur_wk_win_trials = {t: 0 for t in OWNER_TO_DIV}
+    cur_wk_win_playoffs = {t: 0 for t in OWNER_TO_DIV}
+    cur_wk_loss_trials = {t: 0 for t in OWNER_TO_DIV}
+    cur_wk_loss_playoffs = {t: 0 for t in OWNER_TO_DIV}
     
     for _ in range(n_sims):
         sim_records = {t: {'wins': base_records[t]['wins'], 'losses': base_records[t]['losses'], 'pf': base_records[t]['pf']} for t in OWNER_TO_DIV}
         sim_h2h = dict(base_h2h)
+        won_current_week = {}
         
         # Simulate remaining games
         for g in remaining_schedule:
@@ -186,10 +271,16 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
                 sim_records[a_own]['wins'] += 1
                 sim_records[h_own]['losses'] += 1
                 sim_h2h[(a_own, h_own)] = sim_h2h.get((a_own, h_own), 0) + 1
+                if g['week'] == current_week:
+                    won_current_week[a_own] = True
+                    won_current_week[h_own] = False
             else:
                 sim_records[h_own]['wins'] += 1
                 sim_records[a_own]['losses'] += 1
                 sim_h2h[(h_own, a_own)] = sim_h2h.get((h_own, a_own), 0) + 1
+                if g['week'] == current_week:
+                    won_current_week[h_own] = True
+                    won_current_week[a_own] = False
                 
         # 1. Resolve Division Champions (Seeds #1 - #4)
         div_champions = []
@@ -239,12 +330,25 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
         
         # 7 Playoff Teams (4 Div Winners + 3 Wild Cards)
         playoff_field = sorted_champs + wild_cards
+        playoff_set = set(playoff_field)
         for s_idx, p_team in enumerate(playoff_field, 1):
             playoff_counts[p_team] += 1
             seed_distribution[p_team][s_idx] += 1
             
         for s_idx, t_team in enumerate(toilet_bowl, 8):
             seed_distribution[t_team][s_idx] += 1
+
+        # Track conditional Win/Loss Playoff Leverage for current_week
+        for t_own, did_win in won_current_week.items():
+            made_po = (t_own in playoff_set)
+            if did_win:
+                cur_wk_win_trials[t_own] += 1
+                if made_po:
+                    cur_wk_win_playoffs[t_own] += 1
+            else:
+                cur_wk_loss_trials[t_own] += 1
+                if made_po:
+                    cur_wk_loss_playoffs[t_own] += 1
 
         # Simulate Playoff Bracket with NFL Re-Seeding (Round 1 -> Round 2)
         # Round 1: #2 vs #7, #3 vs #6, #4 vs #5 (Seed #1 on Bye)
@@ -316,56 +420,84 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
     # Format probability outputs
     results = {}
     for t in OWNER_TO_DIV:
+        base_po_pct = round((playoff_counts[t] / n_sims) * 100, 1)
+        win_po_pct = round((cur_wk_win_playoffs[t] / cur_wk_win_trials[t]) * 100, 1) if cur_wk_win_trials[t] > 0 else base_po_pct
+        loss_po_pct = round((cur_wk_loss_playoffs[t] / cur_wk_loss_trials[t]) * 100, 1) if cur_wk_loss_trials[t] > 0 else base_po_pct
+        leverage_swing = round(max(0.0, win_po_pct - loss_po_pct), 1)
+
         results[t] = {
             'owner': t,
             'division': OWNER_TO_DIV[t],
-            'playoff_pct': round((playoff_counts[t] / n_sims) * 100, 1),
+            'record': f"{base_records[t]['wins']}-{base_records[t]['losses']}",
+            'pf': round(base_records[t]['pf'], 1),
+            'power_mean': team_power[t]['mean'],
+            'next_opp': next_week_opponents.get(t, 'BYE'),
+            'playoff_pct': base_po_pct,
             'div_title_pct': round((div_champ_counts[t] / n_sims) * 100, 1),
             'bye_pct': round((bye_counts[t] / n_sims) * 100, 1),
             'top3_payout_pct': round((payout_count[t] / n_sims) * 100, 1),
             'champ_pct': round((champs_count[t] / n_sims) * 100, 1),
             'draft_choice_fav_pct': round((draft_pick_count[t] / n_sims) * 100, 1),
-            'toilet_bowl_pct': round(100.0 - ((playoff_counts[t] / n_sims) * 100), 1),
+            'toilet_bowl_pct': round(100.0 - base_po_pct, 1),
+            'win_po_pct': win_po_pct,
+            'loss_po_pct': loss_po_pct,
+            'leverage_swing': leverage_swing,
             'seed_dist': {s: round((seed_distribution[t][s] / n_sims) * 100, 1) for s in range(1, 17)}
         }
         
     return results
 
+def simulate_league_playoff_odds_from_espn(raw_data: dict, completed_through_week: int, n_sims: int = 10000) -> dict:
+    """Convenience helper to run the full 10,000-sim engine directly from an ESPN API payload."""
+    completed_games, full_schedule, team_power = extract_live_state_from_espn(raw_data, completed_through_week)
+    if not full_schedule:
+        full_schedule = load_schedule_csv()
+    target_sim_week = min(14, completed_through_week + 1)
+    return run_playoff_simulation(target_sim_week, completed_games, full_schedule, team_power=team_power, n_sims=n_sims)
+
 def format_playoff_odds_report(results: dict, current_week: int, season: int) -> str:
     """Formats playoff odds into clean markdown."""
     lines = []
-    lines.append(f"# 📊 BFL WEEK {current_week} PLAYOFF & DRAFT STAKES INDEX ({season})")
-    lines.append(f"*10,000 Monte Carlo Simulations • NFL Re-Seeding • Top 3 Payouts • Loser's Bracket Draft Order*\n")
+    lines.append(f"# 📊 BFL ENTERING WEEK {current_week} PLAYOFF & DRAFT STAKES INDEX ({season})")
+    lines.append(f"*10,000 Monte Carlo Simulations • Empirical Scoring Power • Win/Loss Leverage • Loser's Bracket Draft Order*\n")
     lines.append("---")
-    lines.append("## 🏆 PLAYOFF, PAYOUT & DRAFT PICK PROBABILITIES\n")
-    lines.append("| Rank | Manager | Division | Playoff % | Division % | #1 Bye % | Top 3 Payout % | 💍 Ring % | 🎯 #1 Draft Choice % |")
-    lines.append("|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
+    lines.append("## 🏆 PLAYOFF, PAYOUT & LEVERAGE PROBABILITIES\n")
+    lines.append("| Rank | Manager | Rec (PF) | Div | Playoff % | Div Title % | #1 Bye % | 💍 Ring % | If Win / If Loss (Swing) | 🎯 #1 Pick % |")
+    lines.append("|:---:|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|")
     
-    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct']), reverse=True)
+    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct'], x['pf']), reverse=True)
     for rank, r in enumerate(sorted_teams, 1):
-        lines.append(f"| #{rank} | **{r['owner']}** | {r['division']} | **{r['playoff_pct']}%** | {r['div_title_pct']}% | {r['bye_pct']}% | **{r['top3_payout_pct']}%** | {r['champ_pct']}% | {r['draft_choice_fav_pct']}% |")
+        lev_str = f"`{r['win_po_pct']}%` / `{r['loss_po_pct']}%` (**±{r['leverage_swing']}%**)"
+        lines.append(f"| #{rank} | **{r['owner']}** | {r['record']} ({r['pf']}) | {r['division']} | **{r['playoff_pct']}%** | {r['div_title_pct']}% | {r['bye_pct']}% | {r['champ_pct']}% | {lev_str} | {r['draft_choice_fav_pct']}% |")
         
     lines.append("\n---\n💡 *Simulation Rules:*")
     lines.append("* **Playoffs (7 Teams):** 4 Division Winners (#1-#4) + 3 Wild Cards (#5-#7). Seed #1 receives the First-Round Bye.")
     lines.append("* **NFL Dynamic Re-Seeding:** In Round 2, Seed #1 plays the lowest surviving seed.")
     lines.append("* **Top 3 Cash Payouts:** Super Bowl Champ (1st), Runner-Up (2nd), and 3rd Place (1-Week Matchup for 3rd).")
-    lines.append("* **5th Place Consolation:** Round 1 losers play a 2-week combined matchup for 5th.")
+    lines.append("* **Win/Loss Leverage:** Shows how much a team's Playoff % swings based on winning vs. losing their upcoming matchup.")
     lines.append("* **Loser's Bracket Stakes:** Winner of the Loser's Bracket gets 1st choice of draft slot next season.")
     return "\n".join(lines)
 
 def post_playoff_odds_to_discord(results: dict, current_week: int, season: int = 2026):
-    """Broadcasts Playoff Odds Board to #commissioner-desk."""
+    """Broadcasts Playoff Odds & Leverage Board to #commissioner-desk."""
     from FantasyRecap.discord_channels import send_to_channel
     
-    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct']), reverse=True)
+    sorted_teams = sorted(results.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct'], x['pf']), reverse=True)
     
     # Division favorites
     div_favs = {}
     for div in DIVISIONS:
         mems = [results[t] for t in DIVISIONS[div]]
-        fav = max(mems, key=lambda x: x['div_title_pct'])
-        div_favs[div] = f"**{fav['owner']}** ({fav['div_title_pct']}%)"
+        fav = max(mems, key=lambda x: (x['div_title_pct'], x['playoff_pct']))
+        div_favs[div] = f"**{fav['owner']}** ({fav['record']} • `{fav['div_title_pct']}%`)"
         
+    # Top 4 highest leverage swings for current_week
+    high_leverage = sorted(results.values(), key=lambda x: x['leverage_swing'], reverse=True)[:4]
+    leverage_lines = [
+        f"• **{r['owner']}** (vs {r['next_opp']}): Win ➡️ `{r['win_po_pct']}%` | Loss ➡️ `{r['loss_po_pct']}%` (**`{r['leverage_swing']}%` Swing!**)"
+        for r in high_leverage
+    ]
+
     fields = [
         {
             "name": "👑 Division Title Frontrunners",
@@ -373,13 +505,18 @@ def post_playoff_odds_to_discord(results: dict, current_week: int, season: int =
             "inline": False
         },
         {
-            "name": f"🚀 Top 7 Playoff Projections (Entering Week {current_week})",
-            "value": "\n".join([f"**#{idx} {r['owner']}** ({r['division']}): `{r['playoff_pct']}%` Playoff | `{r['top3_payout_pct']}%` Top 3 Payout" for idx, r in enumerate(sorted_teams[:7], 1)]),
+            "name": f"🚀 Top 7 Projected Playoff Field (Entering Week {current_week})",
+            "value": "\n".join([f"**#{idx} {r['owner']}** ({r['record']}, {r['division']}): `{r['playoff_pct']}%` Playoff | `{r['bye_pct']}%` #1 Bye | `{r['champ_pct']}%` Ring" for idx, r in enumerate(sorted_teams[:7], 1)]),
             "inline": False
         },
         {
-            "name": "🎯 Loser's Bracket #1 Draft Pick Choice Favorites",
-            "value": "\n".join([f"• **{r['owner']}**: `{r['draft_choice_fav_pct']}%` Chance at 1st Pick Choice | `{r['toilet_bowl_pct']}%` Toilet Bowl" for r in sorted_teams[11:]]),
+            "name": f"🔥 Week {current_week} Highest Playoff Leverage (Must-Win Swings)",
+            "value": "\n".join(leverage_lines) if leverage_lines else "N/A",
+            "inline": False
+        },
+        {
+            "name": "🫧 On The Bubble & Toilet Bowl (#1 Draft Pick Choice Odds)",
+            "value": "\n".join([f"• **{r['owner']}** ({r['record']}): `{r['playoff_pct']}%` Playoff | `{r['draft_choice_fav_pct']}%` #1 Draft Pick Choice" for r in sorted_teams[7:13]]),
             "inline": False
         }
     ]
@@ -388,11 +525,11 @@ def post_playoff_odds_to_discord(results: dict, current_week: int, season: int =
         "username": "BFL Playoff Analytics Desk",
         "avatar_url": "https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png",
         "embeds": [{
-            "title": f"📈 BFL Week {current_week} Official Playoff & Draft Stakes Board ({season})",
-            "description": "**10,000 Monte Carlo Simulations • 7 Playoff Spots (4 Div + 3 Wild Cards)**\nLive playoff odds, division title races, top 3 cash payouts, and #1 draft pick choice odds:",
-            "color": 0x34495e,  # Dark Slate Blue
+            "title": f"📈 BFL Week {current_week} Playoff Odds, Leverage & Draft Stakes ({season})",
+            "description": f"**10,000 Monte Carlo Simulations • Empirical Scoring Power • 7 Playoff Spots**\nLive playoff probabilities, Week {current_week} win/loss leverage swings, and #1 draft pick odds:",
+            "color": 0x34495e,
             "fields": fields,
-            "footer": {"text": f"Beasts Football League • Playoff Simulator • Week {current_week}"}
+            "footer": {"text": f"Beasts Football League • Playoff Simulator • Entering Week {current_week}"}
         }]
     }
     
@@ -401,8 +538,25 @@ def post_playoff_odds_to_discord(results: dict, current_week: int, season: int =
         print("🚀 Successfully broadcasted Playoff Odds Board to #commissioner-desk!")
 
 if __name__ == "__main__":
-    schedule = load_schedule_csv()
-    results = run_playoff_simulation(1, [], schedule, n_sims=10000)
-    report = format_playoff_odds_report(results, 1, 2026)
+    parser = argparse.ArgumentParser(description="Run 10,000-Iteration BFL Playoff & Leverage Simulator")
+    parser.add_argument("--season", type=int, default=CURRENT_YEAR, help="Season year (default: 2026)")
+    parser.add_argument("--week", type=int, default=6, help="Completed week number (simulates remaining weeks after this week)")
+    parser.add_argument("--sims", type=int, default=10000, help="Number of Monte Carlo simulations")
+    parser.add_argument("--discord", action="store_true", help="Broadcast results to Discord #commissioner-desk")
+    args = parser.parse_args()
+
+    raw_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(args.season), args.week, ESPN_S2, ESPN_SWID)
+    results = simulate_league_playoff_odds_from_espn(raw_data, args.week, n_sims=args.sims)
+    next_wk = min(14, args.week + 1)
+    report = format_playoff_odds_report(results, next_wk, args.season)
     print(report)
-    post_playoff_odds_to_discord(results, 1, 2026)
+
+    out_dir = Path(__file__).resolve().parent / "output"
+    out_dir.mkdir(exist_ok=True)
+    out_file = out_dir / f"playoff_odds_entering_week_{next_wk}_{args.season}.md"
+    with open(out_file, "w") as f:
+        f.write(report)
+    print(f"\n💾 Saved Playoff Odds report to: {out_file}")
+
+    if args.discord:
+        post_playoff_odds_to_discord(results, next_wk, args.season)

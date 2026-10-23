@@ -23,8 +23,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS
-from FantasyRecap.league_preview_generator import compile_all_time_h2h, load_week_matchups, TEAM_DETAILS_2026, standardize_name
+from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, compile_all_time_h2h, load_week_matchups, TEAM_DETAILS_2026, standardize_name
+from FantasyRecap.config import LEAGUE_ID, CURRENT_YEAR as CONFIG_YEAR
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -33,11 +33,11 @@ if env_path.exists():
 else:
     load_dotenv()
 
-ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
+ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID") or os.getenv("LEAGUE_ID") or str(LEAGUE_ID)
 ESPN_S2 = os.getenv("ESPN_S2", "")
-ESPN_SWID = os.getenv("ESPN_SWID", "")
+ESPN_SWID = os.getenv("ESPN_SWID") or os.getenv("SWID", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
-CURRENT_YEAR = os.getenv("SEASON_YEAR") or str(datetime.now().year)
+CURRENT_YEAR = os.getenv("SEASON_YEAR") or str(CONFIG_YEAR)
 
 POS_MAP = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
 SLOT_MAP = {0: 'QB', 2: 'RB', 4: 'WR', 6: 'TE', 16: 'D/ST', 17: 'K', 23: 'FLEX', 20: 'Bench', 21: 'IR'}
@@ -364,6 +364,8 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             'game_num': idx+1,
             'away': f"{a_team} ({a_owner})",
             'home': f"{h_team} ({h_owner})",
+            'away_owner': a_owner,
+            'home_owner': h_owner,
             'away_rec': f"{a_owner} ({a_stat['record']})",
             'home_rec': f"{h_owner} ({h_stat['record']})",
             'standings': f"{a_stat['rank_str']} @ {h_stat['rank_str']}",
@@ -371,6 +373,9 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             'series': f"{a_owner} {a_wins}-{h_wins} {h_owner}" if total_meetings > 0 else "First Meeting",
             'type': m_type,
             'spread': f"{fav} -{spread:.1f}" if has_live_rosters else "Pre-Draft",
+            'spread_val': spread if has_live_rosters else 0.0,
+            'fav_owner': fav if has_live_rosters else a_owner,
+            'underdog_owner': (h_owner if fav == a_owner else a_owner) if has_live_rosters else h_owner,
             'narrative': narrative
         })
         
@@ -384,7 +389,7 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
     return "\n".join(lines), matchup_summaries
 
 def post_thursday_preview_to_discord(summaries: list, week_num: int = 1, season: int = 2026):
-    """Broadcasts Thursday Lineup Preview to #commissioner-desk."""
+    """Broadcasts Thursday Lineup Preview & interactive 'Upset of the Week' Poll to #commissioner-desk."""
     from FantasyRecap.discord_channels import send_to_channel
     
     fields = []
@@ -406,18 +411,45 @@ def post_thursday_preview_to_discord(summaries: list, week_num: int = 1, season:
             "footer": {"text": f"Beasts Football League • Thursday Lineup Preview • Week {week_num}"}
         }]
     }
+
+    # Build native Discord Poll for "Upset / Dog of the Week" from matchups with real spreads
+    poll_candidates = [s for s in summaries if s.get('spread_val', 0) > 0]
+    if not poll_candidates:
+        poll_candidates = summaries[:]
+    poll_candidates.sort(key=lambda x: x.get('spread_val', 0), reverse=True)
+
+    poll_answers = []
+    for s in poll_candidates[:8]:
+        dog = s.get('underdog_owner', s['away_owner'])
+        fav = s.get('fav_owner', s['home_owner'])
+        sp = s.get('spread_val', 0.0)
+        ans_text = f"{dog} (+{sp:.1f}) over {fav}" if sp > 0 else f"{s['away_owner']} vs {s['home_owner']}"
+        poll_answers.append({
+            "poll_media": {
+                "text": ans_text[:55],
+                "emoji": {"name": "🐶"}
+            }
+        })
+
+    if len(poll_answers) >= 2:
+        payload["poll"] = {
+            "question": {"text": f"🎰 BFL Week {week_num} Sportsbook: Which underdog pulls off the Upset of the Week?"},
+            "answers": poll_answers,
+            "duration": 72,
+            "allow_multiselect": True
+        }
     
     success = send_to_channel('commish', payload)
     if success:
-        print("🚀 Successfully broadcasted Thursday Lineup Preview to #commissioner-desk!")
+        print("🚀 Successfully broadcasted Thursday Lineup Preview & Upset Poll to #commissioner-desk!")
 
 def main():
     parser = argparse.ArgumentParser(description="Generate BFL Thursday Starting Lineup & Vegas Odds Preview")
-    parser.add_argument("--week", type=int, default=1, help="Week number to preview (default: 1)")
+    parser.add_argument("--week", type=int, default=7, help="Week number to preview (default: 7)")
     parser.add_argument("--season", type=int, default=int(CURRENT_YEAR), help="Season year")
     parser.add_argument("--league-id", default=ESPN_LEAGUE_ID, help="ESPN League ID")
     parser.add_argument("--csv", default="FantasyScheduler/schedule_by_week.csv", help="Schedule CSV")
-    parser.add_argument("--discord", action="store_true", default=True, help="Broadcast to Discord webhook")
+    parser.add_argument("--discord", action="store_true", help="Broadcast to Discord webhook")
     args = parser.parse_args()
     
     csv_path = args.csv
@@ -426,9 +458,9 @@ def main():
         if script_dir_csv.exists():
             csv_path = str(script_dir_csv)
             
-    matchups = load_week_matchups(csv_path, args.week)
-    h2h, career_stats = compile_all_time_h2h(args.league_id, ESPN_S2, ESPN_SWID, current_season=args.season, up_to_week=args.week)
     espn_data = fetch_lineup_boxscores(args.league_id, str(args.season), args.week, ESPN_S2, ESPN_SWID)
+    matchups = load_week_matchups(csv_path, args.week, espn_data=espn_data)
+    h2h, career_stats = compile_all_time_h2h(args.league_id, ESPN_S2, ESPN_SWID, current_season=args.season, up_to_week=args.week)
     
     report_md, summaries = generate_thursday_preview_report(args.week, args.season, matchups, h2h, espn_data)
     
@@ -437,13 +469,14 @@ def main():
     print("="*75)
     print(report_md)
     
-    # Save preview file
-    out_file = Path(__file__).resolve().parent / f"thursday_preview_week_{args.week}_{args.season}.md"
+    out_dir = Path(__file__).resolve().parent / "output"
+    out_dir.mkdir(exist_ok=True)
+    out_file = out_dir / f"thursday_preview_week_{args.week}_{args.season}.md"
     with open(out_file, 'w') as f:
         f.write(report_md)
         
     print("\n" + "="*75)
-    print(f"💾 Report saved to: {out_file.name}")
+    print(f"💾 Report saved to: {out_file}")
     print("="*75)
     
     if args.discord:

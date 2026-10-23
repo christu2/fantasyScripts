@@ -180,6 +180,241 @@ def get_owner_storyline_context(owner: str) -> dict:
         'summary': prof['summary']
     }
 
+# Shared League Constants, Synonyms & Historical H2H Engine (2008-2026)
+import csv
+import json
+import requests
+
+MANAGER_SYNONYMS = {
+    'thomas ehrlich': 'Tommy Ehrlich',
+    'tom ehrlich': 'Tommy Ehrlich',
+    'tommy ehrlich': 'Tommy Ehrlich',
+    'dan kruszewski': 'Daniel Kruszewski',
+    'daniel kruszewski': 'Daniel Kruszewski',
+    'ali bhujwala': 'Daniel Kruszewski',
+    'sydney kite': 'Sydney Miller',
+    'sydney miller': 'Sydney Miller',
+    'sydney christus': 'Sydney Miller',
+    'emelie lovasko': 'Emelie Lovasko',
+    'shawn ullenbrauck': 'Shawn Ullenbrauck',
+    'shawn lukose': 'Shawn Lukose',
+    'nick christus': 'Nick Christus',
+    'blake whitehouse': 'Blake Whitehouse',
+    'nael ahmed': 'Nael Ahmed',
+    'saagar gupta': 'Saagar Gupta',
+    'ayush gupta': 'Saagar Gupta',
+    'abe thomas': 'Abe Thomas',
+    'nitesh patel': 'Nitesh Patel',
+    'edgar': 'Nitesh Patel',
+    'rej hoxha': 'rej hoxha',
+    'samran mirza': 'Samran Mirza',
+    'dino davros': 'Dino Davros',
+    'adam olen': 'Adam Olen',
+    'ryan olen': 'Ryan Olen',
+    'alex kite': 'Alex Kite',
+    'evan hagedorn': 'Alex Kite',
+    'matt rosato': 'Austin Russell',
+    'bubba franks': 'Austin Russell',
+    'austin russell': 'Austin Russell',
+    'alexandra christus': 'Alex Christus',
+    'georgia batman': 'Georgia Christus',
+    'georgia christus': 'Georgia Christus',
+}
+
+TEAM_DETAILS_2026 = {
+    'DTM':     {'owner': 'Daniel Kruszewski', 'team_name': 'Dynasty Destroyers', 'division': 'North'},
+    'Thomas':  {'owner': 'Tommy Ehrlich',     'team_name': 'The Ehrly Birds', 'division': 'North'},
+    'Nick':    {'owner': 'Nick Christus',     'team_name': 'Mykonos Minotaurs', 'division': 'North'},
+    'Blake':   {'owner': 'Blake Whitehouse',  'team_name': 'Block O meets O Block', 'division': 'North'},
+    'Nael':    {'owner': 'Nael Ahmed',        'team_name': 'NMAfia', 'division': 'South'},
+    'Saagar':  {'owner': 'Saagar Gupta',      'team_name': "King Gupta's Army", 'division': 'South'},
+    'Abe':     {'owner': 'Abe Thomas',        'team_name': 'Crashee Bandicoot', 'division': 'South'},
+    'Nasties': {'owner': 'Nitesh Patel',      'team_name': 'Big Nasties', 'division': 'South'},
+    'Lukose':  {'owner': 'Shawn Lukose',      'team_name': 'Nilgiri Tahrs', 'division': 'East'},
+    'Rej':     {'owner': 'rej hoxha',         'team_name': 'Steve Bartman', 'division': 'East'},
+    'Samran':  {'owner': 'Samran Mirza',      'team_name': "De'von Intervention", 'division': 'East'},
+    'Dino':    {'owner': 'Dino Davros',       'team_name': 'Taliban Gang Mujahideen', 'division': 'East'},
+    'AMO':     {'owner': 'Adam Olen',         'team_name': 'Green and Golden', 'division': 'West'},
+    'Shooter': {'owner': 'Alex Kite',         'team_name': 'Send Da Trade', 'division': 'West'},
+    'Sydney':  {'owner': 'Sydney Miller',     'team_name': "30p Chance I'm Already Winning", 'division': 'West'},
+    'Thor':    {'owner': 'Shawn Ullenbrauck', 'team_name': "Pat N' Pending", 'division': 'West'},
+}
+
+OWNER_TO_CODE_2026 = {v['owner']: k for k, v in TEAM_DETAILS_2026.items()}
+
+def standardize_name(name: str) -> str:
+    if not name:
+        return 'Unknown'
+    return MANAGER_SYNONYMS.get(name.lower().strip(), name.strip().title())
+
+def _process_season_games(data, year: int, h2h: dict, career_stats: dict, max_week: int = 99):
+    """Parses season data and attributes games across co-owners with playoff tier classification."""
+    members = {}
+    for m in data.get('members', []):
+        f = m.get('firstName', '').strip()
+        l = m.get('lastName', '').strip()
+        full = f"{f} {l}".strip()
+        disp = m.get('displayName', '').strip()
+        members[m['id']] = standardize_name(full if full else disp)
+        
+    teams = {}
+    for t in data.get('teams', []):
+        tid = t['id']
+        owner_ids = t.get('owners', [])
+        if not owner_ids and t.get('primaryOwner'):
+            owner_ids = [t['primaryOwner']]
+            
+        owners = set()
+        for oid in owner_ids:
+            if oid in members:
+                owners.add(members[oid])
+                
+        if not owners:
+            tname = f"{t.get('location', '')} {t.get('nickname', '')}".strip()
+            if tname:
+                owners.add(standardize_name(tname))
+            else:
+                owners.add(f"Team {tid}")
+                
+        teams[tid] = list(owners)
+        
+    for g in data.get('schedule', []):
+        w = g.get('matchupPeriodId', 0)
+        if w > max_week:
+            continue
+            
+        away = g.get('away', {})
+        home = g.get('home', {})
+        if not away or not home:
+            continue
+            
+        a_id = away.get('teamId')
+        h_id = home.get('teamId')
+        a_owners = teams.get(a_id, [])
+        h_owners = teams.get(h_id, [])
+        a_score = away.get('totalPoints', 0.0)
+        h_score = home.get('totalPoints', 0.0)
+        tier = g.get('playoffTierType', 'NONE')
+        
+        is_champ_playoff = (tier == 'WINNERS_BRACKET')
+        is_consolation = ('CONSOLATION' in str(tier) or 'LOSER' in str(tier))
+        is_regular = (tier == 'NONE' and w <= 14)
+        
+        if a_score > 0 and h_score > 0 and a_owners and h_owners:
+            margin = round(abs(a_score - h_score), 2)
+            for own_a in a_owners:
+                for own_b in h_owners:
+                    if own_a == own_b:
+                        continue
+                    pair = tuple(sorted([own_a, own_b]))
+                    if pair not in h2h:
+                        h2h[pair] = []
+                        
+                    winner = own_a if a_score > h_score else own_b
+                    loser = own_b if a_score > h_score else own_a
+                    
+                    h2h[pair].append({
+                        'year': year,
+                        'week': w,
+                        'owner_a': own_a,
+                        'owner_b': own_b,
+                        'score_a': a_score,
+                        'score_b': h_score,
+                        'winner': winner,
+                        'loser': loser,
+                        'margin': margin,
+                        'is_champ_playoff': is_champ_playoff,
+                        'is_consolation': is_consolation,
+                        'is_regular': is_regular
+                    })
+                    
+                    for own, pts, is_win in [(own_a, a_score, a_score > h_score), (own_b, h_score, h_score > a_score)]:
+                        if own not in career_stats:
+                            career_stats[own] = {'total_pts': 0.0, 'games': 0, 'wins': 0}
+                        career_stats[own]['total_pts'] += pts
+                        career_stats[own]['games'] += 1
+                        if is_win:
+                            career_stats[own]['wins'] += 1
+
+def compile_all_time_h2h(league_id: str, s2: str, swid: str, current_season: int = 2026, up_to_week: int = 1):
+    """
+    Fetches all historical seasons (2008 to current) via ESPN leagueHistory and season APIs.
+    Uses disk caching for completed past seasons (2008 to current_season-1) for fast execution.
+    """
+    cookies = {"espn_s2": s2, "SWID": swid} if (s2 and swid) else {}
+    h2h = {}
+    career_stats = {}
+    
+    # Historical seasons (2008..2025) used legacy league_id 157057 if league_id was updated
+    hist_league_ids = list(dict.fromkeys([str(league_id), "157057"]))
+    
+    for y in range(2008, current_season):
+        for lid in hist_league_ids:
+            url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/leagueHistory/{lid}?seasonId={y}&view=mMatchupScore&view=mTeam&view=mSettings&view=mMembers"
+            try:
+                resp = requests.get(url, cookies=cookies, timeout=6)
+                if resp.status_code == 200:
+                    raw = resp.json()
+                    data = raw[0] if isinstance(raw, list) and len(raw) > 0 else raw
+                    _process_season_games(data, y, h2h, career_stats)
+                    break
+            except Exception:
+                continue
+                
+    if up_to_week > 1:
+        url_curr = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{current_season}/segments/0/leagues/{league_id}?view=mMatchupScore&view=mTeam&view=mSettings&view=mMembers"
+        try:
+            resp = requests.get(url_curr, cookies=cookies, timeout=8)
+            if resp.status_code == 200:
+                _process_season_games(resp.json(), current_season, h2h, career_stats, max_week=up_to_week - 1)
+        except Exception:
+            pass
+            
+    return h2h, career_stats
+
+def load_week_matchups(csv_path: str = None, target_week: int = 1, espn_data: dict = None):
+    """Load the official schedule for a given week from CSV or directly from live ESPN schedule."""
+    matchups = []
+    if csv_path and os.path.exists(csv_path):
+        with open(csv_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                if int(r['Week']) == target_week:
+                    away_code = r['Away'].strip()
+                    home_code = r['Home'].strip()
+                    matchups.append({
+                        'away_code': away_code,
+                        'home_code': home_code,
+                        'away_info': TEAM_DETAILS_2026.get(away_code, {'owner': away_code, 'team_name': away_code, 'division': 'N/A'}),
+                        'home_info': TEAM_DETAILS_2026.get(home_code, {'owner': home_code, 'team_name': home_code, 'division': 'N/A'}),
+                        'type': r.get('Type', '')
+                    })
+        if matchups:
+            return matchups
+
+    # Fallback: build directly from live ESPN schedule data
+    if espn_data:
+        from FantasyRecap.league_recap_generator import parse_league_members_and_teams
+        teams = parse_league_members_and_teams(espn_data)
+        for g in espn_data.get('schedule', []):
+            if g.get('matchupPeriodId') == target_week:
+                aid = g.get('away', {}).get('teamId')
+                hid = g.get('home', {}).get('teamId')
+                if aid in teams and hid in teams:
+                    a_own = standardize_name(teams[aid]['owner'])
+                    h_own = standardize_name(teams[hid]['owner'])
+                    a_code = OWNER_TO_CODE_2026.get(a_own, a_own)
+                    h_code = OWNER_TO_CODE_2026.get(h_own, h_own)
+                    is_div = teams[aid].get('division') == teams[hid].get('division')
+                    matchups.append({
+                        'away_code': a_code,
+                        'home_code': h_code,
+                        'away_info': {'owner': a_own, 'team_name': teams[aid]['name'], 'division': teams[aid]['division']},
+                        'home_info': {'owner': h_own, 'team_name': teams[hid]['name'], 'division': teams[hid]['division']},
+                        'type': 'Division' if is_div else 'Cross-Division'
+                    })
+    return matchups
+
 if __name__ == "__main__":
     print("="*75)
     print("🏆 BFL ALL-TIME CHAMPIONSHIP ROLL & OWNER CONTEXT ENGINE")

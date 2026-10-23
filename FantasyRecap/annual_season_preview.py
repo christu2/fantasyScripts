@@ -21,8 +21,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, OWNER_PROFILES
-from FantasyRecap.league_preview_generator import compile_all_time_h2h, TEAM_DETAILS_2026
+from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, OWNER_PROFILES, compile_all_time_h2h, TEAM_DETAILS_2026
+from FantasyRecap.config import LEAGUE_ID, CURRENT_YEAR as CONFIG_YEAR
 
 # Load .env
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -31,11 +31,11 @@ if env_path.exists():
 else:
     load_dotenv()
 
-ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
+ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID") or os.getenv("LEAGUE_ID") or str(LEAGUE_ID)
 ESPN_S2 = os.getenv("ESPN_S2", "")
-ESPN_SWID = os.getenv("ESPN_SWID", "")
+ESPN_SWID = os.getenv("ESPN_SWID") or os.getenv("SWID", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
-CURRENT_YEAR = os.getenv("SEASON_YEAR") or str(datetime.now().year)
+CURRENT_YEAR = os.getenv("SEASON_YEAR") or str(CONFIG_YEAR)
 
 DIVISION_BREAKDOWN = {
     'North': {

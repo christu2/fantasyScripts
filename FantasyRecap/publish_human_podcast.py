@@ -37,7 +37,9 @@ def publish_human_podcast(season: int, week_num: int, audio_path: str, notes: st
     print(f"🎵 Loaded Commissioner Audio: {mins}m {secs}s")
 
     # 2. Compress Audio to fit under Discord limits
-    compressed_audio_path = str(Path(__file__).resolve().parent / f"bfl_commissioner_podcast_week_{week_num}_{season}.mp3")
+    out_dir = Path(__file__).resolve().parent / "output"
+    out_dir.mkdir(exist_ok=True)
+    compressed_audio_path = str(out_dir / f"bfl_commissioner_podcast_week_{week_num}_{season}.mp3")
     print(f"🗜️ Compressing audio for Discord (Bitrate: {bitrate})...")
     
     cmd_compress = [

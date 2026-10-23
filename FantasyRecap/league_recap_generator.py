@@ -28,11 +28,11 @@ if env_path.exists():
 else:
     load_dotenv()
 
-ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
+from FantasyRecap.config import CURRENT_YEAR as CONFIG_YEAR, LEAGUE_ID
+CURRENT_YEAR = os.getenv("SEASON_YEAR") or str(CONFIG_YEAR)
+ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID") or os.getenv("LEAGUE_ID") or str(LEAGUE_ID)
 ESPN_S2 = os.getenv("ESPN_S2", "")
-ESPN_SWID = os.getenv("ESPN_SWID", "")
-from FantasyRecap.config import CURRENT_YEAR, LEAGUE_ID
-CURRENT_YEAR = str(CURRENT_YEAR)
+ESPN_SWID = os.getenv("ESPN_SWID") or os.getenv("SWID", "")
 
 POSITION_MAP = {
     1: 'QB',
@@ -460,7 +460,9 @@ def main():
     
     # Save to file
     if args.save:
-        output_file = Path(__file__).resolve().parent / f"weekly_recap_week_{args.week}_{args.season}.md"
+        out_dir = Path(__file__).resolve().parent / "output"
+        out_dir.mkdir(exist_ok=True)
+        output_file = out_dir / f"weekly_recap_week_{args.week}_{args.season}.md"
         with open(output_file, 'w') as f:
             f.write(report_md)
         print("\n" + "="*75)

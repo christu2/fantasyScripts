@@ -141,7 +141,7 @@
         {
           "name": "Tyler Warren",
           "pos": "TE",
-          "injury": "QUESTIONABLE"
+          "injury": "OUT"
         }
       ]
     },
@@ -194,6 +194,30 @@
         {
           "name": "Caleb Williams",
           "pos": "QB",
+          "injury": "ACTIVE"
+        }
+      ]
+    },
+    {
+      "week": 7,
+      "owner_a": "Shawn Lukose",
+      "owner_b": "Sydney Miller",
+      "a_sends": [
+        {
+          "name": "Juwan Johnson",
+          "pos": "TE",
+          "injury": "ACTIVE"
+        },
+        {
+          "name": "Makai Lemon",
+          "pos": "WR",
+          "injury": "ACTIVE"
+        }
+      ],
+      "b_sends": [
+        {
+          "name": "Tre Tucker",
+          "pos": "WR",
           "injury": "ACTIVE"
         }
       ]

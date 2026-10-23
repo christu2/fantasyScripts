@@ -16,8 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, analyze_week, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
-from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS
+from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, standardize_name
 from FantasyRecap.press_conference_manager import get_verified_manager_quotes
+from FantasyRecap.playoff_odds_simulator import simulate_league_playoff_odds_from_espn
 from FantasyRecap.config import CURRENT_YEAR
 
 NFL_TEAMS = {
@@ -357,33 +358,44 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
     a_len = len(a_sends)
     b_len = len(b_sends)
     
-    a_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR'] for p in a_sends)
-    b_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR'] for p in b_sends)
+    # Lookup records & scoring profiles from trajectories if available
+    a_rec_str, b_rec_str = "", ""
+    if teams and trajectories:
+        for tid, t_info in teams.items():
+            if t_info.get('owner') == a and tid in trajectories:
+                tr_a = trajectories[tid]
+                a_rec_str = f" ({tr_a['overall_w']}-{tr_a['overall_l']}, #{tr_a['pf_rank']} scoring)"
+            elif t_info.get('owner') == b and tid in trajectories:
+                tr_b = trajectories[tid]
+                b_rec_str = f" ({tr_b['overall_w']}-{tr_b['overall_l']}, #{tr_b['pf_rank']} scoring)"
+
+    a_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR', 'DOUBTFUL'] for p in a_sends)
+    b_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR', 'DOUBTFUL'] for p in b_sends)
     
     if a_has_inj and not b_has_inj:
         theme = "Win-Now Rental / Starter Acquisition vs. Injured Playoff Stash"
-        a_why = f"{a} moved an injured asset ({a_str}) to acquire healthy, active talent ({b_str}) to score immediate points and survive a must-win stretch."
-        b_why = f"{b} took on an injured player ({a_str}) at a discount to stash on IR for the late-season playoff push, sacrificing current production for high-ceiling playoff upside."
+        a_why = f"{a}{a_rec_str} moved an injured asset ({a_str}) to acquire healthy, active talent ({b_str}) to score immediate points and survive a must-win stretch."
+        b_why = f"{b}{b_rec_str} took on an injured player ({a_str}) at a discount to stash on IR for the late-season playoff push, sacrificing current production for high-ceiling playoff upside."
         debate = f"Can {a} stay alive in the playoff race with {b_str}, or will {b}'s injured stash pay off in a championship run?"
     elif b_has_inj and not a_has_inj:
         theme = "Injured Playoff Stash vs. Win-Now Rental / Starter Acquisition"
-        a_why = f"{a} took on an injured player ({b_str}) to stash for a late-season playoff push, using current roster depth to absorb the downtime."
-        b_why = f"{b} moved injured {b_str} to land healthy, immediate starting points ({a_str}) to plug lineup holes."
+        a_why = f"{a}{a_rec_str} took on an injured player ({b_str}) to stash for a late-season playoff push, using current roster depth to absorb the downtime."
+        b_why = f"{b}{b_rec_str} moved injured {b_str} to land healthy, immediate starting points ({a_str}) to plug lineup holes."
         debate = f"Did {b} give away an elite playoff asset too cheaply to survive the regular season?"
     elif a_len > b_len:
         theme = f"Consolidation Trade ({a_len}-for-{b_len} Upgrade)"
-        a_why = f"{a} bundled multiple depth assets ({a_str}) to consolidate into an upgraded, higher-tier starter ({b_str}) to maximize starting lineup firepower."
-        b_why = f"{b} parted with a marquee piece ({b_str}) to restock bench depth and patch multiple starting vacancies with {a_str}."
+        a_why = f"{a}{a_rec_str} bundled multiple depth assets ({a_str}) to consolidate into an upgraded, higher-tier starter ({b_str}) to maximize starting lineup firepower."
+        b_why = f"{b}{b_rec_str} parted with a marquee piece ({b_str}) to restock bench depth and patch multiple starting vacancies with {a_str}."
         debate = f"Did {a} sacrifice too much roster depth, or did {b} give up the best player in the deal?"
     elif b_len > a_len:
         theme = f"Depth Replenishment ({b_len}-for-{a_len} Multi-Asset Haul)"
-        a_why = f"{a} traded a key starter ({a_str}) to acquire multiple starting-caliber pieces ({b_str}) to patch lineup holes and survive bye weeks."
-        b_why = f"{b} packaged multiple bench pieces ({b_str}) to target a single premium centerpiece ({a_str})."
+        a_why = f"{a}{a_rec_str} traded a key starter ({a_str}) to acquire multiple starting-caliber pieces ({b_str}) to patch lineup holes and survive bye weeks."
+        b_why = f"{b}{b_rec_str} packaged multiple bench pieces ({b_str}) to target a single premium centerpiece ({a_str})."
         debate = f"Did {b} consolidate successfully, or does {a}'s multi-piece haul provide better weekly floor?"
     else:
         theme = "Positional Need & Lineup Realignment"
-        a_why = f"{a} acquired {b_str} to address a specific starting positional deficit or bye-week scheduling crunch."
-        b_why = f"{b} acquired {a_str} to rebalance roster depth and fit preferred weekly matchups."
+        a_why = f"{a}{a_rec_str} acquired {b_str} to address a specific starting positional deficit or bye-week scheduling crunch."
+        b_why = f"{b}{b_rec_str} acquired {a_str} to rebalance roster depth and fit preferred weekly matchups."
         debate = f"A classic one-for-one positional challenge: which manager got the bigger immediate upgrade?"
 
     return {
@@ -598,7 +610,19 @@ def build_previous_weeks_chronicle(raw_data: dict, current_week: int, teams: dic
     md += "*Use this background context to maintain ongoing storyline continuity. Reference past games naturally rather than reciting long history bios.*\n\n"
     
     for wk, games in weeks_data.items():
-        theme = week_themes.get(wk, f"Week {wk} Action")
+        if wk in week_themes:
+            theme = week_themes[wk]
+        elif games:
+            top_g = max(games, key=lambda x: x['w_pts'])
+            closest_g = min(games, key=lambda x: x['margin'])
+            blowout_g = max(games, key=lambda x: x['margin'])
+            theme = (
+                f"Week {wk}: {top_g['winner']} led the league with {top_g['w_pts']:.1f} pts; "
+                f"{closest_g['winner']} edged {closest_g['loser']} by {closest_g['margin']:.2f} pts ({closest_g['w_pts']:.1f}-{closest_g['l_pts']:.1f}); "
+                f"{blowout_g['winner']} routed {blowout_g['loser']} by {blowout_g['margin']:.1f} pts."
+            )
+        else:
+            theme = f"Week {wk} Action"
         md += f"### 🏈 WEEK {wk} RECAP ({theme})\n"
         for g in games:
             md += f"- **{g['winner']}** defeated **{g['loser']}** ({g['w_pts']:.1f} to {g['l_pts']:.1f}, Margin: {g['margin']:.2f})\n"
@@ -611,11 +635,12 @@ def generate_payload(season: int, week_num: int):
     raw_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), week_num, ESPN_S2, ESPN_SWID)
     teams = parse_league_members_and_teams(raw_data)
     matchups, perfs, _ = analyze_week(raw_data, week_num)
-    verified_quotes = get_verified_manager_quotes(None)
+    verified_quotes = get_verified_manager_quotes()
     cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
 
     trajectories = calculate_season_trajectories(raw_data, week_num, teams)
     trades = fetch_league_trades(raw_data, week_num, season, cookies, teams, trajectories)
+    playoff_odds = simulate_league_playoff_odds_from_espn(raw_data, week_num, n_sims=5000) if week_num <= 14 else {}
 
     payload = f"# BFL (Beasts Football League) - Season {season}, Week {week_num} Data Sheet\n\n"
     
@@ -734,7 +759,20 @@ def generate_payload(season: int, week_num: int):
     payload += "     * Why Team A made the move (e.g. consolidation upgrade, acquiring an elite weekly starter, playoff injury stash).\n"
     payload += "     * Why Team B made the move (e.g. 2-for-1 depth replenishment, one-week rental to cover a bye week, immediate win-now starting points to survive a losing streak).\n"
     payload += "     * Host debate: Have Chris and Dave take opposing sides on who won the trade, grade the trade, and note any league controversy.\n"
-    payload += "   - Spend LESS time on minor free agent pickups. Dismiss minor waiver moves in 10 seconds or less—never treat a backup free agent signing with the same weight as a blockbuster trade.\n\n"
+    payload += "   - Spend LESS time on minor free agent pickups. Dismiss minor waiver moves in 10 seconds or less—never treat a backup free agent signing with the same weight as a blockbuster trade.\n"
+    payload += "13. **OFFICIAL PRONUNCIATION, NICKNAMES & INSIDE JOKES GUIDE (MANDATORY):**\n"
+    payload += "   - **The Jabroni Trophy:** Pronounced *'Jah-BRO-nee'* (the coveted league championship trophy).\n"
+    payload += "   - **Saagar Gupta:** Pronounced *'SAH-gur'* (also known as 'King Gupta').\n"
+    payload += "   - **rej hoxha:** Pronounced *'Ray'* (first name Rej is spoken like Ray).\n"
+    payload += "   - **Shawn Lukose:** Last name pronounced *'Luke-ose'* (4-time BFL GOAT).\n"
+    payload += "   - **Shawn Ullenbrauck:** Commonly called by his league nickname **'Thor'** or 'Shawn U'.\n"
+    payload += "   - **Nael Ahmed:** Pronounced *'Nile'*.\n"
+    payload += "   - **Samran Mirza:** Pronounced *'Sum-rahn'*.\n"
+    payload += "   - **Dino Davros:** Pronounced *'Dee-no'*.\n"
+    payload += "   - **Daniel Kruszewski:** Last name pronounced *'Cruise-sheff-skee'* (or 'Dan' / 'DTM').\n"
+    payload += "   - **Adam Olen:** Often called by his initials **'AMO'**.\n"
+    payload += "   - **Alex Kite:** Often called by his nickname **'Shooter'**.\n"
+    payload += "   - **Mykonos Minotaurs (Nick Christus):** Pronounced *'Mee-ko-nos'*.\n\n"
 
     # --- AUTOMATIC NFL GAME RECAPS ---
     try:
@@ -869,7 +907,24 @@ def generate_payload(season: int, week_num: int):
         payload += f"*{div_narratives.get(div, '')}*\n"
         for rank, t in enumerate(div_teams, 1):
             tr = trajectories[t['id']]
-            payload += f"{rank}. **{t['owner']}** ({t['name']}): **{tr['overall_w']}-{tr['overall_l']}** (Div: {tr['div_w']}-{tr['div_l']}) | Streak: `{tr['streak_str']}` | **{round(tr['points_for'], 1)} PF (Rank #{tr['pf_rank']})** | PA: {round(tr['points_against'], 1)} (Rank #{tr['pa_rank']} hardest) | {tr['status_tag']}\n"
+            std_own = standardize_name(t['owner'])
+            if std_own.lower() == 'rej hoxha': std_own = 'rej hoxha'
+            po_info = playoff_odds.get(std_own, {})
+            po_str = f" | **Playoff Odds: {po_info.get('playoff_pct', 0)}%** (Div Title: {po_info.get('div_title_pct', 0)}%, #1 Bye: {po_info.get('bye_pct', 0)}%)" if po_info else ""
+            payload += f"{rank}. **{t['owner']}** ({t['name']}): **{tr['overall_w']}-{tr['overall_l']}** (Div: {tr['div_w']}-{tr['div_l']}) | Streak: `{tr['streak_str']}` | **{round(tr['points_for'], 1)} PF (Rank #{tr['pf_rank']})** | PA: {round(tr['points_against'], 1)} (Rank #{tr['pa_rank']} hardest){po_str} | {tr['status_tag']}\n"
+        payload += "\n"
+
+    if playoff_odds:
+        payload += f"## 🎲 10,000-SIMULATION PLAYOFF ODDS, BYE RACE & LEVERAGE STAKES (ENTERING WEEK {week_num + 1})\n"
+        payload += "*Weave these real Monte Carlo percentages into Act 1 (Standings), Act 2 (what the result did to their odds), and Act 3 (next week's must-win leverage games):*\n\n"
+        sorted_po = sorted(playoff_odds.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct'], x['pf']), reverse=True)
+        for rank, r in enumerate(sorted_po, 1):
+            payload += (
+                f"- **#{rank} {r['owner']} ({r['record']}, {r['division']}):** "
+                f"**{r['playoff_pct']}% Playoff Odds** | {r['div_title_pct']}% Div Title | {r['bye_pct']}% #1 Seed Bye | {r['champ_pct']}% Ring | "
+                f"Week {week_num + 1} vs {r['next_opp']}: Win ➡️ `{r['win_po_pct']}%` / Loss ➡️ `{r['loss_po_pct']}%` (**±{r['leverage_swing']}% Leverage Swing**) | "
+                f"Loser's Bracket #1 Draft Pick Odds: {r['draft_choice_fav_pct']}%\n"
+            )
         payload += "\n"
 
     # --- SEASON TRAJECTORIES & MOMENTUM ---
@@ -1068,8 +1123,8 @@ def generate_payload(season: int, week_num: int):
     if week_num < 14:
         next_week_games = [g for g in raw_data.get('schedule', []) if g.get('matchupPeriodId') == week_num + 1]
         if next_week_games:
-            payload += f"\n## 🔮 NEXT WEEK'S MATCHUPS (WEEK {week_num + 1} PREVIEW)\n"
-            payload += "*Preview these key matchups and discuss the playoff stakes:*\n"
+            payload += f"\n## 🔮 NEXT WEEK'S MATCHUPS (WEEK {week_num + 1} PREVIEW & PLAYOFF LEVERAGE)\n"
+            payload += "*Preview these key matchups in Act 3 and highlight the massive Win/Loss Playoff Leverage swings at stake:*\n"
             for g in next_week_games:
                 away_id = g.get('away', {}).get('teamId')
                 home_id = g.get('home', {}).get('teamId')
@@ -1080,10 +1135,22 @@ def generate_payload(season: int, week_num: int):
                     h_tr = trajectories.get(home_id, {})
                     is_div = teams[away_id].get('division') == teams[home_id].get('division')
                     div_str = " [💥 DIVISION RIVALRY]" if is_div else ""
-                    payload += f"- **{a_name}** ({a_tr.get('overall_w',0)}-{a_tr.get('overall_l',0)}) vs **{h_name}** ({h_tr.get('overall_w',0)}-{h_tr.get('overall_l',0)}){div_str}\n"
+                    a_std = standardize_name(a_name)
+                    if a_std.lower() == 'rej hoxha': a_std = 'rej hoxha'
+                    h_std = standardize_name(h_name)
+                    if h_std.lower() == 'rej hoxha': h_std = 'rej hoxha'
+                    a_po = playoff_odds.get(a_std, {})
+                    h_po = playoff_odds.get(h_std, {})
+                    lev_note = ""
+                    if a_po and h_po:
+                        lev_note = f" — *Playoff Odds & Leverage:* {a_name} ({a_po['playoff_pct']}% PO; Win `{a_po['win_po_pct']}%` / Loss `{a_po['loss_po_pct']}%`) vs {h_name} ({h_po['playoff_pct']}% PO; Win `{h_po['win_po_pct']}%` / Loss `{h_po['loss_po_pct']}%`)"
+                    payload += f"- **{a_name}** ({a_tr.get('overall_w',0)}-{a_tr.get('overall_l',0)}) vs **{h_name}** ({h_tr.get('overall_w',0)}-{h_tr.get('overall_l',0)}){div_str}{lev_note}\n"
+
+    out_dir = Path(__file__).resolve().parent / "output"
+    out_dir.mkdir(exist_ok=True)
 
     # Write primary payload file
-    out_file = Path(__file__).resolve().parent / f"notebook_payload_week_{week_num}_{season}.md"
+    out_file = out_dir / f"notebook_payload_week_{week_num}_{season}.md"
     with open(out_file, 'w') as f:
         f.write(payload)
 
@@ -1093,7 +1160,7 @@ def generate_payload(season: int, week_num: int):
     chronicle_content += "Upload this file as a secondary reference source in Google NotebookLM so the hosts maintain perfect continuity without repeating themselves.\n\n"
     chronicle_content += build_previous_weeks_chronicle(raw_data, week_num, teams)
     
-    chronicle_file = Path(__file__).resolve().parent / f"season_chronicle_weeks_1_to_{week_num - 1}_{season}.md"
+    chronicle_file = out_dir / f"season_chronicle_weeks_1_to_{week_num - 1}_{season}.md"
     with open(chronicle_file, 'w') as f:
         f.write(chronicle_content)
 

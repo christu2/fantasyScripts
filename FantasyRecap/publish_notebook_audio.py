@@ -37,7 +37,9 @@ def publish_notebook_audio(season: int, week_num: int, audio_path: str, notes: s
     print(f"🎵 Loaded NotebookLM Audio: {mins}m {secs}s")
 
     # 2. Compress Audio to fit under Discord limits (64kbps MP3)
-    compressed_audio_path = str(Path(__file__).resolve().parent / f"bfl_notebooklm_hangover_week_{week_num}_{season}.mp3")
+    out_dir = Path(__file__).resolve().parent / "output"
+    out_dir.mkdir(exist_ok=True)
+    compressed_audio_path = str(out_dir / f"bfl_notebooklm_hangover_week_{week_num}_{season}.mp3")
     print("🗜️ Compressing audio for Discord...")
     
     cmd_compress = [

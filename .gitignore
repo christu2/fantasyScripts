@@ -102,4 +102,6 @@ temp_video*
 
 # Generated Markdown Recaps & Reports
 FantasyRecap/*.md
+FantasyRecap/output/
 !FantasyRecap/README.md
+archive_2025_draft/

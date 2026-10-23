@@ -10,8 +10,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$PROJECT_ROOT" || exit 1
 
-SEASON=${1:-2025}
-WEEK=${2:-1}
+SEASON=${1:-2026}
+WEEK=${2:-7}
 INTERVAL=${3:-60}
 
 echo "⚡ Launching BFL Live Game Desk Daemon (Season $SEASON, Week $WEEK, Polling every ${INTERVAL}s)..."

@@ -1,0 +1,82 @@
+{
+  "DTM": {
+    "id": 28,
+    "owner": "Daniel Kruszewski",
+    "name": "Daniel Kruszewski"
+  },
+  "Thomas": {
+    "id": 4,
+    "owner": "Tommy Ehrlich",
+    "name": "Tommy Ehrlich"
+  },
+  "Nick": {
+    "id": 1,
+    "owner": "Nick Christus",
+    "name": "Nick Christus"
+  },
+  "Blake": {
+    "id": 21,
+    "owner": "Blake Whitehouse",
+    "name": "Blake Whitehouse"
+  },
+  "Nael": {
+    "id": 37,
+    "owner": "Nael Ahmed",
+    "name": "Nael Ahmed"
+  },
+  "Saagar": {
+    "id": 30,
+    "owner": "Saagar Gupta",
+    "name": "Saagar Gupta"
+  },
+  "Abe": {
+    "id": 20,
+    "owner": "Abe Thomas",
+    "name": "Abe Thomas"
+  },
+  "Nasties": {
+    "id": 39,
+    "owner": "Nitesh Patel",
+    "name": "Nitesh Patel"
+  },
+  "Lukose": {
+    "id": 6,
+    "owner": "Shawn Lukose",
+    "name": "Shawn Lukose"
+  },
+  "Rej": {
+    "id": 34,
+    "owner": "rej hoxha",
+    "name": "rej hoxha"
+  },
+  "Samran": {
+    "id": 38,
+    "owner": "Samran Mirza",
+    "name": "Samran Mirza"
+  },
+  "Dino": {
+    "id": 25,
+    "owner": "Dino Davros",
+    "name": "Dino Davros"
+  },
+  "AMO": {
+    "id": 40,
+    "owner": "Adam Olen",
+    "name": "Adam Olen"
+  },
+  "Shooter": {
+    "id": 33,
+    "owner": "Alex Kite",
+    "name": "Alex Kite"
+  },
+  "Sydney": {
+    "id": 36,
+    "owner": "Sydney Miller",
+    "name": "Sydney Miller"
+  },
+  "Thor": {
+    "id": 8,
+    "owner": "Shawn Ullenbrauck",
+    "name": "Shawn Ullenbrauck"
+  }
+}

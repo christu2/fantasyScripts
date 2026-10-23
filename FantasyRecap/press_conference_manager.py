@@ -25,6 +25,7 @@ else:
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_WEBHOOK_PODCAST = os.getenv("DISCORD_WEBHOOK_PODCAST", "")
+DISCORD_QUOTES_CHANNEL_ID = os.getenv("DISCORD_QUOTES_CHANNEL_ID") or os.getenv("DISCORD_TRASH_TALK_CHANNEL_ID") or os.getenv("DISCORD_CHANNEL_ID", "")
 
 # Discord username / nickname to BFL Owner mapping
 DISCORD_USER_MAP = {
@@ -42,24 +43,31 @@ DISCORD_USER_MAP = {
     'davros': 'Dino Davros',
     'adam': 'Adam Olen',
     'olen': 'Adam Olen',
+    'amo': 'Adam Olen',
     'sydney': 'Sydney Miller',
     'miller': 'Sydney Miller',
     'dan': 'Daniel Kruszewski',
     'kruszewski': 'Daniel Kruszewski',
+    'dtm': 'Daniel Kruszewski',
     'rej': 'rej hoxha',
     'hoxha': 'rej hoxha',
     'tommy': 'Tommy Ehrlich',
+    'thomas': 'Tommy Ehrlich',
     'ehrlich': 'Tommy Ehrlich',
     'samran': 'Samran Mirza',
     'mirza': 'Samran Mirza',
     'nael': 'Nael Ahmed',
     'ahmed': 'Nael Ahmed',
+    'nmafia': 'Nael Ahmed',
     'blake': 'Blake Whitehouse',
     'whitehouse': 'Blake Whitehouse',
     'alex': 'Alex Kite',
     'kite': 'Alex Kite',
-    'emelie': 'Emelie Lovasko',
-    'lovasko': 'Emelie Lovasko'
+    'shooter': 'Alex Kite',
+    'nitesh': 'Nitesh Patel',
+    'patel': 'Nitesh Patel',
+    'edgar': 'Nitesh Patel',
+    'nasties': 'Nitesh Patel'
 }
 
 def post_monday_night_interview_call(
@@ -127,10 +135,11 @@ def harvest_real_quotes_from_discord(channel_id: str = None) -> dict:
     Returns: { 'Owner Name': 'Real quote text' }
     """
     quotes = {}
-    if not DISCORD_BOT_TOKEN or not channel_id:
+    target_channel = channel_id or DISCORD_QUOTES_CHANNEL_ID
+    if not DISCORD_BOT_TOKEN or not target_channel:
         return quotes
 
-    url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit=50"
+    url = f"https://discord.com/api/v10/channels/{target_channel}/messages?limit=50"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
