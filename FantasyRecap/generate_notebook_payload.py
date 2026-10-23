@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, analyze_week, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
-from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, standardize_name
+from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, standardize_name, compile_all_time_h2h
 from FantasyRecap.press_conference_manager import get_verified_manager_quotes
 from FantasyRecap.playoff_odds_simulator import simulate_league_playoff_odds_from_espn
 from FantasyRecap.config import CURRENT_YEAR
@@ -630,6 +630,111 @@ def build_previous_weeks_chronicle(raw_data: dict, current_week: int, teams: dic
         
     return md
 
+def build_completed_matchup_h2h_tidbit(w_owner: str, l_owner: str, h2h_through_week: dict, current_season: int, current_week: int) -> str:
+    """Builds a punchy historical H2H & rivalry tidbit for a just-completed matchup in Act 2."""
+    w_std = standardize_name(w_owner)
+    l_std = standardize_name(l_owner)
+    pair = tuple(sorted([w_std, l_std]))
+    history = sorted(h2h_through_week.get(pair, []), key=lambda x: (x['year'], x['week']))
+    if not history:
+        return f"**📜 All-Time Series Tidbit:** First-ever BFL meeting between {w_std} and {l_std} ({w_std} now leads 1-0)."
+
+    w_wins = sum(1 for g in history if g['winner'] == w_std)
+    l_wins = sum(1 for g in history if g['winner'] == l_std)
+    total = len(history)
+    champ_playoffs = [g for g in history if g.get('is_champ_playoff')]
+
+    # Calculate active winning streak (including this week's game)
+    streak_winner = None
+    streak_len = 0
+    for g in reversed(history):
+        if streak_winner is None:
+            streak_winner = g['winner']
+            streak_len = 1
+        elif g['winner'] == streak_winner:
+            streak_len += 1
+        else:
+            break
+
+    if w_wins > l_wins:
+        series_str = f"{w_std} now leads the all-time series **{w_wins}-{l_wins}** ({total} meetings since 2008)"
+    elif l_wins > w_wins:
+        series_str = f"{l_std} still leads the all-time series **{l_wins}-{w_wins}** despite {w_std}'s win ({total} meetings since 2008)"
+    else:
+        series_str = f"{w_std}'s victory knots their all-time series at **{w_wins}-{l_wins}** ({total} meetings since 2008)"
+
+    notes = []
+    # Check Super Bowl history
+    sb_list = [sb for sb in BFL_CHAMPIONSHIPS if {sb['champ'], sb['runner_up']} == {w_std, l_std}]
+    if sb_list:
+        sb = sb_list[-1]
+        notes.append(f"🏆 **Super Bowl History:** Previously met in the {sb['year']} BFL Championship (won by {sb['champ']}, {sb['score']})")
+
+    # Check if they played earlier this same season
+    earlier_this_yr = [g for g in history if g['year'] == current_season and g['week'] < current_week]
+    if earlier_this_yr:
+        eg = earlier_this_yr[-1]
+        if eg['winner'] == w_std:
+            notes.append(f"🧹 **Season Sweep!** {w_std} also won their Week {eg['week']} clash (+{eg['margin']:.2f} pts) to complete the {current_season} regular-season sweep")
+        else:
+            notes.append(f"🔁 **Season Split:** {w_std} avenges their Week {eg['week']} loss to {l_std} (+{eg['margin']:.2f} pts), splitting the {current_season} season series 1-1")
+    elif len(history) >= 2:
+        prev_g = history[-2]
+        prev_hi = max(prev_g['score_a'], prev_g['score_b'])
+        prev_lo = min(prev_g['score_a'], prev_g['score_b'])
+        prev_stage = " in the Championship Playoffs" if prev_g.get('is_champ_playoff') else ""
+        notes.append(f"Previous meeting: {prev_g['winner']} won in {prev_g['year']} Week {prev_g['week']}{prev_stage} ({prev_hi:.1f}-{prev_lo:.1f})")
+
+    if streak_len >= 3:
+        notes.append(f"🔥 {streak_winner} has now won **{streak_len} straight** in this head-to-head rivalry")
+    elif champ_playoffs:
+        w_pw = sum(1 for g in champ_playoffs if g['winner'] == w_std)
+        l_pw = sum(1 for g in champ_playoffs if g['winner'] == l_std)
+        notes.append(f"Playoff H2H: {w_std} {w_pw}-{l_pw} {l_std}")
+
+    notes_str = " | " + " | ".join(notes) if notes else ""
+    return f"**📜 All-Time Rivalry Context:** {series_str}{notes_str}."
+
+def build_upcoming_matchup_h2h_tidbit(a_owner: str, h_owner: str, h2h_through_week: dict, current_season: int) -> str:
+    """Builds a concise historical H2H & rematch note for an upcoming Act 3 preview matchup."""
+    a_std = standardize_name(a_owner)
+    h_std = standardize_name(h_owner)
+    pair = tuple(sorted([a_std, h_std]))
+    history = sorted(h2h_through_week.get(pair, []), key=lambda x: (x['year'], x['week']))
+    if not history:
+        return "First-ever meeting in BFL history (0-0)"
+
+    a_wins = sum(1 for g in history if g['winner'] == a_std)
+    h_wins = sum(1 for g in history if g['winner'] == h_std)
+    total = len(history)
+    last_g = history[-1]
+    lg_hi = max(last_g['score_a'], last_g['score_b'])
+    lg_lo = min(last_g['score_a'], last_g['score_b'])
+    lg_stage = " Playoff" if last_g.get('is_champ_playoff') else ""
+
+    if a_wins > h_wins:
+        rec_str = f"{a_std} leads {a_wins}-{h_wins}"
+    elif h_wins > a_wins:
+        rec_str = f"{h_std} leads {h_wins}-{a_wins}"
+    else:
+        rec_str = f"Series tied {a_wins}-{h_wins}"
+
+    # Check if in-season rematch
+    in_season = [g for g in history if g['year'] == current_season]
+    sb_list = [sb for sb in BFL_CHAMPIONSHIPS if {sb['champ'], sb['runner_up']} == {a_std, h_std}]
+
+    if in_season:
+        ig = in_season[-1]
+        rev = h_std if ig['winner'] == a_std else a_std
+        hook = f"🔁 **In-Season Rematch** ({ig['winner']} won Week {ig['week']} `{max(ig['score_a'], ig['score_b']):.1f}-{min(ig['score_a'], ig['score_b']):.1f}`; {rev} seeks revenge)"
+    elif sb_list:
+        sb = sb_list[-1]
+        hook = f"🏆 **{sb['year']} Super Bowl Rematch** ({sb['champ']} won title {sb['score']}; last met {last_g['year']} Wk {last_g['week']}{lg_stage}: {last_g['winner']} +{last_g['margin']:.2f})"
+    else:
+        hook = f"Last met {last_g['year']} Wk {last_g['week']}{lg_stage}: {last_g['winner']} won `{lg_hi:.1f}-{lg_lo:.1f}` (+{last_g['margin']:.2f} pts)"
+
+    return f"**18-Yr H2H:** {rec_str} ({total} games) — {hook}"
+
 def generate_payload(season: int, week_num: int):
     print(f"📡 Fetching live ESPN data for Season {season}, Week {week_num}...")
     raw_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), week_num, ESPN_S2, ESPN_SWID)
@@ -641,6 +746,7 @@ def generate_payload(season: int, week_num: int):
     trajectories = calculate_season_trajectories(raw_data, week_num, teams)
     trades = fetch_league_trades(raw_data, week_num, season, cookies, teams, trajectories)
     playoff_odds = simulate_league_playoff_odds_from_espn(raw_data, week_num, n_sims=5000) if week_num <= 14 else {}
+    h2h_through_week, _ = compile_all_time_h2h(ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID, current_season=season, up_to_week=week_num + 1)
 
     payload = f"# BFL (Beasts Football League) - Season {season}, Week {week_num} Data Sheet\n\n"
     
@@ -1008,7 +1114,8 @@ def generate_payload(season: int, week_num: int):
 
             payload += f"### MATCHUP: {w['owner']} ({w_rec}) vs {l['owner']} ({l_rec}){div_tag}\n"
             payload += f"**Result:** {w['owner']} ({w['name']}) DEFEATED {l['owner']} ({l['name']})\n"
-            payload += f"**Final Score:** {max(m['away_score'], m['home_score'])} to {min(m['away_score'], m['home_score'])} (Margin: {m['margin']})\n\n"
+            payload += f"**Final Score:** {max(m['away_score'], m['home_score'])} to {min(m['away_score'], m['home_score'])} (Margin: {m['margin']})\n"
+            payload += f"{build_completed_matchup_h2h_tidbit(w['owner'], l['owner'], h2h_through_week, season, week_num)}\n\n"
             
             w_perf = perfs[w['id']]
             l_perf = perfs[l['id']]
@@ -1143,8 +1250,9 @@ def generate_payload(season: int, week_num: int):
                     h_po = playoff_odds.get(h_std, {})
                     lev_note = ""
                     if a_po and h_po:
-                        lev_note = f" — *Playoff Odds & Leverage:* {a_name} ({a_po['playoff_pct']}% PO; Win `{a_po['win_po_pct']}%` / Loss `{a_po['loss_po_pct']}%`) vs {h_name} ({h_po['playoff_pct']}% PO; Win `{h_po['win_po_pct']}%` / Loss `{h_po['loss_po_pct']}%`)"
-                    payload += f"- **{a_name}** ({a_tr.get('overall_w',0)}-{a_tr.get('overall_l',0)}) vs **{h_name}** ({h_tr.get('overall_w',0)}-{h_tr.get('overall_l',0)}){div_str}{lev_note}\n"
+                        lev_note = f" | *Playoff Odds & Leverage:* {a_name} ({a_po['playoff_pct']}% PO; Win `{a_po['win_po_pct']}%` / Loss `{a_po['loss_po_pct']}%`) vs {h_name} ({h_po['playoff_pct']}% PO; Win `{h_po['win_po_pct']}%` / Loss `{h_po['loss_po_pct']}%`)"
+                    h2h_note = build_upcoming_matchup_h2h_tidbit(a_name, h_name, h2h_through_week, season)
+                    payload += f"- **{a_name}** ({a_tr.get('overall_w',0)}-{a_tr.get('overall_l',0)}) vs **{h_name}** ({h_tr.get('overall_w',0)}-{h_tr.get('overall_l',0)}){div_str} — {h2h_note}{lev_note}\n"
 
     out_dir = Path(__file__).resolve().parent / "output"
     out_dir.mkdir(exist_ok=True)
