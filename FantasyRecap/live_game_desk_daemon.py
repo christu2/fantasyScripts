@@ -71,9 +71,76 @@ def post_live_desk_embed(title: str, description: str, color: int, fields: list,
         print(f"❌ Error sending Live Desk alert: {e}")
         return False
 
-def parse_live_matchup_state(raw_data, week_num: int) -> dict:
+def fetch_live_nfl_game_clocks(season: int, week_num: int) -> dict:
+    """
+    Maps each ESPN NFL proTeamId to its real-time game status ('PRE', 'IN_PROGRESS', 'FINAL')
+    and exact fraction of regulation game clock remaining (pct_remaining in [0.0, 1.0]).
+    """
+    event_clocks = {}
+    try:
+        sb_url = f"http://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={season}&seasontype=2&week={week_num}"
+        sb_resp = requests.get(sb_url, timeout=8)
+        if sb_resp.status_code == 200:
+            for ev in sb_resp.json().get("events", []):
+                ev_id = str(ev.get("id", ""))
+                st = ev.get("status", {})
+                st_type = st.get("type", {})
+                state_str = st_type.get("state", "pre")
+                name_str = st_type.get("name", "STATUS_SCHEDULED")
+                if state_str == "post" or name_str == "STATUS_FINAL":
+                    event_clocks[ev_id] = ("FINAL", 0.0)
+                elif state_str == "in" or "IN_PROGRESS" in name_str or "HALFTIME" in name_str or "END_PERIOD" in name_str:
+                    period = int(st.get("period", 1))
+                    clock = float(st.get("clock", 0.0))
+                    if period >= 5:
+                        pct_rem = 0.05
+                    else:
+                        rem_secs = max(0.0, (4 - period) * 900.0 + clock)
+                        pct_rem = round(min(1.0, rem_secs / 3600.0), 4)
+                    event_clocks[ev_id] = ("IN_PROGRESS", pct_rem)
+                else:
+                    event_clocks[ev_id] = ("PRE", 1.0)
+    except Exception:
+        pass
+
+    pro_team_clocks = {}
+    try:
+        pt_url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}?view=proTeamSchedules_wl"
+        pt_resp = requests.get(pt_url, timeout=8)
+        if pt_resp.status_code == 200:
+            now_ms = time.time() * 1000
+            for pt in pt_resp.json().get("settings", {}).get("proTeams", []):
+                ptid = pt.get("id")
+                sched = pt.get("proGamesByScoringPeriod", {}).get(str(week_num), [])
+                if not sched:
+                    # Bye week team
+                    pro_team_clocks[ptid] = ("FINAL", 0.0)
+                    continue
+                g = sched[0]
+                gid = str(g.get("id", ""))
+                if g.get("statsOfficial") is True:
+                    pro_team_clocks[ptid] = ("FINAL", 0.0)
+                elif gid in event_clocks:
+                    pro_team_clocks[ptid] = event_clocks[gid]
+                else:
+                    g_date = g.get("date", 0)
+                    if g_date > 0 and now_ms > g_date + (4 * 3600 * 1000):
+                        pro_team_clocks[ptid] = ("FINAL", 0.0)
+                    elif g_date > 0 and now_ms >= g_date:
+                        elapsed_ratio = min(0.95, max(0.05, (now_ms - g_date) / (3.25 * 3600 * 1000)))
+                        pro_team_clocks[ptid] = ("IN_PROGRESS", round(1.0 - elapsed_ratio, 4))
+                    else:
+                        pro_team_clocks[ptid] = ("PRE", 1.0)
+    except Exception:
+        pass
+
+    return pro_team_clocks
+
+
+def parse_live_matchup_state(raw_data, week_num: int, season: int = int(CONFIG_YEAR)) -> dict:
     """Parses live boxscores and calculates current win probabilities for all active matchups."""
     teams_dict = parse_league_members_and_teams(raw_data)
+    pro_team_clocks = fetch_live_nfl_game_clocks(season, week_num)
     state = {}
 
     for m in raw_data.get('schedule', []):
@@ -93,9 +160,6 @@ def parse_live_matchup_state(raw_data, week_num: int) -> dict:
         a_info = teams_dict.get(a_tid, {'name': f'Team {a_tid}', 'owner': 'Manager'})
         h_info = teams_dict.get(h_tid, {'name': f'Team {h_tid}', 'owner': 'Manager'})
 
-        a_score = float(away_data.get('totalPoints', 0.0))
-        h_score = float(home_data.get('totalPoints', 0.0))
-
         # Parse starters & live projections
         def extract_starters(roster_data):
             starters = []
@@ -107,30 +171,25 @@ def parse_live_matchup_state(raw_data, week_num: int) -> dict:
                 p = e.get('playerPoolEntry', {}).get('player', {})
                 score = float(e.get('playerPoolEntry', {}).get('appliedStatTotal', 0.0))
                 pos_id = p.get('defaultPositionId', 3)
+                pro_tid = p.get('proTeamId')
                 
-                # Check status
-                status = 'PRE'
-                pct_rem = 1.0
-                
-                player_status = e.get('playerPoolEntry', {}).get('status')
-                
+                # Determine real-time NFL game status & clock remaining
+                if pro_tid in pro_team_clocks:
+                    status, pct_rem = pro_team_clocks[pro_tid]
+                else:
+                    status = 'PRE'
+                    pct_rem = 1.0
+
                 base_proj = 12.0
                 for stat in p.get('stats', []):
                     if stat.get('statSourceId') == 1 and stat.get('scoringPeriodId') == week_num:
                         base_proj = float(stat.get('appliedTotal', 12.0))
-                    # Attempt to extract exact game clock progress from ESPN's live stat block
-                    if stat.get('statSourceId') == 0: # Live stats
-                        if 'percentComplete' in stat:
-                            pct_rem = 1.0 - (float(stat.get('percentComplete', 0)) / 100.0)
-                            if pct_rem < 1.0:
-                                status = 'IN_PROGRESS'
-
-                if player_status == 'FINAL':
-                    status = 'FINAL'
-                    pct_rem = 0.0
-                elif status == 'PRE' and score > 0.0:
-                    status = 'IN_PROGRESS'
-                    pct_rem = 0.5  # Fallback if ESPN API is lagging on percentComplete
+                    if stat.get('statSourceId') == 0 and 'percentComplete' in stat and pro_tid not in pro_team_clocks:
+                        pct_rem = 1.0 - (float(stat.get('percentComplete', 0)) / 100.0)
+                        if pct_rem <= 0.0:
+                            status = 'FINAL'
+                        elif pct_rem < 1.0:
+                            status = 'IN_PROGRESS'
 
                 starters.append({
                     'id': p.get('id', 0),
@@ -138,8 +197,8 @@ def parse_live_matchup_state(raw_data, week_num: int) -> dict:
                     'pos_id': pos_id,
                     'pos': POS_ABBR.get(pos_id, 'FLEX'),
                     'injury_status': p.get('injuryStatus', 'ACTIVE'),
-                    'baseline_proj': base_proj,
-                    'current_score': score,
+                    'baseline_proj': round(base_proj, 2),
+                    'current_score': round(score, 2),
                     'game_status': status,
                     'pct_remaining': pct_rem
                 })
@@ -148,9 +207,22 @@ def parse_live_matchup_state(raw_data, week_num: int) -> dict:
         a_starters = extract_starters(away_data)
         h_starters = extract_starters(home_data)
 
+        # During live action ESPN keeps totalPoints=0.0 and populates totalPointsLive / starter appliedStatTotal
+        a_score = round(max(
+            float(away_data.get('totalPoints', 0.0) or 0.0),
+            float(away_data.get('totalPointsLive', 0.0) or 0.0),
+            sum(s['current_score'] for s in a_starters)
+        ), 2)
+        h_score = round(max(
+            float(home_data.get('totalPoints', 0.0) or 0.0),
+            float(home_data.get('totalPointsLive', 0.0) or 0.0),
+            sum(s['current_score'] for s in h_starters)
+        ), 2)
+
         a_prob, h_prob, a_exp, h_exp = calculate_matchup_win_probability(a_starters, h_starters, a_score, h_score)
 
         state[mid] = {
+            'schema_version': 2,
             'match_id': mid,
             'away_id': a_tid,
             'home_id': h_tid,
@@ -203,18 +275,37 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
             prev_state = {}
 
     raw_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), week_num, ESPN_S2, ESPN_SWID)
-    curr_state = parse_live_matchup_state(raw_data, week_num)
+    curr_state = parse_live_matchup_state(raw_data, week_num, season=season)
 
-    if prev_state:
-        # Preserve alert cooldowns & deduplication sets from previous state
+    # Check if prev_state is from the pre-fix schema (where away_score/home_score were 0.0)
+    prev_is_valid_v2 = bool(prev_state) and all(
+        m.get('schema_version') == 2 for m in prev_state.values() if isinstance(m, dict)
+    )
+
+    if prev_state and prev_is_valid_v2:
+        # Preserve alert cooldowns, anchor probabilities, & deduplication sets from previous state
+        baseline_for_shockwaves = {}
         for mid, c_data in curr_state.items():
             if mid in prev_state:
-                c_data['last_alert_time'] = prev_state[mid].get('last_alert_time', 0)
-                c_data['nuclear_alerted'] = prev_state[mid].get('nuclear_alerted', [])
-                c_data['injury_alerted'] = prev_state[mid].get('injury_alerted', [])
+                p_m = prev_state[mid]
+                c_data['last_alert_time'] = p_m.get('last_alert_time', 0)
+                c_data['nuclear_alerted'] = p_m.get('nuclear_alerted', [])
+                c_data['injury_alerted'] = p_m.get('injury_alerted', [])
+                c_data['anchor_away_prob'] = p_m.get('anchor_away_prob', p_m.get('away_prob', c_data['away_prob']))
+                c_data['anchor_starters'] = p_m.get('anchor_starters', p_m.get('away_starters', []) + p_m.get('home_starters', []))
+
+                # Compare against whichever shows the larger swing: the previous tick OR the rolling anchor
+                tick_swing = abs(c_data['away_prob'] - p_m.get('away_prob', c_data['away_prob']))
+                anchor_swing = abs(c_data['away_prob'] - c_data['anchor_away_prob'])
+                ref_prob = p_m.get('away_prob', c_data['away_prob']) if tick_swing >= anchor_swing else c_data['anchor_away_prob']
+                baseline_for_shockwaves[mid] = {
+                    **p_m,
+                    'away_prob': ref_prob,
+                    'home_prob': round(1.0 - ref_prob, 4),
+                }
 
         # 1. Check for Win Probability Shockwaves (>= 25% swings)
-        shockwaves = detect_probability_shockwaves(prev_state, curr_state, threshold=shockwave_threshold)
+        shockwaves = detect_probability_shockwaves(baseline_for_shockwaves, curr_state, threshold=shockwave_threshold)
         for alert in shockwaves:
             mid = alert['match_id']
             last_alert_time = curr_state.get(mid, {}).get('last_alert_time', 0)
@@ -222,6 +313,10 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 continue
 
             catalyst = _find_swing_catalyst_player(prev_state.get(mid, {}), curr_state[mid])
+            if not catalyst and mid in prev_state:
+                anchor_mock = {'away_starters': prev_state[mid].get('anchor_starters', []), 'home_starters': []}
+                catalyst = _find_swing_catalyst_player(anchor_mock, curr_state[mid])
+
             print(f"🚨 SHOCKWAVE DETECTED: {alert['favored']} (+{alert['swing_pct']}% swing)!")
             fields = [
                 {
@@ -245,6 +340,8 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 fields=fields
             )
             curr_state[mid]['last_alert_time'] = time.time()
+            curr_state[mid]['anchor_away_prob'] = curr_state[mid]['away_prob']
+            curr_state[mid]['anchor_starters'] = curr_state[mid]['away_starters'] + curr_state[mid]['home_starters']
 
         # 2. Check for Lead Changes, Nuclear Player Explosions (>= 28 pts), and In-Game Injuries
         for mid, c_data in curr_state.items():
@@ -344,6 +441,16 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
 
             c_data['nuclear_alerted'] = list(nuclear_alerted)
             c_data['injury_alerted'] = list(injury_alerted)
+    else:
+        for mid, c_data in curr_state.items():
+            c_data['anchor_away_prob'] = c_data['away_prob']
+            c_data['anchor_starters'] = c_data['away_starters'] + c_data['home_starters']
+            # Pre-seed nuclear_alerted for any player already >= 28.0 pts before daemon started
+            c_data['nuclear_alerted'] = [
+                s['name'] for s in (c_data['away_starters'] + c_data['home_starters'])
+                if float(s.get('current_score', 0.0)) >= 28.0
+            ]
+            c_data['injury_alerted'] = []
 
     # Save current state
     with open(state_file, 'w') as f:
@@ -358,7 +465,7 @@ def post_mnf_miracle_board(season: int, week_num: int, print_only: bool = False)
     - Shows exact points deficit, remaining MNF players, and Gaussian MNF Comeback / Win Probability
     """
     raw_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), week_num, ESPN_S2, ESPN_SWID)
-    curr_state = parse_live_matchup_state(raw_data, week_num)
+    curr_state = parse_live_matchup_state(raw_data, week_num, season=season)
 
     live_battles = []
     nailbiters_finished = []
