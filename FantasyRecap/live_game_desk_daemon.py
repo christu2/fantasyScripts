@@ -333,12 +333,13 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
             if mid in prev_state:
                 p_m = prev_state[mid]
                 c_data['last_alert_time'] = p_m.get('last_alert_time', 0)
-                c_data['last_lead_alert_time'] = p_m.get('last_lead_alert_time', p_m.get('last_alert_time', 0))
+                c_data['last_lead_alert_time'] = p_m.get('last_lead_alert_time', 0)
                 c_data['nuclear_alerted'] = p_m.get('nuclear_alerted', [])
                 c_data['injury_alerted'] = p_m.get('injury_alerted', [])
 
-                # Maintain a rolling 5-tick (~5-minute) history buffer to catch 2-to-5 minute drives
-                # without false-triggering on slow 3-hour clock decay!
+                # Maintain a rolling 15-tick (~15-minute full NFL drive) history buffer
+                # so multi-play drives (like Emanuel Wilson's 4Q comeback) are caught cleanly
+                # without false-triggering on 3-hour scoreless clock decay!
                 rolling_hist = list(p_m.get('rolling_history', []))
                 rolling_hist.append({
                     'epoch': p_m.get('updated_at', time.time()),
@@ -348,11 +349,11 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                     'away_starters': p_m.get('away_starters', []),
                     'home_starters': p_m.get('home_starters', []),
                 })
-                if len(rolling_hist) > 5:
-                    rolling_hist = rolling_hist[-5:]
+                if len(rolling_hist) > 15:
+                    rolling_hist = rolling_hist[-15:]
                 c_data['rolling_history'] = rolling_hist
 
-                # Find the snapshot in the rolling 5-minute window with the largest probability delta
+                # Find the snapshot in the rolling 15-minute drive window with the largest probability delta
                 best_snap = rolling_hist[-1]
                 max_prob_delta = 0.0
                 for snap in rolling_hist:
@@ -373,7 +374,7 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
         # Track matchups that fired a Shockwave on this tick so we don't double-post a separate Lead Change card
         shockwave_fired_mids = set()
 
-        # 1. Check for Win Probability Shockwaves (>= 25% swings within the 5-minute rolling window)
+        # 1. Check for Win Probability Shockwaves (>= 25% swings within the 15-minute drive window)
         shockwaves = detect_probability_shockwaves(baseline_for_shockwaves, curr_state, threshold=shockwave_threshold)
         for alert in shockwaves:
             mid = alert['match_id']
@@ -389,18 +390,20 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 })
                 continue
 
-            # Require an actual live scoring burst (>= 3.5 pts by a player OR >= 5.0 pts team jump in the 5-min window)
-            # so pure clock-decay drift never triggers a fake Shockwave
+            # Prefer the single-tick catalyst if a big play just happened on this exact tick (e.g. Emanuel Wilson TD);
+            # otherwise fall back to the 15-minute drive snapshot catalyst
             target_side = alert.get('direction')
-            catalyst, best_delta = _find_swing_catalyst_player(snap_m, c_m, min_delta=3.5, target_side=target_side)
+            catalyst, best_delta = _find_swing_catalyst_player(p_m, c_m, min_delta=2.5, target_side=target_side)
             if not catalyst:
-                catalyst, best_delta = _find_swing_catalyst_player(snap_m, c_m, min_delta=3.5)
+                catalyst, best_delta = _find_swing_catalyst_player(snap_m, c_m, min_delta=2.5, target_side=target_side)
+            if not catalyst:
+                catalyst, best_delta = _find_swing_catalyst_player(snap_m, c_m, min_delta=2.5)
 
             team_score_jump = max(
                 round(c_m['away_score'] - float(snap_m.get('away_score', c_m['away_score'])), 2),
                 round(c_m['home_score'] - float(snap_m.get('home_score', c_m['home_score'])), 2)
             )
-            if best_delta < 3.5 and team_score_jump < 5.0:
+            if best_delta < 2.5 and team_score_jump < 4.0:
                 log_live_desk_event(season, week_num, "SHOCKWAVE", "SUPPRESSED_CLOCK_DRIFT", mid, {
                     "matchup": f"{alert['away_team']} @ {alert['home_team']}",
                     "swing_pct": alert['swing_pct'],
@@ -408,7 +411,7 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 })
                 continue
 
-            # Check if this play also flipped the lead so we can combine both alerts into one rich card
+            # Check if this play also flipped the lead on this exact tick
             p_leader = p_m.get('leader')
             c_leader = c_m.get('leader')
             lead_flipped = bool(p_leader and c_leader and p_leader != 'TIED' and c_leader != 'TIED' and p_leader != c_leader)
@@ -442,8 +445,9 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
             c_m['last_alert_time'] = now_ts
             if lead_flipped:
                 c_m['last_lead_alert_time'] = now_ts
-            shockwave_fired_mids.add(mid)
-            # Reset rolling history after a shockwave fires so the same drive isn't re-counted
+                shockwave_fired_mids.add(mid)
+            # Reset rolling history after a shockwave fires so the same drive isn't re-counted for a second shockwave,
+            # while still allowing a subsequent Lead Change on a later tick (like Emanuel Wilson's TD -> Lead Change!)
             c_m['rolling_history'] = [{
                 'epoch': now_ts,
                 'away_prob': c_m['away_prob'],
@@ -480,23 +484,22 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 margin = round(abs(c_data['away_score'] - c_data['home_score']), 2)
                 last_lead_ts = c_data.get('last_lead_alert_time', 0)
                 leader_side = 'AWAY' if c_leader == c_data['away_team'] else 'HOME'
-                catalyst, best_delta = _find_swing_catalyst_player(p_data, c_data, min_delta=1.5, target_side=leader_side)
-                if not catalyst:
-                    catalyst, best_delta = _find_swing_catalyst_player(p_data, c_data, min_delta=1.5)
 
-                # Suppress noisy 0.1-pt seesaws or repeat flips inside the 20-minute (1200s) cooldown
-                if time.time() - last_lead_ts < 1200:
+                # Find the player on the overtaking team who pushed them into the lead on this tick
+                # (or across the current drive if it was a small yardage push after a big TD)
+                catalyst, best_delta = _find_swing_catalyst_player(p_data, c_data, min_delta=0.4, target_side=leader_side)
+                if not catalyst and mid in window_baseline_map:
+                    catalyst, best_delta = _find_swing_catalyst_player(window_baseline_map[mid], c_data, min_delta=1.5, target_side=leader_side)
+                if not catalyst:
+                    catalyst, best_delta = _find_swing_catalyst_player(p_data, c_data, min_delta=0.5)
+
+                # Only suppress if the exact same matchup already had a Lead Change alert in the last 5 minutes (300s)
+                # AND it's a tiny yardage seesaw (< 3.0 pts), so a real comeback overtake ALWAYS fires!
+                if time.time() - last_lead_ts < 300 and best_delta < 3.0:
                     log_live_desk_event(season, week_num, "LEAD_CHANGE", "SUPPRESSED_COOLDOWN", mid, {
                         "matchup": f"{c_data['away_team']} vs {c_data['home_team']}",
                         "new_leader": c_leader,
                         "margin": margin
-                    })
-                elif margin < 1.0 and best_delta < 2.5:
-                    log_live_desk_event(season, week_num, "LEAD_CHANGE", "SUPPRESSED_MICRO_SEESAW", mid, {
-                        "matchup": f"{c_data['away_team']} vs {c_data['home_team']}",
-                        "new_leader": c_leader,
-                        "margin": margin,
-                        "best_delta": best_delta
                     })
                 else:
                     print(f"🔄 LEAD CHANGE: {c_leader} has taken the lead over {p_leader}!")
