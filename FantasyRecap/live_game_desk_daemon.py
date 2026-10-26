@@ -711,8 +711,10 @@ def post_mnf_miracle_board(season: int, week_num: int, print_only: bool = False)
             leader_prob, trailer_prob = m['home_prob'] * 100, m['away_prob'] * 100
             leader_rem, trailer_rem = h_rem, a_rem
 
-        # A matchup is only a live MNF sweat if the trailing team still has at least one player left (or it's tied)
-        is_live_sweat = bool(trailer_rem) or (margin == 0 and bool(leader_rem))
+        # A matchup is a live MNF sweat if the trailing team still has players left,
+        # OR if the leading team has players left and the lead margin is < 5.0 pts (stat correction / negative points risk).
+        # If the trailing team has 0 players left and trails by >= 5.0 pts, it is officially clinched.
+        is_live_sweat = bool(trailer_rem) or (bool(leader_rem) and margin < 5.0)
 
         if is_live_sweat:
             a_rem_str = ", ".join(a_rem) if a_rem else "None (All Final)"
