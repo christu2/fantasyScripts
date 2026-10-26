@@ -14,6 +14,10 @@ SEASON=${1:-2026}
 WEEK=${2:-7}
 INTERVAL=${3:-60}
 
+mkdir -p FantasyRecap/live_state
+LOG_FILE="FantasyRecap/live_state/daemon_${SEASON}_week_${WEEK}.log"
+
 echo "⚡ Launching BFL Live Game Desk Daemon (Season $SEASON, Week $WEEK, Polling every ${INTERVAL}s)..."
-python3 FantasyRecap/live_game_desk_daemon.py --season "$SEASON" --week "$WEEK" --interval "$INTERVAL"
+echo "📝 Logging session output to $LOG_FILE"
+python3 -u FantasyRecap/live_game_desk_daemon.py --season "$SEASON" --week "$WEEK" --interval "$INTERVAL" 2>&1 | tee -a "$LOG_FILE"
 

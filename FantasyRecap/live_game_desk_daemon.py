@@ -45,6 +45,33 @@ STATE_DIR = Path(__file__).resolve().parent / "live_state"
 STATE_DIR.mkdir(exist_ok=True)
 POS_ABBR = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
 
+# Position-specific Half-PPR Nuclear Eruption thresholds
+NUCLEAR_THRESHOLDS = {
+    1: 30.0,   # QB
+    2: 25.0,   # RB
+    3: 25.0,   # WR
+    4: 22.0,   # TE
+    5: 17.0,   # K
+    16: 17.0   # D/ST
+}
+
+def log_live_desk_event(season: int, week_num: int, event_type: str, status: str, match_id: str, details: dict):
+    """Appends structured telemetry for every fired or suppressed alert to an audit JSONL file."""
+    log_file = STATE_DIR / f"alerts_log_{season}_week_{week_num}.jsonl"
+    entry = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "epoch": round(time.time(), 2),
+        "event_type": event_type,   # SHOCKWAVE, LEAD_CHANGE, NUCLEAR, INJURY, MNF_BOARD
+        "status": status,           # FIRED or SUPPRESSED
+        "match_id": str(match_id),
+        **details
+    }
+    try:
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        print(f"⚠️ Failed to write audit log: {e}")
+
 def post_live_desk_embed(title: str, description: str, color: int, fields: list, footer: str = "BFL Live Game Desk • Beasts Football League"):
     """Sends a rich live alert embed to Discord #live-game-desk."""
     if not DISCORD_WEBHOOK_LIVE_DESK:
@@ -244,24 +271,39 @@ def parse_live_matchup_state(raw_data, week_num: int, season: int = int(CONFIG_Y
 
     return state
 
-def _find_swing_catalyst_player(prev_match: dict, curr_match: dict) -> str:
-    """Identifies the exact player whose scoring jump catalyzed a probability shockwave or lead change."""
+def _find_swing_catalyst_player(prev_match: dict, curr_match: dict, min_delta: float = 2.5, target_side: str = None) -> tuple:
+    """
+    Identifies the exact active player whose scoring jump catalyzed a probability shockwave or lead change.
+    Returns (catalyst_str, best_delta). Ignores players whose games were already FINAL in prev_match.
+    """
     prev_scores = {}
+    prev_status = {}
     for s in prev_match.get('away_starters', []) + prev_match.get('home_starters', []):
         prev_scores[s['name']] = float(s.get('current_score', 0.0))
+        prev_status[s['name']] = s.get('game_status', 'PRE')
 
     best_delta = 0.0
     catalyst_str = ""
-    for side_key, owner_key in [('away_starters', 'away_owner'), ('home_starters', 'home_owner')]:
+    sides = [('away_starters', 'away_owner'), ('home_starters', 'home_owner')]
+    if target_side == 'AWAY':
+        sides = [('away_starters', 'away_owner')]
+    elif target_side == 'HOME':
+        sides = [('home_starters', 'home_owner')]
+
+    for side_key, owner_key in sides:
         owner = curr_match.get(owner_key, 'Manager')
         for s in curr_match.get(side_key, []):
+            pname = s['name']
+            # Do not attribute live swings to players whose games were already FINAL in the baseline snapshot
+            if prev_status.get(pname) == 'FINAL' and s.get('game_status') == 'FINAL':
+                continue
             curr_pts = float(s.get('current_score', 0.0))
-            prev_pts = prev_scores.get(s['name'], curr_pts)
+            prev_pts = prev_scores.get(pname, curr_pts)
             delta = round(curr_pts - prev_pts, 2)
-            if delta > best_delta and delta >= 2.5:
+            if delta > best_delta and delta >= min_delta:
                 best_delta = delta
-                catalyst_str = f"🔥 **{s['name']}** ({s.get('pos', 'FLEX')} • {owner}) erupted for **`+{delta:.1f}` pts** (Now at `{curr_pts:.1f}` pts)!"
-    return catalyst_str
+                catalyst_str = f"🔥 **{pname}** ({s.get('pos', 'FLEX')} • {owner}) erupted for **`+{delta:.1f}` pts** (Now at `{curr_pts:.1f}` pts)!"
+    return catalyst_str, best_delta
 
 def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 0.25):
     """Executes a single monitoring cycle, checks for swings, nuclear games, injuries, and posts alerts."""
@@ -279,49 +321,106 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
 
     # Check if prev_state is from the pre-fix schema (where away_score/home_score were 0.0)
     prev_is_valid_v2 = bool(prev_state) and all(
-        m.get('schema_version') == 2 for m in prev_state.values() if isinstance(m, dict)
+        m.get('schema_version', 0) >= 2 for m in prev_state.values() if isinstance(m, dict)
     )
 
     if prev_state and prev_is_valid_v2:
-        # Preserve alert cooldowns, anchor probabilities, & deduplication sets from previous state
+        # Preserve alert cooldowns, rolling 5-minute history window, & deduplication sets from previous state
         baseline_for_shockwaves = {}
+        window_baseline_map = {}
+
         for mid, c_data in curr_state.items():
             if mid in prev_state:
                 p_m = prev_state[mid]
                 c_data['last_alert_time'] = p_m.get('last_alert_time', 0)
+                c_data['last_lead_alert_time'] = p_m.get('last_lead_alert_time', p_m.get('last_alert_time', 0))
                 c_data['nuclear_alerted'] = p_m.get('nuclear_alerted', [])
                 c_data['injury_alerted'] = p_m.get('injury_alerted', [])
-                c_data['anchor_away_prob'] = p_m.get('anchor_away_prob', p_m.get('away_prob', c_data['away_prob']))
-                c_data['anchor_starters'] = p_m.get('anchor_starters', p_m.get('away_starters', []) + p_m.get('home_starters', []))
 
-                # Compare against whichever shows the larger swing: the previous tick OR the rolling anchor
-                tick_swing = abs(c_data['away_prob'] - p_m.get('away_prob', c_data['away_prob']))
-                anchor_swing = abs(c_data['away_prob'] - c_data['anchor_away_prob'])
-                ref_prob = p_m.get('away_prob', c_data['away_prob']) if tick_swing >= anchor_swing else c_data['anchor_away_prob']
+                # Maintain a rolling 5-tick (~5-minute) history buffer to catch 2-to-5 minute drives
+                # without false-triggering on slow 3-hour clock decay!
+                rolling_hist = list(p_m.get('rolling_history', []))
+                rolling_hist.append({
+                    'epoch': p_m.get('updated_at', time.time()),
+                    'away_prob': p_m.get('away_prob', c_data['away_prob']),
+                    'away_score': p_m.get('away_score', c_data['away_score']),
+                    'home_score': p_m.get('home_score', c_data['home_score']),
+                    'away_starters': p_m.get('away_starters', []),
+                    'home_starters': p_m.get('home_starters', []),
+                })
+                if len(rolling_hist) > 5:
+                    rolling_hist = rolling_hist[-5:]
+                c_data['rolling_history'] = rolling_hist
+
+                # Find the snapshot in the rolling 5-minute window with the largest probability delta
+                best_snap = rolling_hist[-1]
+                max_prob_delta = 0.0
+                for snap in rolling_hist:
+                    d = abs(c_data['away_prob'] - snap.get('away_prob', c_data['away_prob']))
+                    if d >= max_prob_delta:
+                        max_prob_delta = d
+                        best_snap = snap
+
+                window_baseline_map[mid] = best_snap
                 baseline_for_shockwaves[mid] = {
                     **p_m,
-                    'away_prob': ref_prob,
-                    'home_prob': round(1.0 - ref_prob, 4),
+                    'away_prob': best_snap['away_prob'],
+                    'home_prob': round(1.0 - best_snap['away_prob'], 4),
+                    'away_starters': best_snap['away_starters'],
+                    'home_starters': best_snap['home_starters'],
                 }
 
-        # 1. Check for Win Probability Shockwaves (>= 25% swings)
+        # Track matchups that fired a Shockwave on this tick so we don't double-post a separate Lead Change card
+        shockwave_fired_mids = set()
+
+        # 1. Check for Win Probability Shockwaves (>= 25% swings within the 5-minute rolling window)
         shockwaves = detect_probability_shockwaves(baseline_for_shockwaves, curr_state, threshold=shockwave_threshold)
         for alert in shockwaves:
             mid = alert['match_id']
-            last_alert_time = curr_state.get(mid, {}).get('last_alert_time', 0)
+            c_m = curr_state[mid]
+            p_m = prev_state.get(mid, {})
+            snap_m = window_baseline_map.get(mid, p_m)
+
+            last_alert_time = c_m.get('last_alert_time', 0)
             if time.time() - last_alert_time < 900:
+                log_live_desk_event(season, week_num, "SHOCKWAVE", "SUPPRESSED_COOLDOWN", mid, {
+                    "matchup": f"{alert['away_team']} @ {alert['home_team']}",
+                    "swing_pct": alert['swing_pct']
+                })
                 continue
 
-            catalyst = _find_swing_catalyst_player(prev_state.get(mid, {}), curr_state[mid])
-            if not catalyst and mid in prev_state:
-                anchor_mock = {'away_starters': prev_state[mid].get('anchor_starters', []), 'home_starters': []}
-                catalyst = _find_swing_catalyst_player(anchor_mock, curr_state[mid])
+            # Require an actual live scoring burst (>= 3.5 pts by a player OR >= 5.0 pts team jump in the 5-min window)
+            # so pure clock-decay drift never triggers a fake Shockwave
+            target_side = alert.get('direction')
+            catalyst, best_delta = _find_swing_catalyst_player(snap_m, c_m, min_delta=3.5, target_side=target_side)
+            if not catalyst:
+                catalyst, best_delta = _find_swing_catalyst_player(snap_m, c_m, min_delta=3.5)
+
+            team_score_jump = max(
+                round(c_m['away_score'] - float(snap_m.get('away_score', c_m['away_score'])), 2),
+                round(c_m['home_score'] - float(snap_m.get('home_score', c_m['home_score'])), 2)
+            )
+            if best_delta < 3.5 and team_score_jump < 5.0:
+                log_live_desk_event(season, week_num, "SHOCKWAVE", "SUPPRESSED_CLOCK_DRIFT", mid, {
+                    "matchup": f"{alert['away_team']} @ {alert['home_team']}",
+                    "swing_pct": alert['swing_pct'],
+                    "team_score_jump": team_score_jump
+                })
+                continue
+
+            # Check if this play also flipped the lead so we can combine both alerts into one rich card
+            p_leader = p_m.get('leader')
+            c_leader = c_m.get('leader')
+            lead_flipped = bool(p_leader and c_leader and p_leader != 'TIED' and c_leader != 'TIED' and p_leader != c_leader)
+
+            title_prefix = "🚨 PROBABILITY SHOCKWAVE & LEAD CHANGE" if lead_flipped else "🚨 PROBABILITY SHOCKWAVE"
+            desc_extra = f"\n🔄 **LEAD CHANGE:** **{c_leader}** has also overtaken **{p_leader}** on the scoreboard!" if lead_flipped else ""
 
             print(f"🚨 SHOCKWAVE DETECTED: {alert['favored']} (+{alert['swing_pct']}% swing)!")
             fields = [
                 {
                     "name": "📊 Live Scoreboard",
-                    "value": f"• **{alert['away_team']}** ({curr_state[mid]['away_owner']}): `{alert['away_score']:.2f}` pts ({alert['curr_away_prob']*100:.1f}% Win Prob)\n• **{alert['home_team']}** ({curr_state[mid]['home_owner']}): `{alert['home_score']:.2f}` pts ({alert['curr_home_prob']*100:.1f}% Win Prob)",
+                    "value": f"• **{alert['away_team']}** ({c_m['away_owner']}): `{alert['away_score']:.2f}` pts ({alert['curr_away_prob']*100:.1f}% Win Prob)\n• **{alert['home_team']}** ({c_m['home_owner']}): `{alert['home_score']:.2f}` pts ({alert['curr_home_prob']*100:.1f}% Win Prob)",
                     "inline": False
                 },
                 {
@@ -334,42 +433,100 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 fields.append({"name": "⚡ Play-by-Play Catalyst", "value": catalyst, "inline": False})
 
             post_live_desk_embed(
-                title=f"🚨 PROBABILITY SHOCKWAVE: {alert['away_team']} @ {alert['home_team']}",
-                description=f"⚡ **Massive {alert['swing_pct']}% Win Probability Swing!**\nMomentum has violently shifted in this matchup.",
+                title=f"{title_prefix}: {alert['away_team']} @ {alert['home_team']}",
+                description=f"⚡ **Massive {alert['swing_pct']}% Win Probability Swing!**\nMomentum has violently shifted in this matchup.{desc_extra}",
                 color=0xe74c3c,
                 fields=fields
             )
-            curr_state[mid]['last_alert_time'] = time.time()
-            curr_state[mid]['anchor_away_prob'] = curr_state[mid]['away_prob']
-            curr_state[mid]['anchor_starters'] = curr_state[mid]['away_starters'] + curr_state[mid]['home_starters']
+            now_ts = time.time()
+            c_m['last_alert_time'] = now_ts
+            if lead_flipped:
+                c_m['last_lead_alert_time'] = now_ts
+            shockwave_fired_mids.add(mid)
+            # Reset rolling history after a shockwave fires so the same drive isn't re-counted
+            c_m['rolling_history'] = [{
+                'epoch': now_ts,
+                'away_prob': c_m['away_prob'],
+                'away_score': c_m['away_score'],
+                'home_score': c_m['home_score'],
+                'away_starters': c_m['away_starters'],
+                'home_starters': c_m['home_starters'],
+            }]
+            log_live_desk_event(season, week_num, "SHOCKWAVE", "FIRED", mid, {
+                "matchup": f"{alert['away_team']} @ {alert['home_team']}",
+                "swing_pct": alert['swing_pct'],
+                "away_score": c_m['away_score'],
+                "home_score": c_m['home_score'],
+                "away_prob": c_m['away_prob'],
+                "home_prob": c_m['home_prob'],
+                "lead_flipped": lead_flipped,
+                "catalyst": catalyst
+            })
 
-        # 2. Check for Lead Changes, Nuclear Player Explosions (>= 28 pts), and In-Game Injuries
+        # 2. Check for Lead Changes, Position-Specific Nuclear Eruptions, and In-Game Injuries
         for mid, c_data in curr_state.items():
             if mid not in prev_state:
                 continue
             p_data = prev_state[mid]
             p_leader = p_data.get('leader')
             c_leader = c_data.get('leader')
-            if p_leader and c_leader and p_leader != 'TIED' and c_leader != 'TIED' and p_leader != c_leader:
-                catalyst = _find_swing_catalyst_player(p_data, c_data)
-                print(f"🔄 LEAD CHANGE: {c_leader} has taken the lead over {p_leader}!")
-                fields = [
-                    {
-                        "name": "📊 Current Scoreboard",
-                        "value": f"• **{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` pts ({c_data['away_prob']*100:.1f}% Win Prob)\n• **{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` pts ({c_data['home_prob']*100:.1f}% Win Prob)",
-                        "inline": False
-                    }
-                ]
-                if catalyst:
-                    fields.append({"name": "⚡ Key Play", "value": catalyst, "inline": False})
-                post_live_desk_embed(
-                    title=f"🔄 LEAD CHANGE: {c_data['away_team']} vs {c_data['home_team']}",
-                    description=f"🔥 **{c_leader}** has officially overtaken the lead from **{p_leader}**!",
-                    color=0xf39c12,
-                    fields=fields
-                )
 
-            # Check Nuclear Player Explosions (>= 28.0 pts) & In-Game Injury Sirens
+            if (
+                mid not in shockwave_fired_mids
+                and p_leader and c_leader
+                and p_leader != 'TIED' and c_leader != 'TIED'
+                and p_leader != c_leader
+            ):
+                margin = round(abs(c_data['away_score'] - c_data['home_score']), 2)
+                last_lead_ts = c_data.get('last_lead_alert_time', 0)
+                leader_side = 'AWAY' if c_leader == c_data['away_team'] else 'HOME'
+                catalyst, best_delta = _find_swing_catalyst_player(p_data, c_data, min_delta=1.5, target_side=leader_side)
+                if not catalyst:
+                    catalyst, best_delta = _find_swing_catalyst_player(p_data, c_data, min_delta=1.5)
+
+                # Suppress noisy 0.1-pt seesaws or repeat flips inside the 20-minute (1200s) cooldown
+                if time.time() - last_lead_ts < 1200:
+                    log_live_desk_event(season, week_num, "LEAD_CHANGE", "SUPPRESSED_COOLDOWN", mid, {
+                        "matchup": f"{c_data['away_team']} vs {c_data['home_team']}",
+                        "new_leader": c_leader,
+                        "margin": margin
+                    })
+                elif margin < 1.0 and best_delta < 2.5:
+                    log_live_desk_event(season, week_num, "LEAD_CHANGE", "SUPPRESSED_MICRO_SEESAW", mid, {
+                        "matchup": f"{c_data['away_team']} vs {c_data['home_team']}",
+                        "new_leader": c_leader,
+                        "margin": margin,
+                        "best_delta": best_delta
+                    })
+                else:
+                    print(f"🔄 LEAD CHANGE: {c_leader} has taken the lead over {p_leader}!")
+                    fields = [
+                        {
+                            "name": "📊 Current Scoreboard",
+                            "value": f"• **{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` pts ({c_data['away_prob']*100:.1f}% Win Prob)\n• **{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` pts ({c_data['home_prob']*100:.1f}% Win Prob)",
+                            "inline": False
+                        }
+                    ]
+                    if catalyst:
+                        fields.append({"name": "⚡ Key Play", "value": catalyst, "inline": False})
+                    post_live_desk_embed(
+                        title=f"🔄 LEAD CHANGE: {c_data['away_team']} vs {c_data['home_team']}",
+                        description=f"🔥 **{c_leader}** has officially overtaken the lead from **{p_leader}** (Leads by `{margin:.2f}` pts)!",
+                        color=0xf39c12,
+                        fields=fields
+                    )
+                    c_data['last_lead_alert_time'] = time.time()
+                    log_live_desk_event(season, week_num, "LEAD_CHANGE", "FIRED", mid, {
+                        "matchup": f"{c_data['away_team']} vs {c_data['home_team']}",
+                        "new_leader": c_leader,
+                        "prev_leader": p_leader,
+                        "margin": margin,
+                        "away_score": c_data['away_score'],
+                        "home_score": c_data['home_score'],
+                        "catalyst": catalyst
+                    })
+
+            # Check Position-Aware Nuclear Player Explosions & In-Game Injury Sirens
             prev_player_map = {
                 s['name']: s for s in p_data.get('away_starters', []) + p_data.get('home_starters', [])
             }
@@ -384,13 +541,15 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 tname = c_data[team_key]
                 for s in c_data.get(side_key, []):
                     pname = s['name']
+                    pos_id = s.get('pos_id', 3)
+                    pos_thresh = NUCLEAR_THRESHOLDS.get(pos_id, 25.0)
                     curr_pts = float(s.get('current_score', 0.0))
                     prev_s = prev_player_map.get(pname, {})
                     prev_pts = float(prev_s.get('current_score', 0.0))
 
-                    # Nuclear Player Alert (>= 28.0 pts)
-                    if curr_pts >= 28.0 and prev_pts < 28.0 and pname not in nuclear_alerted:
-                        print(f"☢️ NUCLEAR ALERT: {pname} ({owner}) crossed {curr_pts:.1f} pts!")
+                    # Position-Aware Nuclear Player Alert (QB>=30, RB/WR>=25, TE>=22, K/DST>=17)
+                    if curr_pts >= pos_thresh and prev_pts < pos_thresh and pname not in nuclear_alerted:
+                        print(f"☢️ NUCLEAR ALERT: {pname} ({owner}) crossed {curr_pts:.1f} pts ({s.get('pos')} threshold: {pos_thresh})!")
                         post_live_desk_embed(
                             title=f"☢️ NUCLEAR PLAYER ERUPTION: {pname} ({curr_pts:.1f} PTS)!",
                             description=f"💥 **{pname}** ({s.get('pos', 'FLEX')}) is single-handedly carrying **{tname}** ({owner}) with a monster performance!",
@@ -398,7 +557,7 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                             fields=[
                                 {
                                     "name": "🔥 Player Statline vs Projection",
-                                    "value": f"**Live Score:** `{curr_pts:.2f}` pts (Pre-Game Proj: `{s.get('baseline_proj', 0.0):.1f}` pts)",
+                                    "value": f"**Live Score:** `{curr_pts:.2f}` pts (Pre-Game Proj: `{s.get('baseline_proj', 0.0):.1f}` pts • `+{curr_pts - s.get('baseline_proj', 0.0):.1f}` vs Proj)",
                                     "inline": False
                                 },
                                 {
@@ -409,6 +568,14 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                             ]
                         )
                         nuclear_alerted.add(pname)
+                        log_live_desk_event(season, week_num, "NUCLEAR", "FIRED", mid, {
+                            "matchup": f"{c_data['away_team']} @ {c_data['home_team']}",
+                            "player": pname,
+                            "pos": s.get('pos', 'FLEX'),
+                            "owner": owner,
+                            "score": curr_pts,
+                            "proj": s.get('baseline_proj', 0.0)
+                        })
 
                     # Live In-Game Injury Siren
                     prev_inj = prev_s.get('injury_status', 'ACTIVE')
@@ -438,17 +605,30 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                             ]
                         )
                         injury_alerted.add(pname)
+                        log_live_desk_event(season, week_num, "INJURY", "FIRED", mid, {
+                            "matchup": f"{c_data['away_team']} @ {c_data['home_team']}",
+                            "player": pname,
+                            "owner": owner,
+                            "injury_status": curr_inj,
+                            "score": curr_pts
+                        })
 
             c_data['nuclear_alerted'] = list(nuclear_alerted)
             c_data['injury_alerted'] = list(injury_alerted)
     else:
         for mid, c_data in curr_state.items():
-            c_data['anchor_away_prob'] = c_data['away_prob']
-            c_data['anchor_starters'] = c_data['away_starters'] + c_data['home_starters']
-            # Pre-seed nuclear_alerted for any player already >= 28.0 pts before daemon started
+            c_data['rolling_history'] = [{
+                'epoch': time.time(),
+                'away_prob': c_data['away_prob'],
+                'away_score': c_data['away_score'],
+                'home_score': c_data['home_score'],
+                'away_starters': c_data['away_starters'],
+                'home_starters': c_data['home_starters'],
+            }]
+            # Pre-seed nuclear_alerted for any player already at or above their positional threshold
             c_data['nuclear_alerted'] = [
                 s['name'] for s in (c_data['away_starters'] + c_data['home_starters'])
-                if float(s.get('current_score', 0.0)) >= 28.0
+                if float(s.get('current_score', 0.0)) >= NUCLEAR_THRESHOLDS.get(s.get('pos_id', 3), 25.0)
             ]
             c_data['injury_alerted'] = []
 
@@ -457,6 +637,49 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
         json.dump(curr_state, f, indent=2)
 
     return len(curr_state)
+
+
+def run_retro_analysis(season: int, week_num: int):
+    """
+    Analyzes the full day's state & audit log for a given week to diagnose alert volume,
+    repetitive triggers, suppressed micro-seesaws, and top positional eruptions.
+    """
+    state_file = STATE_DIR / f"state_{season}_week_{week_num}.json"
+    log_file = STATE_DIR / f"alerts_log_{season}_week_{week_num}.jsonl"
+
+    print("\n" + "=" * 78)
+    print(f"🔍 BFL LIVE GAME DESK RETROSPECTIVE & TELEMETRY REPORT — {season} WEEK {week_num}")
+    print("=" * 78)
+
+    if state_file.exists():
+        with open(state_file, "r") as f:
+            st = json.load(f)
+        print(f"\n📊 MATCHUP SNAPSHOT SUMMARY ({len(st)} Matchups Monitored):")
+        for mid, m in st.items():
+            la = m.get("last_alert_time", 0)
+            la_str = datetime.fromtimestamp(la).strftime("%I:%M:%S %p") if la else "None"
+            margin = abs(m["away_score"] - m["home_score"])
+            print(
+                f"  • Match {mid}: {m['away_team']} ({m['away_score']:.2f}) @ {m['home_team']} ({m['home_score']:.2f}) "
+                f"| Margin: {margin:.2f} pts | WinProb: {m['away_prob']*100:.1f}%/{m['home_prob']*100:.1f}% "
+                f"| Last Shockwave: {la_str} | Nuclear: {m.get('nuclear_alerted', [])}"
+            )
+
+    if log_file.exists():
+        events = []
+        with open(log_file, "r") as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+        fired = [e for e in events if e.get("status") == "FIRED"]
+        suppressed = [e for e in events if e.get("status") != "FIRED"]
+        print(f"\n📈 AUDIT LOG METRICS ({len(fired)} Fired Alerts | {len(suppressed)} Suppressed Noise Events):")
+        for e in events[-25:]:
+            print(f"  [{e.get('timestamp')}] {e.get('status'):<22} | {e.get('event_type'):<12} | {e.get('matchup', '')}")
+    else:
+        print("\nℹ️ Audit log initialized (`alerts_log_{season}_week_{week}.jsonl` will record all future ticks).")
+    print("=" * 78 + "\n")
+
 
 def post_mnf_miracle_board(season: int, week_num: int, print_only: bool = False):
     """
@@ -533,6 +756,7 @@ def post_mnf_miracle_board(season: int, week_num: int, print_only: bool = False)
         )
         if ok:
             print("\n🚀 Broadcasted MNF Miracle & Clinch Board to Discord #live-game-desk!")
+            log_live_desk_event(season, week_num, "MNF_BOARD", "FIRED", "ALL", {"live_battles": len(live_battles)})
 
 def monitor_continuously(season: int, week_num: int, interval_seconds: int = 60):
     """Runs the live game desk polling loop continuously during game windows."""
@@ -555,9 +779,12 @@ if __name__ == "__main__":
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--mnf-board", action="store_true", help="Generate and post the Sunday Night Entering-MNF Miracle & Clinch Board")
     parser.add_argument("--print-only", action="store_true", help="Print MNF board without posting to Discord")
+    parser.add_argument("--retro", action="store_true", help="Run post-game retrospective & telemetry report")
     args = parser.parse_args()
 
-    if args.mnf_board:
+    if args.retro:
+        run_retro_analysis(args.season, args.week)
+    elif args.mnf_board:
         post_mnf_miracle_board(args.season, args.week, print_only=args.print_only)
     elif args.once:
         run_live_desk_tick(args.season, args.week)
