@@ -705,11 +705,16 @@ def post_mnf_miracle_board(season: int, week_num: int, print_only: bool = False)
         if m['away_score'] > m['home_score'] or (m['away_score'] == m['home_score'] and m['away_prob'] >= m['home_prob']):
             leader_own, trailer_own = m['away_owner'], m['home_owner']
             leader_prob, trailer_prob = m['away_prob'] * 100, m['home_prob'] * 100
+            leader_rem, trailer_rem = a_rem, h_rem
         else:
             leader_own, trailer_own = m['home_owner'], m['away_owner']
             leader_prob, trailer_prob = m['home_prob'] * 100, m['away_prob'] * 100
+            leader_rem, trailer_rem = h_rem, a_rem
 
-        if a_rem or h_rem:
+        # A matchup is only a live MNF sweat if the trailing team still has at least one player left (or it's tied)
+        is_live_sweat = bool(trailer_rem) or (margin == 0 and bool(leader_rem))
+
+        if is_live_sweat:
             a_rem_str = ", ".join(a_rem) if a_rem else "None (All Final)"
             h_rem_str = ", ".join(h_rem) if h_rem else "None (All Final)"
             live_battles.append({
@@ -723,10 +728,11 @@ def post_mnf_miracle_board(season: int, week_num: int, print_only: bool = False)
                 "inline": False
             })
         else:
+            victory_lap = f" *(+{', '.join(leader_rem)} left on MNF)*" if leader_rem else ""
             if margin <= 5.0:
-                nailbiters_finished.append(f"• 💓 **PHOTO FINISH:** **{leader_own}** survived **{trailer_own}** `{max(m['away_score'], m['home_score']):.2f}` - `{min(m['away_score'], m['home_score']):.2f}` (Margin: **`{margin:.2f}` pts**!)")
+                nailbiters_finished.append(f"• 💓 **PHOTO FINISH:** **{leader_own}** survived **{trailer_own}** `{max(m['away_score'], m['home_score']):.2f}` - `{min(m['away_score'], m['home_score']):.2f}` (Margin: **`{margin:.2f}` pts**!){victory_lap}")
             else:
-                clinched_list.append(f"• ✅ **{leader_own}** def. **{trailer_own}** (`{max(m['away_score'], m['home_score']):.1f}` - `{min(m['away_score'], m['home_score']):.1f}`)")
+                clinched_list.append(f"• ✅ **{leader_own}** def. **{trailer_own}** (`{max(m['away_score'], m['home_score']):.1f}` - `{min(m['away_score'], m['home_score']):.1f}`){victory_lap}")
 
     fields = []
     if live_battles:
