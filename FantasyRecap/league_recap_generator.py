@@ -264,6 +264,26 @@ def analyze_week(data, week_num: int):
         away_won = away_score > home_score
         home_won = home_score > away_score
         margin = round(abs(away_score - home_score), 2)
+
+        # If ESPN hasn't finalized the matchup period into team['record']['overall'] yet (e.g. Monday night post-MNF),
+        # credit this week's result and points into the team dictionary so all callers see updated records.
+        if g.get('winner') == 'UNDECIDED' and (away_score > 0 or home_score > 0):
+            a_t = teams.get(away_id, {})
+            h_t = teams.get(home_id, {})
+            if a_t and (a_t.get('wins', 0) + a_t.get('losses', 0) + a_t.get('ties', 0)) < week_num:
+                if away_won:
+                    a_t['wins'] = a_t.get('wins', 0) + 1
+                elif home_won:
+                    a_t['losses'] = a_t.get('losses', 0) + 1
+                a_t['points_for'] = round(a_t.get('points_for', 0.0) + away_score, 2)
+                a_t['points_against'] = round(a_t.get('points_against', 0.0) + home_score, 2)
+            if h_t and (h_t.get('wins', 0) + h_t.get('losses', 0) + h_t.get('ties', 0)) < week_num:
+                if home_won:
+                    h_t['wins'] = h_t.get('wins', 0) + 1
+                elif away_won:
+                    h_t['losses'] = h_t.get('losses', 0) + 1
+                h_t['points_for'] = round(h_t.get('points_for', 0.0) + home_score, 2)
+                h_t['points_against'] = round(h_t.get('points_against', 0.0) + away_score, 2)
         
         team_performances[away_id] = {
             'team': teams.get(away_id, {}),
