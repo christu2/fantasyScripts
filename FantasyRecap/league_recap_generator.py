@@ -239,12 +239,21 @@ def analyze_week(data, week_num: int):
             
         away_id = away_data.get('teamId')
         home_id = home_data.get('teamId')
-        away_score = round(away_data.get('totalPoints', 0.0), 2)
-        home_score = round(home_data.get('totalPoints', 0.0), 2)
-        
-        # Calculate optimal lineups
+
+        # Calculate optimal lineups first so we can also sum active starter points if ESPN hasn't rolled over totalPoints yet
         away_opt, away_opt_lineup, away_starters, away_bench, away_blunders = calculate_optimal_lineup(away_data.get('rosterForCurrentScoringPeriod', {}).get('entries', []), week_num)
         home_opt, home_opt_lineup, home_starters, home_bench, home_blunders = calculate_optimal_lineup(home_data.get('rosterForCurrentScoringPeriod', {}).get('entries', []), week_num)
+
+        away_score = round(max(
+            float(away_data.get('totalPoints', 0.0) or 0.0),
+            float(away_data.get('totalPointsLive', 0.0) or 0.0),
+            sum(p['pts'] for p in away_starters)
+        ), 2)
+        home_score = round(max(
+            float(home_data.get('totalPoints', 0.0) or 0.0),
+            float(home_data.get('totalPointsLive', 0.0) or 0.0),
+            sum(p['pts'] for p in home_starters)
+        ), 2)
         
         away_eff = round((away_score / away_opt * 100), 1) if away_opt > 0 else 100.0
         home_eff = round((home_score / home_opt * 100), 1) if home_opt > 0 else 100.0

@@ -26,6 +26,7 @@ else:
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_WEBHOOK_PODCAST = os.getenv("DISCORD_WEBHOOK_PODCAST", "")
 DISCORD_QUOTES_CHANNEL_ID = os.getenv("DISCORD_QUOTES_CHANNEL_ID") or os.getenv("DISCORD_TRASH_TALK_CHANNEL_ID") or os.getenv("DISCORD_CHANNEL_ID", "")
+DISCORD_LIVE_DESK_CHANNEL_ID = os.getenv("DISCORD_LIVE_DESK_CHANNEL_ID", "1540867012996104203")
 
 # Discord username / nickname to BFL Owner mapping
 DISCORD_USER_MAP = {
@@ -128,48 +129,85 @@ def post_monday_night_interview_call(
         print(f"❌ Exception posting media call: {e}")
     return False
 
-def harvest_real_quotes_from_discord(channel_id: str = None) -> dict:
+def harvest_real_quotes_from_discord(channel_id: str = None, week_num: int = None) -> dict:
     """
-    Pulls recent messages from Discord and maps them to BFL owners.
+    Pulls recent messages from Discord (#trash-talk and #live-game-desk) or a local drop-in file
+    and maps them to BFL owners.
     STRICT: Only returns actual, genuine messages from real managers.
     Returns: { 'Owner Name': 'Real quote text' }
     """
     quotes = {}
-    target_channel = channel_id or DISCORD_QUOTES_CHANNEL_ID
-    if not DISCORD_BOT_TOKEN or not target_channel:
+
+    # 1. Check optional local drop-in chatter file (if user pasted chat from #trash-talk / #live-game-desk)
+    state_dir = Path(__file__).resolve().parent / "live_state"
+    candidate_files = []
+    if week_num:
+        candidate_files.append(state_dir / f"discord_chatter_week_{week_num}.txt")
+    candidate_files.append(state_dir / "discord_chatter.txt")
+
+    for cf in candidate_files:
+        if cf.exists():
+            try:
+                for raw_line in cf.read_text().splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    lower_line = line.lower()
+                    for k, owner in DISCORD_USER_MAP.items():
+                        if lower_line.startswith(k + ":") or lower_line.startswith(owner.lower() + ":"):
+                            msg_part = line.split(":", 1)[1].strip()
+                            if msg_part:
+                                prev = quotes.get(owner, "")
+                                quotes[owner] = f"{prev} / {msg_part}".strip(" /") if prev else msg_part
+                            break
+            except Exception:
+                pass
+
+    # 2. If DISCORD_BOT_TOKEN is configured, harvest from #trash-talk and #live-game-desk
+    channels_to_scan = []
+    if channel_id:
+        channels_to_scan.append(channel_id)
+    else:
+        if DISCORD_QUOTES_CHANNEL_ID:
+            channels_to_scan.append(DISCORD_QUOTES_CHANNEL_ID)
+        if DISCORD_LIVE_DESK_CHANNEL_ID and DISCORD_LIVE_DESK_CHANNEL_ID not in channels_to_scan:
+            channels_to_scan.append(DISCORD_LIVE_DESK_CHANNEL_ID)
+
+    if not DISCORD_BOT_TOKEN or not channels_to_scan:
         return quotes
 
-    url = f"https://discord.com/api/v10/channels/{target_channel}/messages?limit=50"
     headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            for m in r.json():
-                if m.get('author', {}).get('bot'):
-                    continue
-                username = m.get('author', {}).get('username', '').lower()
-                display_name = m.get('author', {}).get('global_name', '').lower()
-                content = m.get('content', '').strip()
+    for target_channel in channels_to_scan:
+        url = f"https://discord.com/api/v10/channels/{target_channel}/messages?limit=75"
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                for m in r.json():
+                    if m.get('author', {}).get('bot'):
+                        continue
+                    username = (m.get('author', {}).get('username') or '').lower()
+                    display_name = (m.get('author', {}).get('global_name') or '').lower()
+                    content = (m.get('content') or '').strip()
 
-                owner_matched = None
-                for k, owner in DISCORD_USER_MAP.items():
-                    if k in username or k in display_name:
-                        owner_matched = owner
-                        break
+                    owner_matched = None
+                    for k, owner in DISCORD_USER_MAP.items():
+                        if k in username or k in display_name:
+                            owner_matched = owner
+                            break
 
-                if owner_matched and content and owner_matched not in quotes:
-                    clean_content = re.sub(r'[*_`]', '', content)
-                    quotes[owner_matched] = clean_content
-    except Exception as e:
-        print(f"⚠️ Error harvesting Discord quotes: {e}")
+                    if owner_matched and content and owner_matched not in quotes:
+                        clean_content = re.sub(r'[*_`]', '', content)
+                        quotes[owner_matched] = clean_content
+        except Exception as e:
+            print(f"⚠️ Error harvesting Discord quotes from channel {target_channel}: {e}")
     return quotes
 
-def get_verified_manager_quotes(channel_id: str = None) -> list:
+def get_verified_manager_quotes(channel_id: str = None, week_num: int = None) -> list:
     """
     Returns ONLY real, verified quotes from Discord.
     If no real quotes were submitted, returns an empty list.
     """
-    real_quotes = harvest_real_quotes_from_discord(channel_id)
+    real_quotes = harvest_real_quotes_from_discord(channel_id, week_num=week_num)
     quote_cards = []
 
     for owner, quote in real_quotes.items():

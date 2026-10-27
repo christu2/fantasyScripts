@@ -217,8 +217,8 @@ def calculate_season_trajectories(raw_data: dict, current_week: int, teams: dict
         if wk <= current_week:
             a_id = g.get('away', {}).get('teamId')
             h_id = g.get('home', {}).get('teamId')
-            a_pts = g.get('away', {}).get('totalPoints', 0.0)
-            h_pts = g.get('home', {}).get('totalPoints', 0.0)
+            a_pts = float(g.get('away', {}).get('totalPoints', 0.0) or g.get('away', {}).get('totalPointsLive', 0.0) or 0.0)
+            h_pts = float(g.get('home', {}).get('totalPoints', 0.0) or g.get('home', {}).get('totalPointsLive', 0.0) or 0.0)
             if not a_id or not h_id: continue
             
             a_div = teams[a_id].get('division')
@@ -583,8 +583,8 @@ def build_previous_weeks_chronicle(raw_data: dict, current_week: int, teams: dic
             if wk not in weeks_data: weeks_data[wk] = []
             a_id = g.get('away', {}).get('teamId')
             h_id = g.get('home', {}).get('teamId')
-            a_pts = g.get('away', {}).get('totalPoints', 0.0)
-            h_pts = g.get('home', {}).get('totalPoints', 0.0)
+            a_pts = float(g.get('away', {}).get('totalPoints', 0.0) or g.get('away', {}).get('totalPointsLive', 0.0) or 0.0)
+            h_pts = float(g.get('home', {}).get('totalPoints', 0.0) or g.get('home', {}).get('totalPointsLive', 0.0) or 0.0)
             if a_id and h_id:
                 a_owner = teams.get(a_id, {}).get('owner', 'Unknown')
                 h_owner = teams.get(h_id, {}).get('owner', 'Unknown')
@@ -735,12 +735,122 @@ def build_upcoming_matchup_h2h_tidbit(a_owner: str, h_owner: str, h2h_through_we
 
     return f"**18-Yr H2H:** {rec_str} ({total} games) — {hook}"
 
+
+def build_live_game_desk_recap_section(season: int, week_num: int, matchups: list) -> str:
+    """
+    Extracts real-time win probability swings, 4th-quarter comebacks, MNF miracles, and nuclear player
+    eruptions from the #live-game-desk state & telemetry files so the hosts can break down the live drama.
+    """
+    state_dir = Path(__file__).resolve().parent / "live_state"
+    state_file = state_dir / f"state_{season}_week_{week_num}.json"
+    log_file = state_dir / f"alerts_log_{season}_week_{week_num}.jsonl"
+
+    if not state_file.exists() and not log_file.exists():
+        return ""
+
+    bullets = []
+
+    if state_file.exists():
+        try:
+            with open(state_file, "r") as sf:
+                live_st = json.load(sf)
+
+            # Map final matchup results by owner pair
+            final_by_pair = {}
+            for m in matchups:
+                a_own = m['away']['owner']
+                h_own = m['home']['owner']
+                final_by_pair[(a_own, h_own)] = m
+
+            for mid, st_m in live_st.items():
+                a_own = st_m.get('away_owner', '')
+                h_own = st_m.get('home_owner', '')
+                fin = final_by_pair.get((a_own, h_own))
+                if not fin or not isinstance(fin.get('winner'), dict):
+                    continue
+
+                fin_winner = fin['winner']['owner']
+                fin_loser = fin['loser']['owner']
+                fin_w_pts = max(fin['away_score'], fin['home_score'])
+                fin_l_pts = min(fin['away_score'], fin['home_score'])
+                fin_margin = fin['margin']
+
+                snf_a_score = float(st_m.get('away_score', 0.0))
+                snf_h_score = float(st_m.get('home_score', 0.0))
+                snf_a_prob = float(st_m.get('away_prob', 0.5))
+                snf_h_prob = float(st_m.get('home_prob', 0.5))
+
+                snf_leader = a_own if snf_a_score > snf_h_score else (h_own if snf_h_score > snf_a_score else 'TIED')
+                win_was_away = (fin_winner == a_own)
+                winner_snf_score = snf_a_score if win_was_away else snf_h_score
+                loser_snf_score = snf_h_score if win_was_away else snf_a_score
+                winner_snf_prob = (snf_a_prob if win_was_away else snf_h_prob) * 100.0
+
+                # Identify MNF scorers who played after Sunday Night
+                w_side_key = 'away_starters' if win_was_away else 'home_starters'
+                mnf_heroes = [
+                    s['name'] for s in st_m.get(w_side_key, [])
+                    if s.get('game_status') == 'PRE' or float(s.get('pct_remaining', 0.0)) >= 0.9
+                ]
+                mnf_hero_str = f" behind MNF heroics from **{', '.join(mnf_heroes)}**" if mnf_heroes else " on Monday Night Football"
+
+                # 1. Check for MNF Comeback (trailed entering MNF and won!)
+                if snf_leader != 'TIED' and snf_leader != fin_winner and loser_snf_score > winner_snf_score:
+                    deficit = round(loser_snf_score - winner_snf_score, 2)
+                    mnf_pts_added = round(fin_w_pts - winner_snf_score, 2)
+                    if winner_snf_prob <= 15.0:
+                        bullets.append(
+                            f"- 🚨 **MONDAY NIGHT MIRACLE ON `#live-game-desk`:** **{fin_winner}** entered Monday Night Football trailing **{fin_loser}** `{winner_snf_score:.2f}` to `{loser_snf_score:.2f}` (a `{deficit:.2f}`-point deficit with just a **`{winner_snf_prob:.1f}%` win probability** on the Sunday Night Miracle Board!). {fin_winner} erupted for **`+{mnf_pts_added:.2f}` points**{mnf_hero_str} to pull off a stunning `{fin_w_pts:.2f}` to `{fin_l_pts:.2f}` comeback victory (Margin: `{fin_margin:.2f}` pts)!"
+                        )
+                    else:
+                        bullets.append(
+                            f"- 🔄 **MONDAY NIGHT OVERTHROW ON `#live-game-desk`:** **{fin_winner}** trailed **{fin_loser}** `{winner_snf_score:.2f}` to `{loser_snf_score:.2f}` entering MNF (`{winner_snf_prob:.1f}%` MNF win odds), then poured in `+{mnf_pts_added:.2f}` pts{mnf_hero_str} to overtake {fin_loser} `{fin_w_pts:.2f}` to `{fin_l_pts:.2f}`!"
+                        )
+
+                # 2. Check for SNF 4th-Quarter Cardiac Comeback (margin <= 2.5 pts and late shockwave alert)
+                elif fin_margin <= 2.5 and st_m.get('last_alert_time', 0) > 0:
+                    bullets.append(
+                        f"- ⚡ **SUNDAY NIGHT 4TH-QUARTER SHOCKWAVE & LEAD CHANGE (`#live-game-desk`):** **{fin_winner}** pulled off a jaw-dropping late rally to edge **{fin_loser}** `{fin_w_pts:.2f}` to `{fin_l_pts:.2f}` (Margin: **`{fin_margin:.2f}` pts**), capped by a late probability shockwave and lead overtake on the Live Game Desk!"
+                    )
+
+                # 3. Check Nuclear Eruptions tracked in state
+                for nuc_name in st_m.get('nuclear_alerted', []):
+                    bullets.append(
+                        f"- ☢️ **LIVE DESK NUCLEAR ERUPTION:** **{nuc_name}** triggered the `#live-game-desk` Nuclear Player Siren during `{a_own} vs {h_own}`!"
+                    )
+        except Exception:
+            pass
+
+    if log_file.exists():
+        try:
+            with open(log_file, "r") as lf:
+                for line in lf:
+                    if not line.strip():
+                        continue
+                    ev = json.loads(line)
+                    if ev.get("status") == "FIRED" and ev.get("event_type") in ["SHOCKWAVE", "LEAD_CHANGE"]:
+                        cat = ev.get("catalyst", "")
+                        bullets.append(
+                            f"- 📡 **LIVE DESK ALERT ({ev.get('event_type')}):** {ev.get('matchup')} ({ev.get('swing_pct', '')}% swing) {cat}".strip()
+                        )
+        except Exception:
+            pass
+
+    if not bullets:
+        return ""
+
+    out = "\n## ⚡ LIVE GAME DESK: IN-GAME WIN PROBABILITY SWINGS & MNF MIRACLES\n"
+    out += "*These real-time odds swings, 4th-quarter rallies, and Monday Night Football comebacks lit up the `#live-game-desk` channel this week. Weave this drama directly into Act 1 and Act 2:*\n"
+    out += "\n".join(bullets) + "\n"
+    return out
+
+
 def generate_payload(season: int, week_num: int):
     print(f"📡 Fetching live ESPN data for Season {season}, Week {week_num}...")
     raw_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), week_num, ESPN_S2, ESPN_SWID)
     teams = parse_league_members_and_teams(raw_data)
     matchups, perfs, _ = analyze_week(raw_data, week_num)
-    verified_quotes = get_verified_manager_quotes()
+    verified_quotes = get_verified_manager_quotes(week_num=week_num)
     cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
 
     trajectories = calculate_season_trajectories(raw_data, week_num, teams)
@@ -1204,8 +1314,11 @@ def generate_payload(season: int, week_num: int):
     with open(memory_file, 'w') as mf:
         json.dump(podcast_memory, mf)
 
+    # --- LIVE GAME DESK SWINGS & MNF MIRACLES ---
+    payload += build_live_game_desk_recap_section(season, week_num, matchups)
+
     if verified_quotes:
-        payload += "\n## 🎤 MANAGER POST-GAME QUOTES (FROM DISCORD)\n"
+        payload += "\n## 🎤 MANAGER POST-GAME QUOTES & DISCORD CHATTER\n"
         for q in verified_quotes:
             payload += f"- {q['header']} said: '{q['desc']}'\n"
             

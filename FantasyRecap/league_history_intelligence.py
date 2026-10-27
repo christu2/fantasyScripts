@@ -298,8 +298,8 @@ def _process_season_games(data, year: int, h2h: dict, career_stats: dict, max_we
         h_id = home.get('teamId')
         a_owners = teams.get(a_id, [])
         h_owners = teams.get(h_id, [])
-        a_score = away.get('totalPoints', 0.0)
-        h_score = home.get('totalPoints', 0.0)
+        a_score = float(away.get('totalPoints', 0.0) or away.get('totalPointsLive', 0.0) or 0.0)
+        h_score = float(home.get('totalPoints', 0.0) or home.get('totalPointsLive', 0.0) or 0.0)
         tier = g.get('playoffTierType', 'NONE')
         
         is_champ_playoff = (tier == 'WINNERS_BRACKET')

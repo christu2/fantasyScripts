@@ -158,8 +158,8 @@ def extract_live_state_from_espn(raw_data: dict, completed_through_week: int):
         if h_own.lower() == 'rej hoxha':
             h_own = 'rej hoxha'
 
-        a_pts = float(g.get('away', {}).get('totalPoints', 0.0))
-        h_pts = float(g.get('home', {}).get('totalPoints', 0.0))
+        a_pts = float(g.get('away', {}).get('totalPoints', 0.0) or g.get('away', {}).get('totalPointsLive', 0.0) or 0.0)
+        h_pts = float(g.get('home', {}).get('totalPoints', 0.0) or g.get('home', {}).get('totalPointsLive', 0.0) or 0.0)
         is_div = OWNER_TO_DIV.get(a_own) == OWNER_TO_DIV.get(h_own)
 
         full_schedule.append({
