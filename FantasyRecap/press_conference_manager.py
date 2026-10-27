@@ -14,22 +14,36 @@ Manages the weekly owner interview pipeline:
 import os
 import re
 import requests
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
 env_path = Path(__file__).resolve().parent.parent / '.env'
 if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+    load_dotenv(dotenv_path=env_path, override=True)
 else:
-    load_dotenv()
+    load_dotenv(override=True)
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_WEBHOOK_PODCAST = os.getenv("DISCORD_WEBHOOK_PODCAST", "")
 DISCORD_QUOTES_CHANNEL_ID = os.getenv("DISCORD_QUOTES_CHANNEL_ID") or os.getenv("DISCORD_TRASH_TALK_CHANNEL_ID") or os.getenv("DISCORD_CHANNEL_ID", "")
 DISCORD_LIVE_DESK_CHANNEL_ID = os.getenv("DISCORD_LIVE_DESK_CHANNEL_ID", "1540867012996104203")
 
+# Exact Discord User ID to BFL Owner mapping
+DISCORD_ID_TO_OWNER = {
+    '1540793260610560070': 'Nick Christus',
+    '339254563968385031': 'Nitesh Patel',
+    '1541444214632611882': 'Shawn Lukose',
+    '804923026927124501': 'Dino Davros',
+    '606885780190658706': 'Nael Ahmed',
+    '1551345621783543869': 'Saagar Gupta',
+    '650944454987087912': 'Samran Mirza',
+    '1550288879318204447': 'Daniel Kruszewski',
+}
+
 # Discord username / nickname to BFL Owner mapping
 DISCORD_USER_MAP = {
+    'nchristus93': 'Nick Christus',
     'nick': 'Nick Christus',
     'christu2': 'Nick Christus',
     'shawnlukose': 'Shawn Lukose',
@@ -38,8 +52,11 @@ DISCORD_USER_MAP = {
     'ullenbrauck': 'Shawn Ullenbrauck',
     'abe': 'Abe Thomas',
     'crashee': 'Abe Thomas',
+    'kgarmy0447': 'Saagar Gupta',
+    'kgarmy': 'Saagar Gupta',
     'saagar': 'Saagar Gupta',
     'gupta': 'Saagar Gupta',
+    'venicado': 'Dino Davros',
     'dino': 'Dino Davros',
     'davros': 'Dino Davros',
     'adam': 'Adam Olen',
@@ -47,6 +64,8 @@ DISCORD_USER_MAP = {
     'amo': 'Adam Olen',
     'sydney': 'Sydney Miller',
     'miller': 'Sydney Miller',
+    'savage69_09383': 'Daniel Kruszewski',
+    'savage69': 'Daniel Kruszewski',
     'dan': 'Daniel Kruszewski',
     'kruszewski': 'Daniel Kruszewski',
     'dtm': 'Daniel Kruszewski',
@@ -55,8 +74,11 @@ DISCORD_USER_MAP = {
     'tommy': 'Tommy Ehrlich',
     'thomas': 'Tommy Ehrlich',
     'ehrlich': 'Tommy Ehrlich',
+    'smirza107986': 'Samran Mirza',
+    'smirza10': 'Samran Mirza',
     'samran': 'Samran Mirza',
     'mirza': 'Samran Mirza',
+    'naeleezy': 'Nael Ahmed',
     'nael': 'Nael Ahmed',
     'ahmed': 'Nael Ahmed',
     'nmafia': 'Nael Ahmed',
@@ -65,6 +87,8 @@ DISCORD_USER_MAP = {
     'alex': 'Alex Kite',
     'kite': 'Alex Kite',
     'shooter': 'Alex Kite',
+    'npate2076487': 'Nitesh Patel',
+    'npate207': 'Nitesh Patel',
     'nitesh': 'Nitesh Patel',
     'patel': 'Nitesh Patel',
     'edgar': 'Nitesh Patel',
@@ -129,14 +153,45 @@ def post_monday_night_interview_call(
         print(f"❌ Exception posting media call: {e}")
     return False
 
-def harvest_real_quotes_from_discord(channel_id: str = None, week_num: int = None) -> dict:
+def _resolve_discord_mentions(text: str) -> str:
+    """Replaces <@USER_ID> mentions with the actual BFL owner's name."""
+    def _repl(match):
+        uid = match.group(1)
+        return DISCORD_ID_TO_OWNER.get(uid, "a leaguemate")
+    return re.sub(r"<@!?(\d+)>", _repl, text)
+
+
+def _clean_discord_message(raw_text: str) -> str:
+    """Cleans URLs, markdown artifacts, and skips meta/podcast-link/GIF-only messages."""
+    text = _resolve_discord_mentions(raw_text or "")
+    # Remove URLs (GIFs, Discord channel links, etc.)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[*_`]", "", text).strip()
+    if len(text) < 4:
+        return ""
+    lower = text.lower()
+    # Skip meta messages about uploading the podcast or generic short chat filler without football context
+    skip_phrases = [
+        "podcast is up", "pod is up", "podcast now available", "ai pod is getting better",
+        "pitch my new in game bot", "disapproves of my ai prowess", "different league",
+        "is sydney not in this discord", "nah she's a hold out", "lmao this shit hilarious",
+        "don't get me wrong. i approve", "didn't want you to squander it", "not the meme i was expecting",
+        "all i need", "fantastic", "love to see it", "absolute stud", "getting a little heated in here",
+        "good work nitesh"
+    ]
+    if any(sp in lower for sp in skip_phrases):
+        return ""
+    return text
+
+
+def harvest_real_quotes_from_discord(channel_id: str = None, week_num: int = None, lookback_days: float = 7.5) -> dict:
     """
     Pulls recent messages from Discord (#trash-talk and #live-game-desk) or a local drop-in file
     and maps them to BFL owners.
-    STRICT: Only returns actual, genuine messages from real managers.
+    STRICT: Only returns actual, genuine messages from real managers within the current week window.
     Returns: { 'Owner Name': 'Real quote text' }
     """
-    quotes = {}
+    owner_lines = {}
 
     # 1. Check optional local drop-in chatter file (if user pasted chat from #trash-talk / #live-game-desk)
     state_dir = Path(__file__).resolve().parent / "live_state"
@@ -155,10 +210,9 @@ def harvest_real_quotes_from_discord(channel_id: str = None, week_num: int = Non
                     lower_line = line.lower()
                     for k, owner in DISCORD_USER_MAP.items():
                         if lower_line.startswith(k + ":") or lower_line.startswith(owner.lower() + ":"):
-                            msg_part = line.split(":", 1)[1].strip()
+                            msg_part = _clean_discord_message(line.split(":", 1)[1].strip())
                             if msg_part:
-                                prev = quotes.get(owner, "")
-                                quotes[owner] = f"{prev} / {msg_part}".strip(" /") if prev else msg_part
+                                owner_lines.setdefault(owner, []).append(msg_part)
                             break
             except Exception:
                 pass
@@ -173,33 +227,53 @@ def harvest_real_quotes_from_discord(channel_id: str = None, week_num: int = Non
         if DISCORD_LIVE_DESK_CHANNEL_ID and DISCORD_LIVE_DESK_CHANNEL_ID not in channels_to_scan:
             channels_to_scan.append(DISCORD_LIVE_DESK_CHANNEL_ID)
 
-    if not DISCORD_BOT_TOKEN or not channels_to_scan:
-        return quotes
+    if DISCORD_BOT_TOKEN and channels_to_scan:
+        headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
-    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
-    for target_channel in channels_to_scan:
-        url = f"https://discord.com/api/v10/channels/{target_channel}/messages?limit=75"
-        try:
-            r = requests.get(url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                for m in r.json():
-                    if m.get('author', {}).get('bot'):
-                        continue
-                    username = (m.get('author', {}).get('username') or '').lower()
-                    display_name = (m.get('author', {}).get('global_name') or '').lower()
-                    content = (m.get('content') or '').strip()
+        for target_channel in channels_to_scan:
+            url = f"https://discord.com/api/v10/channels/{target_channel}/messages?limit=100"
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                if r.status_code == 200:
+                    # Iterate oldest-to-newest so multi-line thoughts read chronologically
+                    for m in reversed(r.json()):
+                        if m.get('author', {}).get('bot'):
+                            continue
+                        ts_str = m.get('timestamp', '')
+                        if ts_str:
+                            try:
+                                msg_dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                                if msg_dt < cutoff_dt:
+                                    continue
+                            except Exception:
+                                pass
 
-                    owner_matched = None
-                    for k, owner in DISCORD_USER_MAP.items():
-                        if k in username or k in display_name:
-                            owner_matched = owner
-                            break
+                        author = m.get('author', {})
+                        uid = str(author.get('id', ''))
+                        username = (author.get('username') or '').lower()
+                        display_name = (author.get('global_name') or '').lower()
 
-                    if owner_matched and content and owner_matched not in quotes:
-                        clean_content = re.sub(r'[*_`]', '', content)
-                        quotes[owner_matched] = clean_content
-        except Exception as e:
-            print(f"⚠️ Error harvesting Discord quotes from channel {target_channel}: {e}")
+                        owner_matched = DISCORD_ID_TO_OWNER.get(uid)
+                        if not owner_matched:
+                            for k, owner in DISCORD_USER_MAP.items():
+                                if k in username or k in display_name:
+                                    owner_matched = owner
+                                    break
+
+                        clean_content = _clean_discord_message(m.get('content', ''))
+                        if owner_matched and clean_content:
+                            existing = owner_lines.setdefault(owner_matched, [])
+                            if clean_content not in existing:
+                                existing.append(clean_content)
+            except Exception as e:
+                print(f"⚠️ Error harvesting Discord quotes from channel {target_channel}: {e}")
+
+    quotes = {}
+    for owner, lines in owner_lines.items():
+        # Keep up to 6 impactful statements per manager from the week
+        selected = lines[-6:]
+        quotes[owner] = " | ".join(selected)
     return quotes
 
 def get_verified_manager_quotes(channel_id: str = None, week_num: int = None) -> list:
