@@ -91,22 +91,23 @@ def resolve_division_tiebreakers(tied_members: list, records: dict, h2h_matrix: 
             # Tie in H2H -> fall back to PF
             return sorted([t1, t2], key=lambda t: records[t]['pf'], reverse=True)
             
-    # 3+ teams tied
-    # Compare H2H among the sub-group if applicable, else Points For
-    sub_records = {}
+    # 3+ teams tied: Compare H2H win percentage among the tied sub-group, then Points For
+    sub_pcts = {}
     for t in tied_members:
         sub_wins = sum(h2h_matrix.get((t, opp), 0) for opp in tied_members if opp != t)
-        sub_records[t] = sub_wins
-        
-    # Check if one team swept or has highest win count
-    max_wins = max(sub_records.values())
-    if list(sub_records.values()).count(max_wins) == 1:
-        best = [t for t in tied_members if sub_records[t] == max_wins][0]
+        sub_losses = sum(h2h_matrix.get((opp, t), 0) for opp in tied_members if opp != t)
+        sub_games = sub_wins + sub_losses
+        sub_pcts[t] = (sub_wins / sub_games) if sub_games > 0 else 0.5
+
+    max_pct = max(sub_pcts.values())
+    top_group = [t for t in tied_members if abs(sub_pcts[t] - max_pct) < 1e-6]
+    if len(top_group) == 1:
+        best = top_group[0]
         rem = [t for t in tied_members if t != best]
         return [best] + resolve_division_tiebreakers(rem, records, h2h_matrix)
-        
+
     # Default to Points For
-    return sorted(tied_members, key=lambda t: records[t]['pf'], reverse=True)
+    return sorted(tied_members, key=lambda t: (sub_pcts[t], records[t]['pf']), reverse=True)
 
 def resolve_wildcard_tiebreakers(tied_members: list, records: dict, h2h_matrix: dict) -> list:
     """
@@ -158,8 +159,20 @@ def extract_live_state_from_espn(raw_data: dict, completed_through_week: int):
         if h_own.lower() == 'rej hoxha':
             h_own = 'rej hoxha'
 
-        a_pts = float(g.get('away', {}).get('totalPoints', 0.0) or g.get('away', {}).get('totalPointsLive', 0.0) or 0.0)
-        h_pts = float(g.get('home', {}).get('totalPoints', 0.0) or g.get('home', {}).get('totalPointsLive', 0.0) or 0.0)
+        a_side = g.get('away', {})
+        h_side = g.get('home', {})
+        a_pts = float(
+            a_side.get('totalPoints', 0.0)
+            or a_side.get('totalPointsLive', 0.0)
+            or a_side.get('rosterForCurrentScoringPeriod', {}).get('appliedStatTotal', 0.0)
+            or 0.0
+        )
+        h_pts = float(
+            h_side.get('totalPoints', 0.0)
+            or h_side.get('totalPointsLive', 0.0)
+            or h_side.get('rosterForCurrentScoringPeriod', {}).get('appliedStatTotal', 0.0)
+            or 0.0
+        )
         is_div = OWNER_TO_DIV.get(a_own) == OWNER_TO_DIV.get(h_own)
 
         full_schedule.append({

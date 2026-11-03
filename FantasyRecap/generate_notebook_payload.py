@@ -18,7 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, analyze_week, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, standardize_name, compile_all_time_h2h
 from FantasyRecap.press_conference_manager import get_verified_manager_quotes, harvest_detailed_discord_chatter
-from FantasyRecap.playoff_odds_simulator import simulate_league_playoff_odds_from_espn
+from FantasyRecap.playoff_odds_simulator import (
+    simulate_league_playoff_odds_from_espn,
+    resolve_division_tiebreakers,
+    resolve_wildcard_tiebreakers,
+)
 from FantasyRecap.config import CURRENT_YEAR
 
 NFL_TEAMS = {
@@ -936,6 +940,292 @@ def build_live_game_desk_recap_section(season: int, week_num: int, matchups: lis
     return out
 
 
+def compute_live_playoff_picture(raw_data: dict, week_num: int, teams: dict, trajectories: dict, playoff_odds: dict) -> tuple:
+    """
+    Computes the live 7-team BFL Playoff Bracket (Seeds #1–#4 Division Leaders,
+    Seeds #5–#7 Wild Card Cutline, and #8–#16 Bubble/Chasers) using official BFL
+    tiebreaker rules (Overall Record -> Head-to-Head -> Points For), plus rich
+    division-by-division tiebreaker & race narratives.
+    Returns (seed_map_by_owner, bracket_and_divisions_md).
+    """
+    owner_to_tid = {}
+    records_by_owner = {}
+    div_members = {'East': [], 'North': [], 'South': [], 'West': []}
+
+    for tid, t in teams.items():
+        own = t['owner']
+        owner_to_tid[own] = tid
+        tr = trajectories[tid]
+        records_by_owner[own] = {
+            'wins': tr['overall_w'],
+            'losses': tr['overall_l'],
+            'pf': tr['points_for'],
+            'pa': tr['points_against'],
+            'pf_rank': tr['pf_rank'],
+            'pa_rank': tr['pa_rank'],
+            'div_w': tr['div_w'],
+            'div_l': tr['div_l'],
+            'streak_str': tr['streak_str'],
+            'status_tag': tr['status_tag'],
+            'team_name': t['name'],
+            'division': t.get('division', 'Unknown'),
+        }
+        if t.get('division') in div_members:
+            div_members[t['division']].append(own)
+
+    # Build in-season H2H matrix and meeting details through week_num
+    h2h_matrix = {}
+    h2h_games_detail = {}
+    for g in raw_data.get('schedule', []):
+        wk = g.get('matchupPeriodId', 0)
+        if wk < 1 or wk > week_num:
+            continue
+        aid = g.get('away', {}).get('teamId')
+        hid = g.get('home', {}).get('teamId')
+        if aid not in teams or hid not in teams:
+            continue
+        a_side = g.get('away', {})
+        h_side = g.get('home', {})
+        a_pts = float(
+            a_side.get('totalPoints', 0.0)
+            or a_side.get('totalPointsLive', 0.0)
+            or a_side.get('rosterForCurrentScoringPeriod', {}).get('appliedStatTotal', 0.0)
+            or 0.0
+        )
+        h_pts = float(
+            h_side.get('totalPoints', 0.0)
+            or h_side.get('totalPointsLive', 0.0)
+            or h_side.get('rosterForCurrentScoringPeriod', {}).get('appliedStatTotal', 0.0)
+            or 0.0
+        )
+        if a_pts == 0 and h_pts == 0:
+            continue
+        a_own = teams[aid]['owner']
+        h_own = teams[hid]['owner']
+        if a_pts > h_pts:
+            h2h_matrix[(a_own, h_own)] = h2h_matrix.get((a_own, h_own), 0) + 1
+            h2h_games_detail.setdefault(tuple(sorted([a_own, h_own])), []).append(
+                f"Wk {wk}: {a_own} def. {h_own} ({a_pts:.1f}-{h_pts:.1f})"
+            )
+        elif h_pts > a_pts:
+            h2h_matrix[(h_own, a_own)] = h2h_matrix.get((h_own, a_own), 0) + 1
+            h2h_games_detail.setdefault(tuple(sorted([a_own, h_own])), []).append(
+                f"Wk {wk}: {h_own} def. {a_own} ({h_pts:.1f}-{a_pts:.1f})"
+            )
+
+    # 1. Rank each division using official BFL tiebreakers (Overall Wins -> H2H -> PF)
+    sorted_divisions = {}
+    div_champions = []
+    wildcard_pool = []
+
+    for div_name in ['East', 'North', 'South', 'West']:
+        mems = div_members.get(div_name, [])
+        grouped = {}
+        for m in mems:
+            grouped.setdefault(records_by_owner[m]['wins'], []).append(m)
+        ordered = []
+        for w in sorted(grouped.keys(), reverse=True):
+            ordered.extend(resolve_division_tiebreakers(grouped[w], records_by_owner, h2h_matrix))
+        sorted_divisions[div_name] = ordered
+        if ordered:
+            div_champions.append(ordered[0])
+            wildcard_pool.extend(ordered[1:])
+
+    # 2. Rank the 4 Division Champions for Seeds #1 to #4
+    dc_grouped = {}
+    for dc in div_champions:
+        dc_grouped.setdefault(records_by_owner[dc]['wins'], []).append(dc)
+    sorted_champs = []
+    for w in sorted(dc_grouped.keys(), reverse=True):
+        sorted_champs.extend(resolve_wildcard_tiebreakers(dc_grouped[w], records_by_owner, h2h_matrix))
+
+    # 3. Rank the 12 Non-Division Winners for Seeds #5 to #16 (Wild Card Race)
+    wc_grouped = {}
+    for wc in wildcard_pool:
+        wc_grouped.setdefault(records_by_owner[wc]['wins'], []).append(wc)
+    sorted_wc = []
+    for w in sorted(wc_grouped.keys(), reverse=True):
+        sorted_wc.extend(resolve_wildcard_tiebreakers(wc_grouped[w], records_by_owner, h2h_matrix))
+
+    full_seeding = sorted_champs + sorted_wc
+    seed_map = {}
+
+    for idx, own in enumerate(full_seeding, 1):
+        div_name = records_by_owner[own]['division']
+        div_order = sorted_divisions.get(div_name, [])
+        div_rank = div_order.index(own) + 1 if own in div_order else 1
+        if idx == 1:
+            role = f"Seed #1 ({div_name} Leader & First-Round Bye Leader)"
+        elif idx <= 4:
+            role = f"Seed #{idx} ({div_name} Division Leader)"
+        elif idx <= 7:
+            role = f"Seed #{idx} (Wild Card #{idx - 4} — Currently IN Playoffs)"
+        elif idx <= 13:
+            role = f"#{idx} In The Hunt / On The Bubble ({div_rank}{'st' if div_rank==1 else ('nd' if div_rank==2 else ('rd' if div_rank==3 else 'th'))} in {div_name})"
+        else:
+            role = f"#{idx} Longshot / Spoiler Territory ({div_rank}{'st' if div_rank==1 else ('nd' if div_rank==2 else ('rd' if div_rank==3 else 'th'))} in {div_name})"
+        seed_map[own] = {
+            'seed': idx,
+            'role': role,
+            'div_rank': div_rank,
+            'div_name': div_name,
+        }
+
+    weeks_left = max(0, 14 - week_num)
+    md = f"## 🏆 LIVE 7-TEAM PLAYOFF BRACKET, WILD CARD CUTLINE & DIVISION DYNAMICS (THROUGH WEEK {week_num} — {weeks_left} WEEKS LEFT!)\n"
+    md += (
+        f"*🚨 MANDATORY PRODUCER DIRECTIVE (DO NOT GLANCE OVER!): With Week {week_num} in the books and only **{weeks_left} regular-season weeks remaining** before the Week 15 Playoffs, "
+        f"the **4 Division Title Races** and the **3 Wild Card Spots (Seeds #5–#7)** are one of the single most important storylines in the league! "
+        f"Spend **3 to 4 full minutes** breaking down every division leader, the head-to-head and Points-For (PF) tiebreakers, who holds the #1 First-Round Bye, "
+        f"which teams hold the 3 Wild Card spots, and which bubble teams are on the outside looking in!*\n\n"
+    )
+
+    md += "### 🎟️ CURRENT 7-TEAM PLAYOFF PICTURE (IF THE REGULAR SEASON ENDED TODAY)\n"
+    md += "*BFL Playoff Format: 7 teams make the playoffs in Week 15. **Seeds #1–#4** are the 4 Division Champions (with **Seed #1 earning the First-Round Bye**). **Seeds #5–#7** are the top 3 Wild Card teams across the league regardless of division (tiebreakers: Overall Record ➡️ Head-to-Head ➡️ Total Points For).*\n\n"
+
+    md += "#### 👑 SEEDS #1 TO #4: THE 4 DIVISION LEADERS (AUTOMATIC PLAYOFF BERTHS)\n"
+    for s_idx in range(1, min(5, len(full_seeding) + 1)):
+        own = full_seeding[s_idx - 1]
+        rec = records_by_owner[own]
+        std_own = 'rej hoxha' if own.lower() == 'rej hoxha' else standardize_name(own)
+        po = playoff_odds.get(std_own, {})
+        bye_tag = " 🌟 **[HOLDS #1 SEED FIRST-ROUND BYE!]**" if s_idx == 1 else ""
+        div_order = sorted_divisions[rec['division']]
+        runner_up = div_order[1] if len(div_order) > 1 else None
+        lead_note = ""
+        if runner_up:
+            ru_rec = records_by_owner[runner_up]
+            w_diff = rec['wins'] - ru_rec['wins']
+            pf_diff = round(rec['pf'] - ru_rec['pf'], 1)
+            pair_meetings = h2h_games_detail.get(tuple(sorted([own, runner_up])), [])
+            h2h_str = f"; In-Season H2H: {', '.join(pair_meetings)}" if pair_meetings else ""
+            if w_diff == 0:
+                lead_note = f" — **TIED at {rec['wins']}-{rec['losses']} with {runner_up}!** Holds 1st place via tiebreaker (`{pf_diff:+.1f}` PF diff{h2h_str})"
+            else:
+                lead_note = f" — Leads {runner_up} ({ru_rec['wins']}-{ru_rec['losses']}) by **{w_diff} game{'s' if w_diff != 1 else ''}** (`{pf_diff:+.1f}` PF diff{h2h_str})"
+        po_str = f" | Monte Carlo: **{po.get('playoff_pct', 0)}% Playoff**, **{po.get('div_title_pct', 0)}% Div Title**, **{po.get('bye_pct', 0)}% #1 Bye**" if po else ""
+        md += (
+            f"- **Seed #{s_idx} — {own}** ({rec['team_name']} • **{rec['division']} Leader**): "
+            f"**{rec['wins']}-{rec['losses']}** (Div: {rec['div_w']}-{rec['div_l']}) | **{rec['pf']:.1f} PF (League Rank #{rec['pf_rank']})**{bye_tag}{lead_note}{po_str}\n"
+        )
+
+    md += "\n#### 🔥 SEEDS #5 TO #7: THE 3 WILD CARD SPOTS (IN THE PLAYOFFS TODAY)\n"
+    seed7_own = full_seeding[6] if len(full_seeding) >= 7 else None
+    seed8_own = full_seeding[7] if len(full_seeding) >= 8 else None
+    for s_idx in range(5, min(8, len(full_seeding) + 1)):
+        own = full_seeding[s_idx - 1]
+        rec = records_by_owner[own]
+        std_own = 'rej hoxha' if own.lower() == 'rej hoxha' else standardize_name(own)
+        po = playoff_odds.get(std_own, {})
+        cutline_note = ""
+        if seed8_own:
+            s8_rec = records_by_owner[seed8_own]
+            w_cushion = rec['wins'] - s8_rec['wins']
+            pf_cushion = round(rec['pf'] - s8_rec['pf'], 1)
+            if w_cushion == 0:
+                cutline_note = f" — **TIED in record ({rec['wins']}-{rec['losses']}) with #8 {seed8_own}**, holding Wild Card spot via **`{pf_cushion:+.1f}` Points-For advantage**!"
+            else:
+                cutline_note = f" — **{w_cushion} game{'s' if w_cushion != 1 else ''} ahead** of #8 {seed8_own} ({s8_rec['wins']}-{s8_rec['losses']}) (`{pf_cushion:+.1f}` PF advantage)"
+        po_str = f" | Monte Carlo: **{po.get('playoff_pct', 0)}% Playoff** ({po.get('div_title_pct', 0)}% Div Title)" if po else ""
+        md += (
+            f"- **Seed #{s_idx} (Wild Card #{s_idx - 4}) — {own}** ({rec['team_name']} • {rec['division']}): "
+            f"**{rec['wins']}-{rec['losses']}** (Div: {rec['div_w']}-{rec['div_l']}) | **{rec['pf']:.1f} PF (League Rank #{rec['pf_rank']})**{cutline_note}{po_str}\n"
+        )
+
+    md += "\n#### 🚨 ON THE BUBBLE / IN THE HUNT (#8 TO #13 — CHASING THE WILD CARD CUTLINE & DIVISION LEADS)\n"
+    for s_idx in range(8, min(14, len(full_seeding) + 1)):
+        own = full_seeding[s_idx - 1]
+        rec = records_by_owner[own]
+        std_own = 'rej hoxha' if own.lower() == 'rej hoxha' else standardize_name(own)
+        po = playoff_odds.get(std_own, {})
+        div_leader = sorted_divisions[rec['division']][0]
+        dl_rec = records_by_owner[div_leader]
+        gb_div = dl_rec['wins'] - rec['wins']
+        gb_wc = (records_by_owner[seed7_own]['wins'] - rec['wins']) if seed7_own else 0
+        pf_vs_wc7 = round(rec['pf'] - records_by_owner[seed7_own]['pf'], 1) if seed7_own else 0.0
+        if gb_wc == 0:
+            wc_gap_str = f"**TIED in record with #7 {seed7_own}**, but currently bumped out on tiebreakers (`{pf_vs_wc7:+.1f}` PF vs #7)"
+        else:
+            wc_gap_str = f"**{gb_wc} game{'s' if gb_wc != 1 else ''} back of #7 Wild Card** ({seed7_own}, `{pf_vs_wc7:+.1f}` PF diff)"
+        div_gap_str = (
+            f"**TIED for 1st in {rec['division']}** with {div_leader} (trailing on tiebreaker)"
+            if gb_div == 0
+            else f"**{gb_div} game{'s' if gb_div != 1 else ''} back in {rec['division']}** behind {div_leader}"
+        )
+        po_str = f" | Monte Carlo: **{po.get('playoff_pct', 0)}% Playoff** ({po.get('div_title_pct', 0)}% Div Title)" if po else ""
+        md += (
+            f"- **#{s_idx} ({'First Team Out' if s_idx == 8 else 'Bubble Chaser'}) — {own}** ({rec['wins']}-{rec['losses']}, {rec['division']}): "
+            f"**{rec['pf']:.1f} PF (Rank #{rec['pf_rank']})** — {wc_gap_str}; {div_gap_str}{po_str}\n"
+        )
+    md += "\n"
+
+    # 4. Deep Division-by-Division Breakdown
+    md += f"### 🧭 DIVISION-BY-DIVISION STANDINGS, TIEBREAKERS & RACE DYNAMICS (THROUGH WEEK {week_num})\n"
+    md += "*Discuss all 4 divisions thoroughly! Highlight who controls the division crown, who holds head-to-head and Points-For tiebreakers, and which divisions could send multiple Wild Card teams to the playoffs:*\n\n"
+
+    for div in ['East', 'North', 'South', 'West']:
+        ordered_owners = sorted_divisions.get(div, [])
+        if not ordered_owners:
+            continue
+        leader_own = ordered_owners[0]
+        leader_w = records_by_owner[leader_own]['wins']
+        co_leaders = [o for o in ordered_owners if records_by_owner[o]['wins'] == leader_w]
+
+        md += f"#### 🏈 {div.upper()} DIVISION\n"
+        if len(co_leaders) == 1:
+            second_own = ordered_owners[1]
+            second_w = records_by_owner[second_own]['wins']
+            second_l = records_by_owner[second_own]['losses']
+            tied_seconds = [o for o in ordered_owners[1:] if records_by_owner[o]['wins'] == second_w]
+            gap = leader_w - second_w
+            pair_h2h = h2h_games_detail.get(tuple(sorted([leader_own, second_own])), [])
+            h2h_note = f" ({'; '.join(pair_h2h)})" if pair_h2h else ""
+            if len(tied_seconds) > 1:
+                sec_names = ", ".join([f"**{o}** ({records_by_owner[o]['pf']:.1f} PF)" for o in tied_seconds])
+                md += (
+                    f"- **Division Race Storyline:** **{leader_own}** sits alone atop the {div} at **{leader_w}-{records_by_owner[leader_own]['losses']}** ({records_by_owner[leader_own]['pf']:.1f} PF), "
+                    f"holding a **{gap}-game lead** over a **{len(tied_seconds)}-way logjam at {second_w}-{second_l}** between {sec_names}!\n"
+                )
+            else:
+                md += (
+                    f"- **Division Race Storyline:** **{leader_own}** sits alone atop the {div} at **{leader_w}-{records_by_owner[leader_own]['losses']}**, "
+                    f"holding a **{gap}-game lead** over 2nd-place **{second_own}** ({second_w}-{second_l}){h2h_note}.\n"
+                )
+        else:
+            names = " & ".join([f"**{o}**" for o in co_leaders])
+            pair_h2h = h2h_games_detail.get(tuple(sorted(co_leaders[:2])), [])
+            h2h_note = f" In-season head-to-head so far: **{'; '.join(pair_h2h)}**." if pair_h2h else ""
+            pf_gap = abs(round(records_by_owner[co_leaders[0]]['pf'] - records_by_owner[co_leaders[1]]['pf'], 1))
+            md += (
+                f"- **Division Race Storyline:** 🚨 **HIGH-STAKES {len(co_leaders)}-WAY DEADLOCK AT {leader_w}-{records_by_owner[leader_own]['losses']}!** "
+                f"{names} are deadlocked for 1st place in the {div}! **{co_leaders[0]}** currently holds the #1 division slot via tiebreaker "
+                f"(separated by just **`{pf_gap:.1f}` total points** in PF!){h2h_note}\n"
+            )
+
+        # Check how many teams from this division are in the 7-team playoff field right now
+        in_field = [o for o in ordered_owners if seed_map[o]['seed'] <= 7]
+        md += f"- **Playoff & Wild Card Footprint:** Currently **{len(in_field)} team(s)** from the {div} are inside the 7-team playoff cutline ({', '.join([f'{o} (Seed #{seed_map[o][chr(115)+chr(101)+chr(101)+chr(100)]})' for o in in_field])}).\n"
+
+        for rank, own in enumerate(ordered_owners, 1):
+            rec = records_by_owner[own]
+            std_own = 'rej hoxha' if own.lower() == 'rej hoxha' else standardize_name(own)
+            po_info = playoff_odds.get(std_own, {})
+            s_info = seed_map[own]
+            po_str = (
+                f" | **Playoff Odds: {po_info.get('playoff_pct', 0)}%** "
+                f"(Div Title: {po_info.get('div_title_pct', 0)}%, #1 Bye: {po_info.get('bye_pct', 0)}%)"
+                if po_info else ""
+            )
+            md += (
+                f"  {rank}. **{own}** ({rec['team_name']}) — **{rec['wins']}-{rec['losses']}** (Div: {rec['div_w']}-{rec['div_l']}) | "
+                f"**{s_info['role']}** | Streak: `{rec['streak_str']}` | **{rec['pf']:.1f} PF (Rank #{rec['pf_rank']})** | "
+                f"PA: {rec['pa']:.1f} (Rank #{rec['pa_rank']} hardest){po_str} | {rec['status_tag']}\n"
+            )
+        md += "\n"
+
+    return seed_map, md
+
+
 
 def generate_payload(season: int, week_num: int):
     print(f"📡 Fetching live ESPN data for Season {season}, Week {week_num}...")
@@ -1004,30 +1294,32 @@ def generate_payload(season: int, week_num: int):
     payload += f"  3. Deliver a punchy 2-sentence teaser of Week {week_num}'s biggest headlines, upsets, and division shifts.\n"
     payload += "  4. Immediately transition straight into the action and the recap of the week!\n\n"
 
-    # --- STRICT PACING & BROADCAST TIME ALLOCATION (TARGET: 20 TO 30 MINUTES, 75%+ ON MATCHUPS & QUOTES) ---
-    payload += "### ⏱️ MANDATORY EPISODE LENGTH (20–30 MINUTES) & TIME ALLOCATION (75%+ MATCHUPS & OWNER QUOTES)\n"
-    payload += "**CRITICAL DURATION DIRECTIVE:** This is a full-length **20 to 30 minute** weekly flagship broadcast! DO NOT rush through the games or wrap up in 12–13 minutes. Take your time unpacking all 8 matchups in rich detail (~2.5 to 3.5 minutes per matchup) and reacting to every single owner quote!\n\n"
-    payload += "1. **ACT 1: THE OPENING DRIVE (STRICT MAXIMUM ~10% OF THE EPISODE / UNDER 2.5 MINUTES TOTAL)**\n"
+    # --- STRICT PACING & BROADCAST TIME ALLOCATION (TARGET: 20 TO 30 MINUTES) ---
+    payload += "### ⏱️ MANDATORY EPISODE LENGTH (20–30 MINUTES) & TIME ALLOCATION\n"
+    payload += "**CRITICAL DURATION DIRECTIVE:** This is a full-length **20 to 30 minute** weekly flagship broadcast! DO NOT rush through the games or wrap up in 12–13 minutes. Take your time unpacking the Division & Wild Card Playoff Race in Act 1 (~3–4 mins) and all 8 matchups & owner quotes in Act 2 (~16–22 mins, ~2.5 to 3.5 minutes per matchup)!\n\n"
+    payload += "1. **ACT 1: THE OPENING DRIVE, DIVISION DYNAMICS & WILD CARD RACE (DEDICATED 3.5 TO 4.5 MINUTES — DO NOT GLANCE OVER!)**\n"
     payload += f"   - **SportsCenter Desk Welcome:** Welcome listeners to the Week {week_num} edition of the Tuesday Morning Hangover, Chris & Dave introduce themselves, and tease the biggest headlines of the week.\n"
-    payload += "   - **Division Standings Snapshot:** Quick 60-second look at division leaders, win streaks, and losing skids.\n"
-    payload += "   - **Trades From This Past Week ONLY (Strict 60–90 Second Cap):** ONLY mention trades that happened in the last 7 days (since last Tuesday morning). Spend **NO MORE THAN 60–90 SECONDS TOTAL** on trades! NEVER spend 5 minutes debating trades, and NEVER discuss trades from earlier weeks.\n"
-    payload += "   - *Strict Pacing Rule:* Wrap up Act 1 in under 2.5 minutes so you can spend 75%+ of the show on the 8 matchups and owner quotes!\n\n"
-    payload += f"2. **ACT 2: DEEP-DIVE GAME-BY-GAME BREAKDOWNS & OWNER QUOTES (THE CORE 75%+ OF THE EPISODE / 16–22 MINUTES)**\n"
+    payload += f"   - **DEEP-DIVE INTO DIVISION LEADERS, TIEBREAKERS & THE 7-TEAM WILD CARD RACE (MANDATORY 3 TO 4 MINUTES):** With {max(0, 14 - week_num)} weeks left in the regular season, the Division Races and Wild Card Cutline are **one of the most important parts of the entire show**! DO NOT just glance over the standings! Go division-by-division (East, North, South, West) and break down:\n"
+    payload += "     a) **Seeds #1–#4 (The 4 Division Leaders & #1 Seed First-Round Bye Race):** Who leads each division, who holds the head-to-head and Points-For (PF) tiebreakers in deadlocked divisions, and who controls the #1 overall seed.\n"
+    payload += "     b) **Seeds #5–#7 (The 3 Wild Card Spots):** Which 3 non-division winners currently hold the Wild Card berths and how Total Points For (`PF`) is deciding tiebreakers.\n"
+    payload += "     c) **On The Bubble / In The Hunt (#8–#12):** Which teams are sitting at #8 (First Team Out) or 1 game back, and whether their best path is winning their division or chasing a Wild Card spot.\n"
+    payload += "   - **Trades From This Past Week ONLY (Strict 60-Second Cap):** ONLY mention trades that happened in the last 7 days (since last Tuesday morning). Spend **NO MORE THAN 60 SECONDS TOTAL** on trades!\n\n"
+    payload += f"2. **ACT 2: DEEP-DIVE GAME-BY-GAME BREAKDOWNS & OWNER QUOTES (THE CORE 70–75% OF THE EPISODE / 16–22 MINUTES)**\n"
     payload += "   - **MANDATORY DEEP COVERAGE (2.5 TO 3.5 MINUTES PER GAME):** You MUST cover **ALL 8 MATCHUPS and ALL 16 TEAMS** in full detail! Spend 2.5 to 3.5 minutes on EVERY SINGLE matchup so the full show runs 20–30 minutes.\n"
     payload += "   - **WHAT TO COVER FOR EVERY SINGLE GAME (DO NOT RUSH):**\n"
     payload += "     a) **Final Score, Margin & 18-Year All-Time Rivalry Context:** Who won, by how much, and how it shifts their all-time head-to-head series.\n"
-    payload += "     b) **Direct Owner Quotes & Discord Trash Talk (MANDATORY):** Read verbatim and react to the **💬 DIRECT OWNER QUOTES & TRASH TALK** embedded inside each matchup! Banter about the owners' excuses, boasts, and saltiness.\n"
-    payload += "     c) **Live Game Desk Win-Probability Swings & MNF Drama:** Break down the 4th-quarter comebacks, Sunday Night shockwaves, and Monday Night Football miracles.\n"
-    payload += "     d) **Studs, Duds & Start/Sit Blunders for BOTH Teams:** Discuss the top 3 starters, bench blunders, and play-by-play NFL statlines for both the winner and the loser.\n"
-    payload += "     e) **Standings & Monte Carlo Playoff Odds Impact:** How the win or loss changes each manager's division race and playoff percentage.\n\n"
-    payload += f"3. **ACT 3: THE TWO-MINUTE DRILL & NEXT WEEK LOOKAHEAD (FINAL ~15% OF THE EPISODE / 3–4 MINUTES)**\n"
-    payload += f"   - Preview all 8 Week {week_num + 1} matchups, highlighting 18-year H2H history, Super Bowl rematches, and Win/Loss Playoff Leverage swings.\n"
+    payload += "     b) **Division & Wild Card Race Impact (CRITICAL):** Explicitly discuss how this result changed both owners' Division standing, Playoff Seed (#1–#7 vs Bubble), tiebreakers, and Monte Carlo Playoff Odds!\n"
+    payload += "     c) **Direct Owner Quotes & Discord Trash Talk (MANDATORY):** Read verbatim and react to the **💬 TIMESTAMPED DISCORD CHATTER & OWNER QUOTES** embedded inside each matchup! Respect the exact `[Timestamp | Slate Window]` tags.\n"
+    payload += "     d) **Live Game Desk Win-Probability Swings & MNF Drama:** Break down the 4th-quarter comebacks, Sunday Night shockwaves, and Monday Night Football miracles.\n"
+    payload += "     e) **Studs, Duds & Start/Sit Blunders for BOTH Teams:** Discuss the top 3 starters, bench blunders, and play-by-play NFL statlines for both the winner and the loser.\n\n"
+    payload += f"3. **ACT 3: THE TWO-MINUTE DRILL & NEXT WEEK LOOKAHEAD (FINAL ~10–15% OF THE EPISODE / 3–4 MINUTES)**\n"
+    payload += f"   - Preview all 8 Week {week_num + 1} matchups, emphasizing **Divisional Showdowns**, 18-year H2H history, and **Win/Loss Playoff Leverage Swings**.\n"
     payload += "   - Closing thoughts, sign-off banter, and parting barbs.\n\n"
 
     # --- CRITICAL HOST DIRECTIVES ---
     payload += "### ⚡ CRITICAL SHOW DIRECTIVES (MUST FOLLOW):\n"
     payload += f"1. **MANDATORY SPORTSCENTER DESK INTRO & NO HYPOTHETICAL SHTICK:** Never open the episode asking listeners to 'imagine' a scenario or asking rhetorical questions. Open like professional sports anchors: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover, I'm Chris alongside Dave!' NEVER use the term 'Data Sheet'—always refer to the board as the **'Scoreboard'**.\n"
-    payload += "2. **20–30 MINUTE TARGET LENGTH & 75%+ ON MATCHUPS/QUOTES:** Do NOT cut the show short at 13 minutes! Unpack every matchup thoroughly, read the owners' actual Discord quotes out loud, and debate both sides of every game.\n"
+    payload += "2. **20–30 MINUTE TARGET LENGTH & DEEP DIVISION / WILD CARD COVERAGE:** Do NOT cut the show short at 13 minutes, and DO NOT gloss over the division standings! Late in the season, the 4 Division Title Races, Head-to-Head / Points-For Tiebreakers, and the 3 Wild Card spots (Seeds #5–#7) are paramount. Unpack the playoff picture thoroughly in Act 1 AND inside every matchup in Act 2.\n"
     payload += "3. **DO NOT INVENT MID-GAME INJURIES (CRITICAL ACCURACY RULE):** NEVER claim a player got injured mid-game unless they are explicitly listed under a `🚨 VERIFIED IN-GAME INJURY REPORT` block! If a player scored 0 to 6 points and is NOT listed in a Verified In-Game Injury Report, they did NOT get hurt mid-game—they were healthy and simply laid an egg (a dud performance). Roast healthy players who disappeared; only sympathize with verified in-game injuries.\n"
     
     # Dynamic continuity highlights
@@ -1109,54 +1401,9 @@ def generate_payload(season: int, week_num: int):
     if gauntlet_callouts:
         payload += f"- **Hardest Schedules:** {', '.join(gauntlet_callouts)}. Opponents are putting up big totals against them.\n\n"
 
-    # --- DIVISION STANDINGS & TITLE RACE DYNAMICS ---
-    payload += f"## 📊 DIVISION STANDINGS & TITLE RACE DYNAMICS (THROUGH WEEK {week_num})\n"
-    division_standings = {}
-    for t in teams.values():
-        div = t.get('division', 'Unknown')
-        if div not in division_standings: division_standings[div] = []
-        division_standings[div].append(t)
-
-    div_narratives = {}
-    for div in ['East', 'North', 'South', 'West']:
-        div_teams = division_standings.get(div, [])
-        div_teams.sort(key=lambda x: (
-            trajectories[x['id']]['overall_w'],
-            trajectories[x['id']]['div_w'],
-            trajectories[x['id']]['points_for']
-        ), reverse=True)
-        if div_teams:
-            leader_w = trajectories[div_teams[0]['id']]['overall_w']
-            leaders = [t for t in div_teams if trajectories[t['id']]['overall_w'] == leader_w]
-            if len(leaders) == 1:
-                gap = leader_w - trajectories[div_teams[1]['id']]['overall_w']
-                gap_str = f"holds a {gap}-game lead" if gap > 0 else "holds the tiebreaker"
-                div_narratives[div] = f"{leaders[0]['owner']} sits alone in 1st place at {leader_w}-{trajectories[leaders[0]['id']]['overall_l']} ({gap_str})! "
-            else:
-                names = ', '.join([t['owner'] for t in leaders])
-                div_narratives[div] = f"MASSIVE {len(leaders)}-WAY DEADLOCK AT THE TOP! {names} are all tied for 1st place at {leader_w}-{trajectories[leaders[0]['id']]['overall_l']}! "
-            chasers = [f"{t['owner']} ({trajectories[t['id']]['overall_w']}-{trajectories[t['id']]['overall_l']})" for t in div_teams[len(leaders):]]
-            if chasers:
-                div_narratives[div] += f"Chasing: {', '.join(chasers)}."
-
-    for div in ['East', 'North', 'South', 'West']:
-        div_teams = division_standings.get(div, [])
-        div_teams.sort(key=lambda x: (
-            trajectories[x['id']]['overall_w'],
-            trajectories[x['id']]['div_w'],
-            trajectories[x['id']]['points_for']
-        ), reverse=True)
-        
-        payload += f"### 🏈 {div.upper()} DIVISION\n"
-        payload += f"*{div_narratives.get(div, '')}*\n"
-        for rank, t in enumerate(div_teams, 1):
-            tr = trajectories[t['id']]
-            std_own = standardize_name(t['owner'])
-            if std_own.lower() == 'rej hoxha': std_own = 'rej hoxha'
-            po_info = playoff_odds.get(std_own, {})
-            po_str = f" | **Playoff Odds: {po_info.get('playoff_pct', 0)}%** (Div Title: {po_info.get('div_title_pct', 0)}%, #1 Bye: {po_info.get('bye_pct', 0)}%)" if po_info else ""
-            payload += f"{rank}. **{t['owner']}** ({t['name']}): **{tr['overall_w']}-{tr['overall_l']}** (Div: {tr['div_w']}-{tr['div_l']}) | Streak: `{tr['streak_str']}` | **{round(tr['points_for'], 1)} PF (Rank #{tr['pf_rank']})** | PA: {round(tr['points_against'], 1)} (Rank #{tr['pa_rank']} hardest){po_str} | {tr['status_tag']}\n"
-        payload += "\n"
+    # --- LIVE PLAYOFF BRACKET, WILD CARD CUTLINE & DIVISION STANDINGS DYNAMICS ---
+    seed_map, live_playoff_md = compute_live_playoff_picture(raw_data, week_num, teams, trajectories, playoff_odds)
+    payload += live_playoff_md
 
     if playoff_odds:
         payload += f"## 🎲 10,000-SIMULATION PLAYOFF ODDS, BYE RACE & LEVERAGE STAKES (ENTERING WEEK {week_num + 1})\n"
@@ -1264,15 +1511,21 @@ def generate_payload(season: int, week_num: int):
             payload += f"**Final Score:** {max(m['away_score'], m['home_score'])} to {min(m['away_score'], m['home_score'])} (Margin: {m['margin']})\n"
             payload += f"{build_completed_matchup_h2h_tidbit(w['owner'], l['owner'], h2h_through_week, season, week_num)}\n"
 
-            # Playoff Odds context for both owners right inside the matchup
+            # Playoff Seed, Division Standings & Monte Carlo Odds context for both owners right inside the matchup
             w_std = standardize_name(w['owner'])
             if w_std.lower() == 'rej hoxha': w_std = 'rej hoxha'
             l_std = standardize_name(l['owner'])
             if l_std.lower() == 'rej hoxha': l_std = 'rej hoxha'
             w_po = playoff_odds.get(w_std, {})
             l_po = playoff_odds.get(l_std, {})
+            w_s = seed_map.get(w['owner'], {})
+            l_s = seed_map.get(l['owner'], {})
             if w_po and l_po:
-                payload += f"**🎲 Playoff Odds After Result:** {w['owner']} sits at **{w_po['playoff_pct']}% Playoff Odds** ({w_po['div_title_pct']}% Div Title) | {l['owner']} sits at **{l_po['playoff_pct']}% Playoff Odds** ({l_po['div_title_pct']}% Div Title)\n"
+                payload += (
+                    f"**🏆 Division & Wild Card Standings Impact (DISCUSS ON AIR):** "
+                    f"**{w['owner']}** now sits at **{w_s.get('role', 'Contender')}** with **{w_po['playoff_pct']}% Playoff Odds** ({w_po['div_title_pct']}% {w_team.get('division', '')} Title, {w_po['bye_pct']}% #1 Bye) | "
+                    f"**{l['owner']}** now sits at **{l_s.get('role', 'Chaser')}** with **{l_po['playoff_pct']}% Playoff Odds** ({l_po['div_title_pct']}% {l_team.get('division', '')} Title)\n"
+                )
             payload += "\n"
 
             # Inject Live Game Desk Swings for THIS matchup directly here!
@@ -1501,9 +1754,9 @@ def generate_payload(season: int, week_num: int):
     # Write ready-to-paste NotebookLM 'Customize' prompt file
     customize_prompt = (
         f"Host a 20-30 min SportsCenter-style Week {week_num} BFL recap as Chris & Dave. "
-        f"Spend 75%+ of the show (2.5-3.5 mins/game) on ALL 8 matchups (scores, studs/duds, blunders, 18-yr H2H, Live Desk swings) "
-        f"AND reading every Discord quote verbatim with its exact [Timestamp | Slate Window] context (never confuse Thu/Sat pre-game chats with Sunday live reactions!). "
-        f"Cap this week's trades at 60s. Never say a player got hurt mid-game unless in a Verified In-Game Injury Report."
+        f"Spend 3-4 mins dissecting all 4 Division Races, H2H/PF tiebreakers & the 7-team Wild Card cutline (don't gloss over standings!). "
+        f"Spend 18-22 mins (2.5-3.5m/game) on ALL 8 matchups AND reading every Discord quote verbatim with its exact [Timestamp | Slate Window] context. "
+        f"Cap this week's trades at 60s. Never say a player got hurt mid-game unless in a Verified Injury Report."
     )
     customize_file = out_dir / f"notebook_customize_prompt_week_{week_num}_{season}.txt"
     with open(customize_file, 'w') as f:
