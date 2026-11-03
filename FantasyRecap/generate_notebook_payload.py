@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, analyze_week, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, standardize_name, compile_all_time_h2h
-from FantasyRecap.press_conference_manager import get_verified_manager_quotes
+from FantasyRecap.press_conference_manager import get_verified_manager_quotes, harvest_detailed_discord_chatter
 from FantasyRecap.playoff_odds_simulator import simulate_league_playoff_odds_from_espn
 from FantasyRecap.config import CURRENT_YEAR
 
@@ -117,14 +117,6 @@ def detect_in_game_injury(player: dict, player_context: dict = None) -> dict:
     has_exit_signal = any(sig in full_text for sig in IN_GAME_EXIT_SIGNALS)
 
     if headline_has_inj and has_exit_signal:
-        return {
-            'player': player.get('name', 'Unknown'),
-            'pts': pts,
-            'proj': proj,
-            'headline': details['headline'],
-            'story': details['story']
-        }
-    elif espn_status not in ('ACTIVE', 'NORMAL') and headline_has_inj and pts <= 4.0 and proj >= 7.0:
         return {
             'player': player.get('name', 'Unknown'),
             'pts': pts,
@@ -831,15 +823,40 @@ def extract_live_desk_by_matchup(season: int, week_num: int, matchups: list) -> 
 
     if log_file.exists():
         try:
+            match_id_to_pair = {}
+            if state_file.exists():
+                with open(state_file, "r") as sf:
+                    st_map = json.load(sf)
+                    for mid, st_m in st_map.items():
+                        ao = st_m.get("away_owner", "")
+                        ho = st_m.get("home_owner", "")
+                        if ao and ho:
+                            match_id_to_pair[str(mid)] = tuple(sorted([ao, ho]))
+
             with open(log_file, "r") as lf:
                 for line in lf:
                     if not line.strip():
                         continue
                     ev = json.loads(line)
                     if ev.get("status") == "FIRED" and ev.get("event_type") in ["SHOCKWAVE", "LEAD_CHANGE"]:
+                        ts_raw = ev.get("timestamp", "")
+                        ts_label = ts_raw
+                        try:
+                            from datetime import datetime
+                            dt_ev = datetime.fromisoformat(ts_raw)
+                            ts_label = dt_ev.strftime("%a %m/%d %I:%M %p CT")
+                        except Exception:
+                            pass
                         cat = ev.get("catalyst", "")
-                        b_str = f"- 📡 **LIVE DESK ALERT ({ev.get('event_type')}):** {ev.get('matchup')} ({ev.get('swing_pct', '')}% swing) {cat}".strip()
+                        flip_tag = " **[LEAD FLIPPED!]**" if ev.get("lead_flipped") else ""
+                        if ev.get("event_type") == "SHOCKWAVE":
+                            b_str = f"- 📡 **[{ts_label}] LIVE DESK SHOCKWAVE ({ev.get('swing_pct', '')}% Win-Prob Swing):** {ev.get('matchup')} (Score at alert: `{ev.get('away_score')}` to `{ev.get('home_score')}`){flip_tag} — {cat}".strip()
+                        else:
+                            b_str = f"- 🔄 **[{ts_label}] LIVE DESK LEAD CHANGE:** **{ev.get('new_leader')}** overtook **{ev.get('prev_leader')}** (Margin: `{ev.get('margin')}` pts, Score: `{ev.get('away_score')}` to `{ev.get('home_score')}`) — {cat}".strip()
                         bullets.append(b_str)
+                        pk = match_id_to_pair.get(str(ev.get("match_id", "")))
+                        if pk:
+                            per_matchup.setdefault(pk, []).append(b_str)
         except Exception:
             pass
 
@@ -847,9 +864,71 @@ def extract_live_desk_by_matchup(season: int, week_num: int, matchups: list) -> 
         return per_matchup, ""
 
     out = "\n## ⚡ LIVE GAME DESK: IN-GAME WIN PROBABILITY SWINGS & MNF MIRACLES\n"
-    out += "*These real-time odds swings, 4th-quarter rallies, and Monday Night Football comebacks lit up the `#live-game-desk` channel this week. Weave this drama directly into your matchup breakdowns:*\n"
+    out += "*These real-time odds swings, 4th-quarter rallies, and Monday Night Football comebacks lit up the `#live-game-desk` channel this week with exact Central Time timestamps. Weave this drama directly into your matchup breakdowns:*\n"
     out += "\n".join(bullets) + "\n"
     return per_matchup, out
+
+
+def format_contextual_discord_entry(d: dict, w_owner: str = None, l_owner: str = None, w_pts: float = None, l_pts: float = None) -> str:
+    """
+    Formats a single harvested Discord message with full timestamp, NFL game-slate window,
+    channel name, reply chain context, and automatic anti-misinterpretation notes for NotebookLM.
+    """
+    ts_str = d.get("timestamp_str", "")
+    slate = d.get("slate_window", "")
+    chan = d.get("channel_name", "#trash-talk")
+    speaker = d.get("speaker", "Unknown")
+    text = d.get("text", "")
+    reply_owner = d.get("reply_to_owner")
+    reply_text = d.get("reply_to_text")
+    bot_ctx = d.get("bot_context")
+
+    reply_str = ""
+    if reply_owner and reply_text:
+        reply_str = f" (Replying to {reply_owner}'s message: \"{reply_text}\")"
+    elif reply_text:
+        reply_str = f" (Replying to: \"{reply_text}\")"
+
+    notes = []
+    if bot_ctx:
+        notes.append(f"Trigger Context: {bot_ctx}")
+
+    # Temporal guardrails so the podcast NEVER confuses pre-game banter with Sunday in-game reactions
+    if any(k in slate for k in ["Tue/Wed", "Thursday Pre-TNF", "Fri/Sat"]):
+        notes.append(
+            f"📌 Pre-Sunday Timing Note: {speaker} posted this during '{slate}' ({ts_str}) BEFORE Sunday's games kicked off—do NOT describe this as a live Sunday reaction!"
+        )
+    elif "Thursday Night Football" in slate:
+        notes.append(
+            f"📌 TNF Timing Note: Posted live during Thursday Night Football ({ts_str}), before Sunday's main slate."
+        )
+
+    # Outcome & Reverse-Jinx guardrails when inside a specific matchup
+    low_text = text.lower()
+    doom_phrases = [
+        "over", "rest easy", "cooked", "done", "lost", "lose", "good night",
+        "bid you all", "gg", "congrats", "white flag", "pain", "exhausted"
+    ]
+    if w_owner and l_owner and w_pts is not None and l_pts is not None:
+        if speaker == w_owner and any(p in low_text for p in doom_phrases) and "Post-MNF" not in slate:
+            notes.append(
+                f"📌 Mid-Game Reverse-Jinx / Plot Twist: {w_owner} posted this at {ts_str} ({slate}) while sweating/trailing mid-matchup—BEFORE rallying to WIN {w_pts} to {l_pts} over {l_owner}!"
+            )
+        elif speaker == w_owner and "Post-MNF" in slate:
+            notes.append(
+                f"📌 Post-MNF Victory Reaction: {w_owner} posted this immediately after completing the Monday Night Football win over {l_owner} ({w_pts} to {l_pts})."
+            )
+        elif speaker == l_owner and ("Sunday" in slate or "Monday" in slate):
+            notes.append(
+                f"📌 Matchup Outcome Context: {l_owner} posted this during {slate} ({ts_str}); {l_owner} ultimately LOST this matchup to {w_owner}, {w_pts} to {l_pts}."
+            )
+        elif speaker not in (w_owner, l_owner):
+            notes.append(
+                f"📌 Third-Party League Reaction during {slate} ({ts_str}) on the {w_owner} ({w_pts}) vs. {l_owner} ({l_pts}) matchup."
+            )
+
+    note_suffix = f"\n  *[{'; '.join(notes)}]*" if notes else ""
+    return f"- 💬 **[{ts_str} | {slate} | {chan}] {speaker}{reply_str}:** \"{text}\"{note_suffix}"
 
 
 def build_live_game_desk_recap_section(season: int, week_num: int, matchups: list) -> str:
@@ -864,6 +943,7 @@ def generate_payload(season: int, week_num: int):
     teams = parse_league_members_and_teams(raw_data)
     matchups, perfs, _ = analyze_week(raw_data, week_num)
     verified_quotes = get_verified_manager_quotes(week_num=week_num)
+    detailed_chatter = harvest_detailed_discord_chatter(week_num=week_num)
     cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
 
     trajectories = calculate_season_trajectories(raw_data, week_num, teams)
@@ -960,7 +1040,9 @@ def generate_payload(season: int, week_num: int):
         continuity_snippets.append(f"{', '.join(winless_teams)} still searching for win #1")
     continuity_str = f" This is Episode {week_num}! DO NOT repeat static multi-year owner biographies or ring counts from scratch. Instead, focus on the DYNAMIC {season} SEASON STORY: " + (", ".join(continuity_snippets) if continuity_snippets else "the tight playoff and division races taking shape") + ".\n"
     payload += f"4. **EPISODIC CONTINUITY & ANTI-REPETITION:**{continuity_str}"
-    payload += "5. **HEAVY FOCUS ON OWNER QUOTES & TRASH TALK:** The managers love hearing their own Discord quotes from `#trash-talk` and `#live-game-desk` read and roasted on the air! Quote them directly during their matchup breakdowns.\n"
+    payload += "5. **HEAVY FOCUS ON OWNER QUOTES & STRICT TIMESTAMP CONTEXT (CRITICAL):**\n"
+    payload += "   - Every Discord quote in this Scoreboard is tagged with its exact **Central Time timestamp and NFL Game-Slate Window** (e.g., `[Thu 10/29 3:15 PM CT | Thursday Pre-TNF Banter]`, `[Sun 11/01 2:54 PM CT | Live During Sunday 12:00 PM Early Slate]`, `[Sun 11/01 8:27 PM CT | Live During Sunday Night Football]`, `[Mon 11/02 10:12 PM CT | Monday Night Post-MNF Final Reaction]`).\n"
+    payload += "   - **NEVER CONFUSE WHEN A QUOTE HAPPENED:** Do NOT treat a Tuesday/Thursday pre-game comment as if it happened during Sunday's games! And if an owner posted a dramatic mid-game reaction during the Sunday early slate (like prematurely declaring their undefeated season over while trailing at 2:54 PM CT) before coming back to win on Sunday Night, call out the exact timeline of their mid-game panic/reverse-jinx!\n"
     payload += "6. **STRICT 60–90 SECOND CAP ON TRADES (LAST 7 DAYS ONLY):** Only discuss trades that occurred this past week (since last Tuesday morning), and spend at most 60–90 seconds on them total. Do NOT let trade talk eat into matchup breakdown time.\n"
     payload += "7. **TIMELINE REALITY & PLAYER TENURE (DO NOT CALL VETERANS ROOKIES):** The current NFL season is 2026!\n"
     payload += "   - Every player in this document has their official NFL tenure tag right next to their name (e.g. `[2nd-Year Sophomore (Drafted 2025)]` or `[3rd-Year Player (Drafted 2024)]`).\n"
@@ -1202,21 +1284,34 @@ def generate_payload(season: int, week_num: int):
                     payload += f"{lb}\n"
                 payload += "\n"
 
-            # Inject Owner Quotes for THIS matchup directly here!
+            # Inject Owner Quotes & Timestamped Discord Context for THIS matchup directly here!
+            w_pts_fin = max(m['away_score'], m['home_score'])
+            l_pts_fin = min(m['away_score'], m['home_score'])
             matchup_quote_lines = []
-            for m_own in [w['owner'], l['owner']]:
-                if m_own in quotes_by_owner:
-                    matchup_quote_lines.append(f"- **💬 {m_own} (in Discord this week):** *{quotes_by_owner[m_own]}*")
-            # Also check if any third-party owner specifically mentioned either of these two owners in their quote
-            for other_own, q_text in quotes_by_owner.items():
-                if other_own not in (w['owner'], l['owner']):
-                    w_first = w['owner'].split()[0]
-                    l_first = l['owner'].split()[0]
-                    if w['owner'] in q_text or l['owner'] in q_text or f" {w_first} " in f" {q_text} " or f" {l_first} " in f" {q_text} ":
-                        matchup_quote_lines.append(f"- **💬 League Reaction from {other_own}:** *{q_text}*")
+            if detailed_chatter:
+                for d in detailed_chatter:
+                    mentioned = d.get("mentioned_owners", [])
+                    reply_to_own = d.get("reply_to_owner")
+                    mentions_this_pair = (
+                        w['owner'] in mentioned
+                        or l['owner'] in mentioned
+                        or reply_to_own in (w['owner'], l['owner'])
+                    )
+                    mentions_other_only = (
+                        bool(mentioned or reply_to_own) and not mentions_this_pair
+                    )
+                    if mentions_this_pair or (d.get("speaker") in (w['owner'], l['owner']) and not mentions_other_only):
+                        matchup_quote_lines.append(
+                            format_contextual_discord_entry(d, w['owner'], l['owner'], w_pts_fin, l_pts_fin)
+                        )
+            else:
+                for m_own in [w['owner'], l['owner']]:
+                    if m_own in quotes_by_owner:
+                        matchup_quote_lines.append(f"- **💬 {m_own} (in Discord this week):** *{quotes_by_owner[m_own]}*")
 
             if matchup_quote_lines:
-                payload += "**🎤 DIRECT OWNER QUOTES & TRASH TALK FOR THIS MATCHUP (MANDATORY — READ & REACT ON AIR!):**\n"
+                payload += "**🎤 TIMESTAMPED DISCORD CHATTER & OWNER QUOTES FOR THIS MATCHUP (MANDATORY — READ VERBATIM WITH PROPER TIMING CONTEXT!):**\n"
+                payload += "*PRODUCER CONTEXT RULE: Pay strict attention to the `[Day Date Time CT | Slate Window]` tags and `[📌 Context Notes]` below! NEVER treat a Tue–Sat pre-game comment as an in-game Sunday reaction, and always frame mid-game reverse-jinxes against the final score!*\n"
                 payload += "\n".join(matchup_quote_lines) + "\n\n"
             
             w_perf = perfs[w['id']]
@@ -1324,7 +1419,17 @@ def generate_payload(season: int, week_num: int):
     # --- LIVE GAME DESK SWINGS & MNF MIRACLES ---
     payload += full_live_desk_md
 
-    if verified_quotes:
+    if detailed_chatter:
+        payload += "\n## 🎤 CHRONOLOGICAL DISCORD CHAT TIMELINE & CONTEXT (TUE–MON)\n"
+        payload += "*Complete chronological log of this week's league banter across `#trash-talk`, `#live-game-desk`, and `#commissioner-desk` with Central Time timestamps, NFL game-slate windows, reply targets, and correlated bot triggers. Use the timestamps so you NEVER confuse Thursday/Saturday pre-game talk with Sunday live-game reactions:*\n"
+        current_slate = None
+        for d in detailed_chatter:
+            sl = d.get("slate_window", "Weekly Banter")
+            if sl != current_slate:
+                current_slate = sl
+                payload += f"\n### 🕒 Slate Window: {current_slate}\n"
+            payload += format_contextual_discord_entry(d) + "\n"
+    elif verified_quotes:
         payload += "\n## 🎤 ALL MANAGER POST-GAME QUOTES & DISCORD CHATTER (READ & ROAST ON AIR!)\n"
         payload += "*Make sure every single one of these real Discord quotes from `#trash-talk` and `#live-game-desk` gets quoted and reacted to during the show:*\n"
         for q in verified_quotes:
@@ -1395,11 +1500,10 @@ def generate_payload(season: int, week_num: int):
 
     # Write ready-to-paste NotebookLM 'Customize' prompt file
     customize_prompt = (
-        f"Host a 20-to-30 minute SportsCenter-style Week {week_num} BFL recap as Chris & Dave. "
-        f"STRICT PACING: Spend 75%+ of the episode (2.5-3.5 mins per game) breaking down ALL 8 Week {week_num} matchups in detail "
-        f"(scores, studs/duds, start/sit blunders, 18-yr H2H, Live Game Desk swings) AND reading/roasting the owners' actual Discord quotes verbatim. "
-        f"Spend under 60 seconds total on this week's trades only (ignore older trades). "
-        f"NEVER say a player got hurt mid-game unless listed in a Verified In-Game Injury Report."
+        f"Host a 20-30 min SportsCenter-style Week {week_num} BFL recap as Chris & Dave. "
+        f"Spend 75%+ of the show (2.5-3.5 mins/game) on ALL 8 matchups (scores, studs/duds, blunders, 18-yr H2H, Live Desk swings) "
+        f"AND reading every Discord quote verbatim with its exact [Timestamp | Slate Window] context (never confuse Thu/Sat pre-game chats with Sunday live reactions!). "
+        f"Cap this week's trades at 60s. Never say a player got hurt mid-game unless in a Verified In-Game Injury Report."
     )
     customize_file = out_dir / f"notebook_customize_prompt_week_{week_num}_{season}.txt"
     with open(customize_file, 'w') as f:

@@ -153,6 +153,111 @@ def post_monday_night_interview_call(
         print(f"❌ Exception posting media call: {e}")
     return False
 
+from zoneinfo import ZoneInfo
+
+DISCORD_COMMISH_CHANNEL_ID = os.getenv("DISCORD_COMMISH_CHANNEL_ID", "1540866967462875186")
+CT_TZ = ZoneInfo("America/Chicago")
+
+OWNER_TEAM_KEYWORDS = {
+    "Nick Christus": ["mykonos", "minotaurs", "nick christus"],
+    "Shawn Lukose": ["nilgiri", "tahrs", "shawn lukose"],
+    "Shawn Ullenbrauck": ["omarion", "wayward", "pat n", "shawn ullenbrauck"],
+    "Abe Thomas": ["substation", "shockers", "crashee", "bandicoot", "abe thomas"],
+    "Saagar Gupta": ["king gupta", "gupta's army", "saagar gupta"],
+    "Dino Davros": ["taliban", "mujahideen", "dino davros"],
+    "Adam Olen": ["cisse", "green and golden", "adam olen"],
+    "Sydney Miller": ["queen of fantasy", "30p chance", "sydney miller"],
+    "Daniel Kruszewski": ["dynasty destroyers", "daniel kruszewski"],
+    "rej hoxha": ["chase-ing", "steve bartman", "rej hoxha"],
+    "Tommy Ehrlich": ["ehrly birds", "tommy ehrlich"],
+    "Samran Mirza": ["de'von intervention", "samran mirza"],
+    "Nael Ahmed": ["mahomes alone", "nmafia", "nael ahmed"],
+    "Blake Whitehouse": ["dan loves obama", "block o", "blake whitehouse"],
+    "Alex Kite": ["future gym teachers", "send da trade", "alex kite"],
+    "Nitesh Patel": ["big nasties", "nitesh patel"],
+}
+
+def _match_author_to_owner(author: dict) -> str:
+    """Maps a Discord author object to a canonical BFL owner name."""
+    if not author or author.get('bot'):
+        return ""
+    uid = str(author.get('id', ''))
+    if uid in DISCORD_ID_TO_OWNER:
+        return DISCORD_ID_TO_OWNER[uid]
+    username = (author.get('username') or '').lower()
+    display_name = (author.get('global_name') or '').lower()
+    for k, owner in DISCORD_USER_MAP.items():
+        if k in username or k in display_name:
+            return owner
+    return ""
+
+
+def _classify_nfl_slate_window(dt_ct: datetime) -> str:
+    """Classifies a Central Time timestamp into the exact NFL / fantasy game-slate window."""
+    wd = dt_ct.weekday()  # Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
+    hr = dt_ct.hour + dt_ct.minute / 60.0
+    if wd in (1, 2):
+        return "Tue/Wed Pre-Week & Waivers"
+    elif wd == 3:
+        if hr < 19.2:
+            return "Thursday Pre-TNF Lineup & Spreads Banter"
+        elif hr <= 22.75:
+            return "Live During Thursday Night Football"
+        else:
+            return "Thursday Night Post-TNF Reaction"
+    elif wd in (4, 5):
+        return "Fri/Sat Pre-Game Build-Up"
+    elif wd == 6:
+        if hr < 8.5:
+            return "Sunday Pre-Kickoff"
+        elif hr < 12.0:
+            return "Sunday Morning / International Game Window"
+        elif hr < 15.35:
+            return "Live During Sunday 12:00 PM Early Slate"
+        elif hr < 19.25:
+            return "Live During Sunday 3:25 PM Late Afternoon Slate"
+        elif hr < 22.5:
+            return "Live During Sunday Night Football"
+        else:
+            return "Late Sunday Night Post-SNF / Entering MNF"
+    else:  # Monday (wd == 0)
+        if hr < 19.15:
+            return "Monday Daytime Entering MNF Sweat"
+        elif hr < 22.15:
+            return "Live During Monday Night Football"
+        else:
+            return "Monday Night Post-MNF Final Reaction"
+
+
+def _detect_mentioned_owners(text: str, speaker: str = "") -> list:
+    """Finds all BFL owners referenced by name, first name, or league nickname in a message."""
+    lower = f" {text.lower()} "
+    mentioned = []
+    # Explicit nickname & first-name triggers mapped to canonical owners
+    triggers = [
+        ("nick christus", "Nick Christus"), (" nick ", "Nick Christus"),
+        ("shawn lukose", "Shawn Lukose"), ("lukose", "Shawn Lukose"), ("4 time champ", "Shawn Lukose"),
+        ("shawn ullenbrauck", "Shawn Ullenbrauck"), (" thor ", "Shawn Ullenbrauck"), ("shawn u", "Shawn Ullenbrauck"),
+        ("abe thomas", "Abe Thomas"), (" abe ", "Abe Thomas"), ("defending champ", "Abe Thomas"),
+        ("saagar gupta", "Saagar Gupta"), ("saagar", "Saagar Gupta"), ("gupta", "Saagar Gupta"),
+        ("dino davros", "Dino Davros"), (" dino ", "Dino Davros"),
+        ("adam olen", "Adam Olen"), (" adam ", "Adam Olen"), (" amo ", "Adam Olen"),
+        ("sydney miller", "Sydney Miller"), ("sydney", "Sydney Miller"),
+        ("daniel kruszewski", "Daniel Kruszewski"), (" dtm ", "Daniel Kruszewski"), (" dan ", "Daniel Kruszewski"),
+        ("rej hoxha", "rej hoxha"), (" rej ", "rej hoxha"),
+        ("tommy ehrlich", "Tommy Ehrlich"), ("tommy", "Tommy Ehrlich"),
+        ("samran mirza", "Samran Mirza"), ("samran", "Samran Mirza"), ("72 dolphins", "Samran Mirza"),
+        ("nael ahmed", "Nael Ahmed"), (" nael ", "Nael Ahmed"),
+        ("blake whitehouse", "Blake Whitehouse"), (" blake", "Blake Whitehouse"),
+        ("alex kite", "Alex Kite"), (" alex ", "Alex Kite"), ("shooter", "Alex Kite"),
+        ("nitesh patel", "Nitesh Patel"), ("nitesh", "Nitesh Patel"), ("edgar", "Nitesh Patel"),
+    ]
+    for trig, own in triggers:
+        if trig in lower and own not in mentioned and own != speaker:
+            mentioned.append(own)
+    return mentioned
+
+
 def _resolve_discord_mentions(text: str) -> str:
     """Replaces <@USER_ID> mentions with the actual BFL owner's name."""
     def _repl(match):
@@ -161,16 +266,26 @@ def _resolve_discord_mentions(text: str) -> str:
     return re.sub(r"<@!?(\d+)>", _repl, text)
 
 
-def _clean_discord_message(raw_text: str) -> str:
-    """Cleans URLs, markdown artifacts, and skips meta/podcast-link/GIF-only messages."""
+def _clean_discord_message(raw_text: str, embeds: list = None, is_reply: bool = False) -> str:
+    """Cleans URLs, markdown artifacts, preserves reaction GIF titles on replies, and skips metapodcast links."""
     text = _resolve_discord_mentions(raw_text or "")
-    # Remove URLs (GIFs, Discord channel links, etc.)
     text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"[*_`]", "", text).strip()
+
+    # Check if a reaction GIF embed title exists (e.g. 'Iron Man Weeps' or 'Worried Kermit The Frog')
+    gif_title = ""
+    if embeds:
+        for emb in embeds:
+            t = (emb.get('title') or '').strip()
+            if t and len(t) < 45 and not t.startswith("🏈") and not t.startswith("📈"):
+                gif_title = t
+                break
+
+    if not text and gif_title:
+        return f"[Reacted with GIF: '{gif_title}']"
     if len(text) < 4:
         return ""
     lower = text.lower()
-    # Skip meta messages about uploading the podcast or generic short chat filler without football context
     skip_phrases = [
         "podcast is up", "pod is up", "podcast now available", "ai pod is getting better",
         "pitch my new in game bot", "disapproves of my ai prowess", "different league",
@@ -181,105 +296,176 @@ def _clean_discord_message(raw_text: str) -> str:
     ]
     if any(sp in lower for sp in skip_phrases):
         return ""
+    if gif_title:
+        return f"{text} [GIF: '{gif_title}']"
     return text
 
 
-def harvest_real_quotes_from_discord(channel_id: str = None, week_num: int = None, lookback_days: float = 7.5) -> dict:
+def harvest_detailed_discord_chatter(channel_id: str = None, week_num: int = None, lookback_days: float = 6.5) -> list:
     """
-    Pulls recent messages from Discord (#trash-talk and #live-game-desk) or a local drop-in file
-    and maps them to BFL owners.
-    STRICT: Only returns actual, genuine messages from real managers within the current week window.
-    Returns: { 'Owner Name': 'Real quote text' }
+    Pulls recent messages from Discord (#trash-talk, #live-game-desk, #commissioner-desk)
+    and returns a chronologically sorted list of contextualized message dicts:
+      {
+        'dt_ct': datetime,
+        'timestamp_str': 'Sun 11/01 02:54 PM CT',
+        'slate_window': 'Live During Sunday 12:00 PM Early Slate',
+        'channel_name': '#trash-talk',
+        'speaker': 'Samran Mirza',
+        'text': 'The perfect season over. The 72 dolphins can rest easy',
+        'reply_to_owner': '...',
+        'reply_to_text': '...',
+        'bot_context': '...',
+        'mentioned_owners': ['...'],
+      }
     """
-    owner_lines = {}
+    entries = []
+    if not DISCORD_BOT_TOKEN:
+        return entries
 
-    # 1. Check optional local drop-in chatter file (if user pasted chat from #trash-talk / #live-game-desk)
-    state_dir = Path(__file__).resolve().parent / "live_state"
-    candidate_files = []
-    if week_num:
-        candidate_files.append(state_dir / f"discord_chatter_week_{week_num}.txt")
-    candidate_files.append(state_dir / "discord_chatter.txt")
+    headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
-    for cf in candidate_files:
-        if cf.exists():
-            try:
-                for raw_line in cf.read_text().splitlines():
-                    line = raw_line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    lower_line = line.lower()
-                    for k, owner in DISCORD_USER_MAP.items():
-                        if lower_line.startswith(k + ":") or lower_line.startswith(owner.lower() + ":"):
-                            msg_part = _clean_discord_message(line.split(":", 1)[1].strip())
-                            if msg_part:
-                                owner_lines.setdefault(owner, []).append(msg_part)
-                            break
-            except Exception:
-                pass
-
-    # 2. If DISCORD_BOT_TOKEN is configured, harvest from #trash-talk and #live-game-desk
-    channels_to_scan = []
+    channel_configs = []
     if channel_id:
-        channels_to_scan.append(channel_id)
+        channel_configs.append(("#trash-talk", channel_id))
     else:
         if DISCORD_QUOTES_CHANNEL_ID:
-            channels_to_scan.append(DISCORD_QUOTES_CHANNEL_ID)
-        if DISCORD_LIVE_DESK_CHANNEL_ID and DISCORD_LIVE_DESK_CHANNEL_ID not in channels_to_scan:
-            channels_to_scan.append(DISCORD_LIVE_DESK_CHANNEL_ID)
+            channel_configs.append(("#trash-talk", DISCORD_QUOTES_CHANNEL_ID))
+        if DISCORD_LIVE_DESK_CHANNEL_ID and DISCORD_LIVE_DESK_CHANNEL_ID != DISCORD_QUOTES_CHANNEL_ID:
+            channel_configs.append(("#live-game-desk", DISCORD_LIVE_DESK_CHANNEL_ID))
+        if DISCORD_COMMISH_CHANNEL_ID and DISCORD_COMMISH_CHANNEL_ID not in (DISCORD_QUOTES_CHANNEL_ID, DISCORD_LIVE_DESK_CHANNEL_ID):
+            channel_configs.append(("#commissioner-desk", DISCORD_COMMISH_CHANNEL_ID))
 
-    if DISCORD_BOT_TOKEN and channels_to_scan:
-        headers = {"Authorization": f"Bot {DISCORD_BOT_TOKEN}"}
-        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    # First pass: collect both bot alerts (for timestamp correlation) and human messages
+    bot_events = []
+    raw_human_msgs = []
 
-        for target_channel in channels_to_scan:
-            url = f"https://discord.com/api/v10/channels/{target_channel}/messages?limit=100"
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                if r.status_code == 200:
-                    # Iterate oldest-to-newest so multi-line thoughts read chronologically
-                    for m in reversed(r.json()):
-                        if m.get('author', {}).get('bot'):
-                            continue
-                        ts_str = m.get('timestamp', '')
-                        if ts_str:
-                            try:
-                                msg_dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-                                if msg_dt < cutoff_dt:
-                                    continue
-                            except Exception:
-                                pass
+    for ch_name, cid in channel_configs:
+        url = f"https://discord.com/api/v10/channels/{cid}/messages?limit=100"
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code != 200:
+                continue
+            for m in reversed(r.json()):
+                ts_str = m.get('timestamp', '')
+                if not ts_str:
+                    continue
+                try:
+                    msg_dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).astimezone(CT_TZ)
+                    if msg_dt < cutoff_dt:
+                        continue
+                except Exception:
+                    continue
 
-                        author = m.get('author', {})
-                        uid = str(author.get('id', ''))
-                        username = (author.get('username') or '').lower()
-                        display_name = (author.get('global_name') or '').lower()
+                if m.get('author', {}).get('bot'):
+                    for emb in m.get('embeds', []):
+                        etitle = (emb.get('title') or '').strip()
+                        edesc = (emb.get('description') or '').strip()
+                        if etitle:
+                            bot_events.append({
+                                'dt_ct': msg_dt,
+                                'channel_name': ch_name,
+                                'title': etitle,
+                                'desc': edesc[:140]
+                            })
+                    continue
 
-                        owner_matched = DISCORD_ID_TO_OWNER.get(uid)
-                        if not owner_matched:
-                            for k, owner in DISCORD_USER_MAP.items():
-                                if k in username or k in display_name:
-                                    owner_matched = owner
-                                    break
+                raw_human_msgs.append((ch_name, msg_dt, m))
+        except Exception as e:
+            print(f"⚠️ Error harvesting Discord chatter from {ch_name}: {e}")
 
-                        clean_content = _clean_discord_message(m.get('content', ''))
-                        if owner_matched and clean_content:
-                            existing = owner_lines.setdefault(owner_matched, [])
-                            if clean_content not in existing:
-                                existing.append(clean_content)
-            except Exception as e:
-                print(f"⚠️ Error harvesting Discord quotes from channel {target_channel}: {e}")
+    # Sort all human messages chronologically across all channels
+    raw_human_msgs.sort(key=lambda x: x[1])
+    bot_events.sort(key=lambda x: x['dt_ct'])
+
+    # Merge consecutive messages sent by the same speaker within 3 minutes so rapid 2-line thoughts stay together
+    for ch_name, msg_dt, m in raw_human_msgs:
+        speaker = _match_author_to_owner(m.get('author', {}))
+        if not speaker:
+            continue
+
+        ref = m.get('referenced_message') or {}
+        reply_to_owner = _match_author_to_owner(ref.get('author', {}))
+        reply_to_text = _clean_discord_message(ref.get('content', '')) if ref else ""
+
+        clean_text = _clean_discord_message(m.get('content', ''), embeds=m.get('embeds', []), is_reply=bool(reply_to_owner))
+        if not clean_text:
+            continue
+
+        mentioned = _detect_mentioned_owners(clean_text + " " + reply_to_text, speaker=speaker)
+        if reply_to_owner and reply_to_owner not in mentioned and reply_to_owner != speaker:
+            mentioned.insert(0, reply_to_owner)
+
+        # Check if a relevant bot alert fired within the preceding 10 minutes
+        recent_bot_note = ""
+        relevant_owners = [speaker] + mentioned
+        relevant_kws = []
+        for ro in relevant_owners:
+            relevant_kws.extend(OWNER_TEAM_KEYWORDS.get(ro, [ro.lower()]))
+
+        for bev in reversed(bot_events):
+            delta_mins = (msg_dt - bev['dt_ct']).total_seconds() / 60.0
+            if 0 <= delta_mins <= 10.0:
+                b_haystack = (bev['title'] + " " + bev['desc']).lower()
+                if any(kw in b_haystack for kw in relevant_kws) or "miracle" in b_haystack or "thursday" in b_haystack or "playoff odds" in b_haystack:
+                    recent_bot_note = f"Posted {int(max(1, round(delta_mins)))} min after {bev['channel_name']} alert: '{bev['title']}'"
+                    break
+
+        # Merge if immediately following the same speaker within 3 minutes and no new reply target
+        if (
+            entries
+            and entries[-1]['speaker'] == speaker
+            and entries[-1]['channel_name'] == ch_name
+            and not reply_to_owner
+            and (msg_dt - entries[-1]['dt_ct']).total_seconds() <= 180
+        ):
+            if clean_text not in entries[-1]['text']:
+                entries[-1]['text'] += f" — {clean_text}"
+                for mo in mentioned:
+                    if mo not in entries[-1]['mentioned_owners']:
+                        entries[-1]['mentioned_owners'].append(mo)
+            continue
+
+        entries.append({
+            'dt_ct': msg_dt,
+            'timestamp_str': msg_dt.strftime("%a %m/%d %I:%M %p CT"),
+            'slate_window': _classify_nfl_slate_window(msg_dt),
+            'channel_name': ch_name,
+            'speaker': speaker,
+            'text': clean_text,
+            'reply_to_owner': reply_to_owner,
+            'reply_to_text': reply_to_text[:90] if reply_to_text else "",
+            'bot_context': recent_bot_note,
+            'mentioned_owners': mentioned,
+        })
+
+    return entries
+
+
+def harvest_real_quotes_from_discord(channel_id: str = None, week_num: int = None, lookback_days: float = 6.5) -> dict:
+    """
+    Pulls recent messages from Discord and maps them to BFL owners with full timestamps,
+    NFL game-slate windows, and reply context.
+    Returns: { 'Owner Name': 'Timestamped & contextualized quotes' }
+    """
+    owner_lines = {}
+    detailed = harvest_detailed_discord_chatter(channel_id=channel_id, week_num=week_num, lookback_days=lookback_days)
+    for item in detailed:
+        speaker = item['speaker']
+        reply_tag = f" (replying to {item['reply_to_owner']}: \"{item['reply_to_text']}\")" if item['reply_to_owner'] and item['reply_to_text'] else (f" (replying to {item['reply_to_owner']})" if item['reply_to_owner'] else "")
+        formatted = f"[{item['timestamp_str']} — {item['slate_window']} in {item['channel_name']}]{reply_tag} \"{item['text']}\""
+        owner_lines.setdefault(speaker, []).append(formatted)
 
     quotes = {}
     for owner, lines in owner_lines.items():
-        # Keep up to 6 impactful statements per manager from the week
         selected = lines[-6:]
         quotes[owner] = " | ".join(selected)
     return quotes
 
+
 def get_verified_manager_quotes(channel_id: str = None, week_num: int = None) -> list:
     """
-    Returns ONLY real, verified quotes from Discord.
-    If no real quotes were submitted, returns an empty list.
+    Returns ONLY real, verified quotes from Discord with timestamps & game-slate context.
     """
     real_quotes = harvest_real_quotes_from_discord(channel_id, week_num=week_num)
     quote_cards = []
@@ -288,12 +474,16 @@ def get_verified_manager_quotes(channel_id: str = None, week_num: int = None) ->
         quote_cards.append({
             'tag': 'PRESS ROOM',
             'header': f"{owner}:",
-            'desc': f"\"{quote}\""
+            'desc': f"{quote}"
         })
 
     return quote_cards
 
 if __name__ == "__main__":
-    print("Testing BFL Press Conference Manager (Strict No-Fake-Quotes)...")
-    verified = get_verified_manager_quotes()
-    print(f"Verified quotes harvested: {len(verified)}")
+    print("Testing BFL Press Conference Manager (Timestamped & Contextualized)...")
+    detailed = harvest_detailed_discord_chatter()
+    print(f"Detailed messages harvested: {len(detailed)}")
+    for d in detailed:
+        rep = f" [Reply to {d['reply_to_owner']}: '{d['reply_to_text']}']" if d['reply_to_owner'] else ""
+        bot_c = f" ({d['bot_context']})" if d['bot_context'] else ""
+        print(f"  • [{d['timestamp_str']} | {d['slate_window']} | {d['channel_name']}] {d['speaker']}{rep}: \"{d['text']}\"{bot_c} -> Mentions: {d['mentioned_owners']}")

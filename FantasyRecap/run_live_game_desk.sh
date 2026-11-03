@@ -11,7 +11,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT" || exit 1
 
 SEASON=${1:-2026}
-WEEK=${2:-7}
+WEEK=${2:-8}
 INTERVAL=${3:-60}
 
 mkdir -p FantasyRecap/live_state
