@@ -244,12 +244,14 @@ def check_and_run_orchestrator(override_season: int = None, override_week: int =
     if live_games or imminent_games:
         names = ", ".join([g["name"] for g in (live_games + imminent_games)])
         print(f"⚡ Active/Imminent NFL Games detected for Week {week} ({names})! Entering 60s Live Game Desk loop...")
-        from FantasyRecap.live_game_desk_daemon import run_once
+        from FantasyRecap.live_game_desk_daemon import run_live_desk_tick
 
         while True:
             try:
-                run_once(season, week)
-                st["last_live_tick_at"] = datetime.now(CT_TZ).strftime("%Y-%m-%d %H:%M:%S CT")
+                count = run_live_desk_tick(season, week)
+                now_str = datetime.now(CT_TZ).strftime("%Y-%m-%d %H:%M:%S CT")
+                print(f"[{now_str}] Live Desk Tick: Monitored {count} matchups.")
+                st["last_live_tick_at"] = now_str
                 save_scheduler_state(season, week, st)
             except Exception as e:
                 print(f"⚠️ Error in live game desk tick: {e}")
@@ -267,7 +269,7 @@ def check_and_run_orchestrator(override_season: int = None, override_week: int =
                 ]
                 if not still_live and not still_imminent:
                     print("🏁 All active NFL games in this window have reached FINAL! Running one final state sync...")
-                    run_once(season, week)
+                    run_live_desk_tick(season, week)
                     st["last_live_tick_at"] = datetime.now(CT_TZ).strftime("%Y-%m-%d %H:%M:%S CT")
                     save_scheduler_state(season, week, st)
                     slate = cur_slate
