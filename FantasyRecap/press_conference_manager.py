@@ -490,7 +490,7 @@ PLAYER_TOKEN_STOPWORDS = {
 }
 
 
-def attribute_discord_chatter_to_matchups(detailed_chatter: list, matchups: list, perfs: dict) -> dict:
+def attribute_discord_chatter_to_matchups(detailed_chatter: list, matchups: list, perfs: dict, recent_trades: list = None) -> dict:
     """
     Intelligently attributes Discord messages to the specific Week Matchup(s) they are actually about
     using a multi-signal contextual engine:
@@ -592,9 +592,24 @@ def attribute_discord_chatter_to_matchups(detailed_chatter: list, matchups: list
                 direct_pairs.append(pk)
                 direct_reasons[pk] = "Next-week lookahead barb"
         else:
-            # Explicit owner mentions & replies
+            # Explicit owner mentions & replies (plus trade-injury banter like "selling damaged goods")
+            is_trade_banter = any(tb in text_low for tb in ["damaged goods", "selling", "fleeced", "traded"])
             for mo in d.get('mentioned_owners', []):
-                if mo in owner_to_pair:
+                routed_via_trade = False
+                if is_trade_banter and recent_trades:
+                    for tr in recent_trades:
+                        oa, ob = tr.get('owner_a'), tr.get('owner_b')
+                        if mo in (oa, ob):
+                            partner = ob if mo == oa else oa
+                            sent_list = tr.get('a_sends', []) if mo == oa else tr.get('b_sends', [])
+                            sent_names = ", ".join([p['name'] if isinstance(p, dict) else str(p) for p in sent_list])
+                            if partner in owner_to_pair:
+                                pk_partner = owner_to_pair[partner]
+                                if pk_partner not in direct_pairs:
+                                    direct_pairs.append(pk_partner)
+                                direct_reasons[pk_partner] = f"Reacting to {mo} trading {sent_names} to {partner}"
+                                routed_via_trade = True
+                if not routed_via_trade and mo in owner_to_pair:
                     pk = owner_to_pair[mo]
                     if pk not in direct_pairs:
                         direct_pairs.append(pk)

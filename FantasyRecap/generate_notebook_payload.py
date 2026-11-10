@@ -38,11 +38,111 @@ NFL_TEAMS = {
 
 rotowire_cache = {}
 
+def _parse_recent_gamelog_trend(gl: dict) -> str:
+    """Extracts a concise 3-game NFL usage & stat trend from ESPN's overview gameLog."""
+    if not isinstance(gl, dict):
+        return ""
+    ev_meta = gl.get('events', {})
+    stat_groups = gl.get('statistics', [])
+    if not ev_meta or not stat_groups:
+        return ""
+
+    # Collect per-event stats in chronological order of the most recent 3 games
+    ordered_eids = []
+    by_eid = {}
+
+    for sg in stat_groups:
+        gname = (sg.get('displayName') or '').lower()
+        labels = [str(l).upper() for l in sg.get('labels', [])]
+        for row in sg.get('events', [])[:3]:
+            eid = str(row.get('eventId', ''))
+            if not eid:
+                continue
+            if eid not in by_eid:
+                if len(ordered_eids) < 3:
+                    ordered_eids.append(eid)
+                em = ev_meta.get(eid, {})
+                opp_abbr = (em.get('opponent') or {}).get('abbreviation', '')
+                at_vs = em.get('atVs', 'vs')
+                by_eid[eid] = {
+                    'week': em.get('week', '?'),
+                    'opp': f"{at_vs} {opp_abbr}".strip(),
+                    'pass_yds': 0, 'pass_td': 0, 'ints': 0,
+                    'rush_car': 0, 'rush_yds': 0, 'rush_td': 0,
+                    'rec': 0, 'tgts': 0, 'rec_yds': 0, 'rec_td': 0,
+                }
+            vals = row.get('stats', [])
+            smap = {labels[i]: vals[i] for i in range(min(len(labels), len(vals)))}
+
+            def _to_int(v):
+                try:
+                    return int(float(str(v).replace(',', '')))
+                except Exception:
+                    return 0
+
+            if 'passing' in gname:
+                by_eid[eid]['pass_yds'] = _to_int(smap.get('YDS', 0))
+                by_eid[eid]['pass_td'] = _to_int(smap.get('TD', 0))
+                by_eid[eid]['ints'] = _to_int(smap.get('INT', 0))
+            elif 'rushing' in gname:
+                by_eid[eid]['rush_car'] = _to_int(smap.get('CAR', 0))
+                by_eid[eid]['rush_yds'] = _to_int(smap.get('YDS', 0))
+                by_eid[eid]['rush_td'] = _to_int(smap.get('TD', 0))
+            elif 'receiving' in gname:
+                by_eid[eid]['rec'] = _to_int(smap.get('REC', 0))
+                by_eid[eid]['tgts'] = _to_int(smap.get('TGTS', 0))
+                by_eid[eid]['rec_yds'] = _to_int(smap.get('YDS', 0))
+                by_eid[eid]['rec_td'] = _to_int(smap.get('TD', 0))
+
+    recent_list = [by_eid[eid] for eid in reversed(ordered_eids) if eid in by_eid]
+    if len(recent_list) < 2:
+        return ""
+
+    tot_pass_yds = sum(x['pass_yds'] for x in recent_list)
+    tot_pass_td = sum(x['pass_td'] for x in recent_list)
+    tot_ints = sum(x['ints'] for x in recent_list)
+    tot_rush_car = sum(x['rush_car'] for x in recent_list)
+    tot_rush_yds = sum(x['rush_yds'] for x in recent_list)
+    tot_rush_td = sum(x['rush_td'] for x in recent_list)
+    tot_rec = sum(x['rec'] for x in recent_list)
+    tot_tgts = sum(x['tgts'] for x in recent_list)
+    tot_rec_yds = sum(x['rec_yds'] for x in recent_list)
+    tot_rec_td = sum(x['rec_td'] for x in recent_list)
+    n_gms = len(recent_list)
+
+    if tot_pass_yds >= 150:
+        gm_strs = [
+            f"Wk {g['week']} ({g['opp']}): {g['pass_yds']} pass yds, {g['pass_td']} TD"
+            + (f", {g['ints']} INT" if g['ints'] else "")
+            + (f", +{g['rush_td']} rush TD" if g['rush_td'] else "")
+            for g in recent_list
+        ]
+        rush_note = f" (+ {tot_rush_yds} rush yds & {tot_rush_td} rush TDs)" if tot_rush_td or tot_rush_yds >= 40 else ""
+        return f"Last {n_gms} Games ({' ➡️ '.join(gm_strs)}) — **{tot_pass_yds} pass yds, {tot_pass_td} pass TDs vs. {tot_ints} INTs{rush_note} over his last {n_gms} starts!**"
+    elif tot_rush_car >= 18 and tot_rush_yds >= tot_rec_yds:
+        gm_strs = [
+            f"Wk {g['week']} ({g['opp']}): {g['rush_car']} car, {g['rush_yds']} yds, {g['rush_td'] + g['rec_td']} TD"
+            + (f" ({g['rec']} rec)" if g['rec'] else "")
+            for g in recent_list
+        ]
+        rec_note = f", plus {tot_rec} catches for {tot_rec_yds} rec yds" if tot_rec >= 3 else ""
+        return f"Last {n_gms} Games ({' ➡️ '.join(gm_strs)}) — **{tot_rush_car} carries for {tot_rush_yds} rush yds{rec_note} & {tot_rush_td + tot_rec_td} total TDs over his last {n_gms} games!**"
+    elif tot_rec >= 4 or tot_tgts >= 6:
+        gm_strs = [
+            f"Wk {g['week']} ({g['opp']}): {g['rec']}-{g['rec_yds']}-{g['rec_td']}"
+            + (f" ({g['tgts']} tgts)" if g['tgts'] else "")
+            for g in recent_list
+        ]
+        tgt_note = f" on {tot_tgts} targets" if tot_tgts else ""
+        return f"Last {n_gms} Games ({' ➡️ '.join(gm_strs)}) — **{tot_rec} catches{tgt_note} for {tot_rec_yds} rec yds & {tot_rec_td} TDs over his last {n_gms} games!**"
+    return ""
+
+
 def fetch_rotowire_details(pid: int) -> dict:
-    """Fetch real-time Rotowire headline, story, and global fantasy ownership."""
+    """Fetch real-time Rotowire headline, story, global fantasy ownership, and 3-game usage trends."""
     if pid in rotowire_cache:
         return rotowire_cache[pid]
-    res = {'headline': '', 'story': '', 'date': '', 'sentiment': '', 'spin': ''}
+    res = {'headline': '', 'story': '', 'date': '', 'sentiment': '', 'spin': '', 'trend_3gm': ''}
     try:
         url = f"https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{pid}/overview"
         r = requests.get(url, timeout=3)
@@ -50,6 +150,7 @@ def fetch_rotowire_details(pid: int) -> dict:
             data = r.json()
             roto = data.get('rotowire', {})
             fantasy_data = data.get('fantasy', {})
+            trend_3gm = _parse_recent_gamelog_trend(data.get('gameLog', {}))
             
             sentiment = ""
             if fantasy_data.get('percentOwned'):
@@ -72,7 +173,8 @@ def fetch_rotowire_details(pid: int) -> dict:
                 'story': story,
                 'date': date_str,
                 'sentiment': sentiment,
-                'spin': spin_str
+                'spin': spin_str,
+                'trend_3gm': trend_3gm,
             }
     except Exception:
         pass
@@ -83,28 +185,32 @@ INJURY_KEYWORDS = [
     'injury', 'injured', 'concussion', 'hamstring', 'groin', 'ankle', 'knee',
     'exited', 'carted', 'ruled out', 'did not return',
     'downgraded to out', 'sprain', 'strain', 'dislocated', 'shoulder',
-    'forced out', 'knocked out', 'broken', 'fracture', 'torn', 'tear',
-    'pectoral', 'achilles', 'clavicle', 'ribs', 'quadriceps', 'calf', ' wrist'
+    'forced out', 'knocked out', 'broken', 'fracture', 'fractured', 'torn', 'tear',
+    'pectoral', 'achilles', 'clavicle', 'ribs', 'quadriceps', 'calf', ' wrist',
+    'finger', 'neck', 'elbow', 'hip', 'back', 'toe', 'tendon', 'surgery'
 ]
 
 IN_GAME_EXIT_SIGNALS = [
     'early exit', 'exited', 'carted', 'did not return', 'forced out',
-    'knocked out', 'downgraded to out', 'left the game',
+    'knocked out', 'downgraded to out', 'left the game', 'ruled out for the remainder',
     'left sunday', 'left thursday', 'left monday',
     'sustained a', 'suffered a', 'evaluated for a', 'taken to the locker room',
-    'headed to the locker room', 'went to the locker room', 'briefly exited'
+    'headed to the locker room', 'went to the locker room', 'briefly exited',
+    'undergo surgery', 'out indefinitely', 'ir is a possibility',
+    'headed to injured reserve', 'out for the season', 'fractured'
 ]
 
 def detect_in_game_injury(player: dict, player_context: dict = None) -> dict:
     """
-    Evaluates whether THIS specific player genuinely suffered an in-game injury during the week.
+    Evaluates whether THIS specific player genuinely suffered an in-game injury during the week
+    that curtailed their fantasy production (< 8.0 pts).
     Strictly avoids false positives where a Rotowire story mentions a teammate's injury or a normal 'in Sunday's win' phrase.
     """
     pts = player.get('pts', 0.0)
     proj = player.get('proj', 0.0)
     pid = player.get('id', 0)
 
-    # If they scored 8+ points, an early exit didn't sink their fantasy day
+    # If they scored 8+ points, an early exit didn't sink their fantasy day (handled in Moving Forward analysis instead)
     if pts >= 8.0:
         return None
 
@@ -118,27 +224,30 @@ def detect_in_game_injury(player: dict, player_context: dict = None) -> dict:
     story_lower = details['story'].lower()
     full_text = headline_lower + ' ' + story_lower
 
-    # The HEADLINE is always about this specific player (not a teammate).
-    # Require that the headline itself mentions an injury or in-game exit, OR the player is officially flagged injured on ESPN
-    # AND the first sentence of the story/headline explicitly states they exited/suffered an injury.
     # Exclude pre-game activation headlines (e.g. "activated from injured reserve", "removed his questionable designation")
     activation_signals = [
         "activated from injured reserve", "removed his questionable designation",
-        "cleared to play", "expected to play", "active for sunday", "active for monday", "active for thursday"
+        "cleared to play", "expected to play", "active for sunday", "active for monday", "active for thursday",
+        "shook off", "doesn't have a designation"
     ]
     if any(act in headline_lower for act in activation_signals):
         return None
 
     headline_has_inj = any(kw in headline_lower for kw in INJURY_KEYWORDS)
     has_exit_signal = any(sig in headline_lower for sig in IN_GAME_EXIT_SIGNALS) or (
-        espn_status not in ('ACTIVE', '') and any(sig in full_text for sig in IN_GAME_EXIT_SIGNALS)
+        espn_status not in ('ACTIVE', 'NORMAL', '') and any(sig in full_text for sig in IN_GAME_EXIT_SIGNALS)
     )
 
     if headline_has_inj and has_exit_signal:
+        ctx = (player_context or {}).get(pid, {})
         return {
             'player': player.get('name', 'Unknown'),
-            'pts': pts,
-            'proj': proj,
+            'pts': round(pts, 2),
+            'proj': round(proj, 2),
+            'pos_name': ctx.get('pos_name', player.get('pos_name', 'FLEX')),
+            'pos_rank': ctx.get('pos_rank', 999),
+            'season_avg': ctx.get('season_avg', 0.0),
+            'expected_rem_pts': ctx.get('expected_rem_pts', 0.0),
             'headline': details['headline'],
             'story': details['story']
         }
@@ -212,17 +321,83 @@ def fetch_athlete_tenure(pid: int) -> str:
     return ""
 
 def format_player_string(p, player_context):
-    ctx = player_context.get(p['id'], {'injury': 'ACTIVE', 'outlook': '', 'adp': 200.0, 'season_avg': 0.0, 'tenure': ''})
+    """
+    Formats a player's Week box-score line WITHOUT post-game ESPN injury tags ([OUT]/[DOUBTFUL])
+    so NotebookLM never mistakes a Monday post-game injury designation for a pre-game inactive starter.
+    Includes the player's current positional ranking to establish player caliber.
+    """
+    ctx = player_context.get(p['id'], {'injury': 'ACTIVE', 'outlook': '', 'adp': 200.0, 'season_avg': 0.0, 'tenure': '', 'pos_name': 'FLEX', 'pos_rank': 999})
     adp_str = f"ADP {ctx['adp']}" if ctx['adp'] < 180 else "Undrafted Flyer"
     avg_str = f", Avg {ctx['season_avg']} pts/gm" if ctx['season_avg'] > 0 else ""
-    inj_str = f" [{ctx['injury']}]" if ctx['injury'] != 'ACTIVE' and ctx['injury'] != 'NORMAL' else ""
     tenure_str = f" [{ctx['tenure']}]" if ctx.get('tenure') else ""
+    pos_rank = ctx.get('pos_rank', 999)
+    pos_name = ctx.get('pos_name', p.get('pos_name', 'FLEX'))
+    rank_str = f" [{pos_name}{pos_rank} Overall]" if 1 <= pos_rank <= 100 and pos_name in ('QB', 'RB', 'WR', 'TE') else ""
     stats_str = format_nfl_statline(p.get('stats_dict', {}))
     
     team_abbr = NFL_TEAMS.get(p.get('pro_team_id', 0), 'FA')
     team_str = f" ({team_abbr})" if team_abbr != 'FA' else ""
     
-    return f"{p['name']}{team_str}{tenure_str}{inj_str} (Scored: {p['pts']}, Proj: {p['proj']}, {adp_str}{avg_str}{stats_str})"
+    pts_clean = round(float(p.get('pts', 0.0)), 2)
+    proj_clean = round(float(p.get('proj', 0.0)), 2)
+    return f"{p['name']}{team_str}{tenure_str}{rank_str} (Scored: {pts_clean}, Proj: {proj_clean}, {adp_str}{avg_str}{stats_str})"
+
+
+def build_player_intelligence_tidbit(p: dict, player_context: dict, roto: dict = None) -> str:
+    """
+    Generates high-IQ analytical context on a player's Preseason Expectation vs. Actual Season Reality
+    (ADP, Preseason Rank & Preseason Projected PPG vs. Current Positional Rank & Actual PPG)
+    plus their Last 3 Games NFL usage & fantasy scoring trend.
+    """
+    ctx = player_context.get(p['id'], {})
+    pos_name = ctx.get('pos_name', p.get('pos_name', 'FLEX'))
+    if pos_name not in ('QB', 'RB', 'WR', 'TE'):
+        return ""
+
+    pos_rank = ctx.get('pos_rank', 999)
+    total_rank = ctx.get('total_rank', 999)
+    adp = round(float(ctx.get('adp', 200.0)), 1)
+    ppr_rank = ctx.get('ppr_draft_rank', 999)
+    pre_avg = ctx.get('preseason_proj_avg', 0.0)
+    season_avg = ctx.get('season_avg', 0.0)
+    wk_prev = ctx.get('wk_prev_pts', 0.0)
+    wk_curr = round(float(p.get('pts', 0.0)), 2)
+
+    parts = []
+    if season_avg > 0 and 1 <= pos_rank <= 100:
+        ppg_diff = round(season_avg - pre_avg, 1) if pre_avg > 0 else 0.0
+        rank_leap = (ppr_rank - total_rank) if (ppr_rank < 350 and total_rank < 350) else 0
+        adp_lbl = f"ADP {adp}" if adp < 170 else "Undrafted/Late-Round Flyer (ADP 170+)"
+        pre_rank_lbl = f", #{ppr_rank} Preseason PPR Rank" if ppr_rank < 300 else ""
+        pre_proj_lbl = f", `{pre_avg} PPG` preseason projection" if pre_avg > 0 else ""
+
+        if ppg_diff >= 2.5 or rank_leap >= 35 or (adp >= 85 and pos_rank <= 16 and season_avg >= 11.0):
+            leap_note = f", leaping `+{rank_leap}` spots above his preseason rank" if rank_leap >= 20 else ""
+            diff_note = f" (`{ppg_diff:+.1f} PPG` over preseason expectation{leap_note})" if pre_avg > 0 else f"{leap_note}"
+            parts.append(
+                f"🚀 **Preseason Expectation vs. Reality (MASSIVE ADP OUTPERFORMER):** Drafted at `{adp_lbl}`{pre_rank_lbl}{pre_proj_lbl}, "
+                f"{p['name']} is smashing preseason expectations at **`{pos_name}{pos_rank} Overall` (`#{total_rank} Overall`, `{season_avg} PPG`){diff_note}**!"
+            )
+        elif adp <= 28 and pos_rank <= 8:
+            parts.append(
+                f"👑 **Preseason Expectation vs. Reality (ELITE DRAFT ANCHOR):** Invested with premium draft capital (`{adp_lbl}`{pre_rank_lbl}{pre_proj_lbl}), "
+                f"{p['name']} is fully delivering as **`{pos_name}{pos_rank} Overall` (`#{total_rank} Overall`, `{season_avg} PPG`)**."
+            )
+        elif adp <= 55 and (ppg_diff <= -2.5 or pos_rank >= 24):
+            diff_note = f" (`{ppg_diff:+.1f} PPG` vs. `{pre_avg} PPG` preseason projection)" if pre_avg > 0 else ""
+            parts.append(
+                f"📉 **Preseason Expectation vs. Reality (UNDERPERFORMING ADP):** Drafted early at `{adp_lbl}`{pre_rank_lbl}, "
+                f"{p['name']} currently sits at **`{pos_name}{pos_rank} Overall` (`{season_avg} PPG`){diff_note}**."
+            )
+
+    trend_3gm = (roto or {}).get('trend_3gm', '')
+    if trend_3gm:
+        pts_note = f" [Recent Fantasy Scores: Wk 8 `{wk_prev}` pts ➡️ Wk 9 `{wk_curr}` pts]" if wk_prev > 0 else ""
+        parts.append(f"📈 **Recent Multi-Week Trend:** {trend_3gm}{pts_note}")
+
+    if not parts:
+        return ""
+    return "  *📊 Player Expectation vs. Reality & Multi-Week Trend:* " + " | ".join(parts) + "\n"
 
 def calculate_season_trajectories(raw_data: dict, current_week: int, teams: dict):
     """Calculates division records, overall records, streaks, and trajectories for all 16 teams."""
@@ -1257,6 +1432,294 @@ def compute_live_playoff_picture(raw_data: dict, week_num: int, teams: dict, tra
     return seed_map, md
 
 
+def build_matchup_moving_forward_intel(
+    w_id: int,
+    l_id: int,
+    teams: dict,
+    raw_data: dict,
+    player_context: dict,
+    week_num: int,
+    recent_trades: list = None,
+) -> str:
+    """
+    Analyzes both teams in a matchup for post-Week injury fallout, ESPN/Rotowire severity & timeline
+    speculation, player caliber (Positional Rank, PPG, Expected Remaining Regular-Season Points),
+    and positional roster depth (how many total & healthy players remain at that position).
+    Only outputs items when genuinely notable/relevant so hosts never force filler.
+    """
+    pos_map = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE'}
+    required_starters = {'QB': 1, 'RB': 2, 'WR': 2, 'TE': 1}
+    rem_reg_weeks = max(1, 14 - week_num)
+
+    # Map players traded this week -> (from_owner, to_owner)
+    traded_to_map = {}
+    if recent_trades:
+        for tr in recent_trades:
+            oa, ob = tr.get('owner_a', ''), tr.get('owner_b', '')
+            for p in tr.get('a_sends', []):
+                pname = p['name'] if isinstance(p, dict) else str(p)
+                traded_to_map[pname] = (oa, ob)
+            for p in tr.get('b_sends', []):
+                pname = p['name'] if isinstance(p, dict) else str(p)
+                traded_to_map[pname] = (ob, oa)
+
+    team_entries_by_id = {
+        t['id']: t.get('roster', {}).get('entries', [])
+        for t in raw_data.get('teams', [])
+    }
+
+    activation_phrases = [
+        "activated from injured reserve", "removed his questionable designation",
+        "cleared to play", "expected to play", "active for sunday", "active for monday",
+        "active for thursday", "shook off", "doesn't have a designation",
+        "returned from a", "returned to the lineup", "returned to action"
+    ]
+    minor_practice_phrases = [
+        "listed as limited on monday's practice estimate",
+        "deemed a limited participant on",
+        "listed as limited on monday's estimated injury report"
+    ]
+    severity_phrases = [
+        "out for the season", "injured reserve", "ir is a possibility", "ir stint",
+        "undergo surgery", "surgery", "fracture", "fractured", "pcl", "mcl", "acl",
+        "turf toe", "concussion", "ruled out for the remainder", "miss multiple weeks",
+        "short period of time", "knee tendon", "elbow", "strain/sprain", "sprain",
+        "strain", "day-to-day", "day to day", "week-to-week", "out indefinitely",
+        "back spasms", "pregame", "high-ankle", "placed"
+    ]
+    return_phrases = [
+        "trending toward traveling", "expected to be back", "on track to return",
+        "planning for", "plans to return later this season", "early side of his",
+        "hopeful that"
+    ]
+    workload_phrases = [
+        "lessen the load", "reduce his workload", "scale back"
+    ]
+
+    team_blocks = []
+
+    for tid in [w_id, l_id]:
+        owner = teams.get(tid, {}).get('owner', f"Team {tid}")
+        entries = team_entries_by_id.get(tid, [])
+        pos_groups = {'QB': [], 'RB': [], 'WR': [], 'TE': []}
+
+        for e in entries:
+            pe = e.get('playerPoolEntry', {})
+            p = pe.get('player', {})
+            pid = p.get('id')
+            pos_id = p.get('defaultPositionId', 0)
+            pos = pos_map.get(pos_id)
+            if not pos or not pid:
+                continue
+
+            slot = e.get('lineupSlotId', 20)
+            is_starter = slot not in [20, 21]
+            slot_label = 'IR' if slot == 21 else ('Starter' if is_starter else 'Bench')
+            ctx = player_context.get(pid, {})
+            inj = ctx.get('injury', p.get('injuryStatus', 'ACTIVE'))
+            pos_rank = ctx.get('pos_rank', 999)
+            season_avg = ctx.get('season_avg', 0.0)
+            ros_avg = ctx.get('ros_avg', season_avg)
+            eff_ppg = round(max(season_avg, ros_avg), 1)
+            rem_pts = round(eff_ppg * rem_reg_weeks, 1)
+
+            wk_pts = 0.0
+            wk_proj = 0.0
+            for s in p.get('stats', []):
+                if s.get('statSourceId') == 0 and s.get('scoringPeriodId') == week_num:
+                    wk_pts = round(s.get('appliedTotal', 0.0), 2)
+                elif s.get('statSourceId') == 1 and s.get('scoringPeriodId') == week_num:
+                    wk_proj = round(s.get('appliedTotal', 0.0), 2)
+
+            roto = fetch_rotowire_details(pid)
+            pos_groups[pos].append({
+                'id': pid,
+                'name': p.get('fullName', 'Unknown'),
+                'pos': pos,
+                'pos_rank': pos_rank,
+                'season_avg': season_avg,
+                'ros_avg': ros_avg,
+                'eff_ppg': eff_ppg,
+                'rem_pts': rem_pts,
+                'wk_pts': wk_pts,
+                'wk_proj': wk_proj,
+                'is_starter': is_starter,
+                'slot_label': slot_label,
+                'injury': inj,
+                'adp': ctx.get('adp', 200.0),
+                'headline': roto.get('headline', ''),
+                'story': roto.get('story', ''),
+            })
+
+        # Sort each position group by caliber (eff_ppg desc, pos_rank asc)
+        for pos in pos_groups:
+            pos_groups[pos].sort(key=lambda x: (-x['eff_ppg'], x['pos_rank']))
+
+        affected_positions = {}  # pos -> list of impacted player dicts
+        workload_notes = []
+        return_notes = []
+
+        for pos, plist in pos_groups.items():
+            for pl in plist:
+                hl_low = pl['headline'].lower()
+                st_low = pl['story'].lower()
+                full_low = hl_low + " " + st_low
+
+                if any(act in hl_low for act in activation_phrases):
+                    continue
+
+                # Check for fresh Week injury / IR / surgery fallout
+                played_or_projected_this_wk = (pl['is_starter'] or pl['wk_proj'] >= 5.0 or pl['wk_pts'] > 0.0)
+                newly_placed_on_ir = ("placed" in hl_low and "injured reserve" in hl_low and pl['eff_ppg'] >= 7.5)
+
+                is_minor_bench_estimate = (
+                    not pl['is_starter']
+                    and pl['injury'] == 'QUESTIONABLE'
+                    and pl['eff_ppg'] < 9.0
+                    and any(mp in hl_low for mp in minor_practice_phrases)
+                    and "pregame" not in full_low
+                )
+
+                if (
+                    not is_minor_bench_estimate
+                    and pl['injury'] not in ('ACTIVE', 'NORMAL', '')
+                    and (played_or_projected_this_wk or newly_placed_on_ir)
+                    and any(sev in full_low for sev in severity_phrases)
+                ):
+                    # Avoid treating multi-week pre-existing outs (who had 0 proj and weren't just placed on IR) as new injuries
+                    if not played_or_projected_this_wk and not newly_placed_on_ir:
+                        continue
+                    affected_positions.setdefault(pos, []).append(pl)
+                elif pl['is_starter'] and pl['pos_rank'] <= 10 and any(wk_p in hl_low for wk_p in workload_phrases):
+                    workload_notes.append(pl)
+                elif pl['wk_pts'] == 0.0 and pl['injury'] in ('OUT', 'INJURY_RESERVE', 'IR') and any(rp in hl_low for rp in return_phrases):
+                    if pl['eff_ppg'] >= 8.0 or pl['pos_rank'] <= 55 or pl['adp'] <= 60.0:
+                        return_notes.append(pl)
+
+        if not affected_positions and not workload_notes and not return_notes:
+            continue
+
+        owner_lines = []
+
+        def format_caliber(pl):
+            pr_str = f"{pl['pos']}{pl['pos_rank']} Overall" if pl['pos_rank'] <= 120 else f"{pl['pos']} Depth"
+            if pl['pos_rank'] <= 6 or pl['eff_ppg'] >= 17.5:
+                tier = "🌟 ELITE TIER-1 CORNERSTONE"
+            elif pl['pos_rank'] <= 15 or pl['eff_ppg'] >= 13.5:
+                tier = f"🔥 HIGH-END {pl['pos']}1 STARTER"
+            elif pl['pos_rank'] <= 28 or pl['eff_ppg'] >= 10.0:
+                tier = f"⚡ CORE {pl['pos']}2 STARTER"
+            elif pl['pos_rank'] <= 45 or pl['eff_ppg'] >= 7.5:
+                tier = f"🧩 FLEX / DEPTH STARTER"
+            else:
+                tier = "ROTATIONAL BENCH PIECE"
+            return (
+                f"**{pl['name']}** (`{pr_str}` • `{pl['season_avg']} PPG` • "
+                f"**`~{pl['rem_pts']} Expected Remaining Reg-Season Pts`** over final {rem_reg_weeks} wks • {tier})"
+            )
+
+        # 1. Process each position with fresh injury fallout + full positional depth audit
+        for pos, hurt_list in affected_positions.items():
+            all_at_pos = pos_groups[pos]
+            total_cnt = len(all_at_pos)
+            hurt_ids = {h['id'] for h in hurt_list}
+
+            healthy_options = [
+                x for x in all_at_pos
+                if x['id'] not in hurt_ids and x['injury'] in ('ACTIVE', 'NORMAL', '') and x['slot_label'] != 'IR'
+            ]
+            other_sidelined = [
+                x for x in all_at_pos
+                if x['id'] not in hurt_ids and (x['injury'] not in ('ACTIVE', 'NORMAL', '') or x['slot_label'] == 'IR')
+            ]
+
+            for h in hurt_list:
+                trade_tag = ""
+                if h['name'] in traded_to_map:
+                    from_o, to_o = traded_to_map[h['name']]
+                    trade_tag = f" **[🚨 JUST ACQUIRED VIA TRADE FROM {from_o.upper()} THIS WEEK!]**"
+                wk_ctx = (
+                    f"Scored `{h['wk_pts']}` pts (Proj `{h['wk_proj']}`) as {owner}'s {h['slot_label']} in Week {week_num}"
+                    if h['wk_proj'] > 0 or h['wk_pts'] > 0
+                    else f"Placed on IR this week"
+                )
+                story_snip = h['story'].split('. ')[0] + "." if h['story'] else ""
+                owner_lines.append(
+                    f"  - 🚑 **Injury & Timeline Report — {format_caliber(h)}{trade_tag}:** {wk_ctx}. "
+                    f"*ESPN/Rotowire Intel:* {h['headline']} {story_snip}".strip()
+                )
+
+            # Positional Depth & Vulnerability Audit
+            req = required_starters.get(pos, 1)
+            healthy_str = (
+                ", ".join([f"**{x['name']}** (`{pos}{x['pos_rank']}`, `{x['season_avg']} PPG`)" for x in healthy_options])
+                if healthy_options else "**NONE (0 healthy players left at this position!)**"
+            )
+            sidelined_str = ""
+            if other_sidelined:
+                s_parts = []
+                for ox in other_sidelined:
+                    ox_hl = ox['headline']
+                    ret_hint = " — *expected back Week 10!*" if "expected to be back" in ox_hl.lower() or "on track to return" in ox_hl.lower() else ""
+                    s_parts.append(f"**{ox['name']}** (`{pos}{ox['pos_rank']}`, `{ox['season_avg']} PPG`, `{ox['injury']}`{ret_hint})")
+                sidelined_str = f" | Other Sidelined {pos}s on Roster: {', '.join(s_parts)}"
+
+            is_crisis = (
+                len(healthy_options) < req
+                or (pos == 'RB' and len(healthy_options) <= 1)
+                or (pos == 'WR' and len(healthy_options) <= 2 and len(hurt_list) >= 2)
+                or (pos == 'QB' and len(healthy_options) == 0)
+            )
+            if is_crisis:
+                owner_lines.append(
+                    f"  - 🚨 **SEVERE {pos} DEPTH CRISIS FOR {owner.upper()} ({total_cnt} Total {pos}s Rostered, Only {len(healthy_options)} Healthy!):** "
+                    f"With {', '.join([h['name'] for h in hurt_list])} banged up, {owner} is down to just **{len(healthy_options)} healthy {pos}(s)** on the entire roster: {healthy_str}{sidelined_str}. "
+                    f"Discuss whether {owner} has to scramble to the waiver wire or make a desperation move entering Week {week_num + 1}!"
+                )
+            else:
+                owner_lines.append(
+                    f"  - 🛡️ **{pos} Roster Depth & Next-Man-Up Check ({total_cnt} Total {pos}s Rostered, {len(healthy_options)} Healthy Options Available):** "
+                    f"Healthy {pos} replacements on {owner}'s roster: {healthy_str}{sidelined_str}."
+                )
+
+        # 2. Workload / Bye-week crunch notes for elite starters
+        for wn in workload_notes:
+            all_at_pos = pos_groups[wn['pos']]
+            healthy_backups = [
+                x for x in all_at_pos
+                if x['id'] != wn['id'] and x['injury'] in ('ACTIVE', 'NORMAL', '') and x['slot_label'] != 'IR'
+            ]
+            other_out = [
+                x for x in all_at_pos
+                if x['id'] != wn['id'] and (x['injury'] not in ('ACTIVE', 'NORMAL', '') or x['slot_label'] == 'IR')
+            ]
+            hb_str = ", ".join([f"**{x['name']}** (`{wn['pos']}{x['pos_rank']}`, `{x['season_avg']} PPG`)" for x in healthy_backups]) or "None"
+            oo_str = f" (while {', '.join([f'**{x[chr(110)+chr(97)+chr(109)+chr(101)]}** [`{x[chr(105)+chr(110)+chr(106)+chr(117)+chr(114)+chr(121)]}`]' for x in other_out])} remain sidelined)" if other_out else ""
+            owner_lines.append(
+                f"  - ⚠️ **Moving Forward Workload & Bye Alert — {format_caliber(wn)}:** {wn['headline']} "
+                f"With {wn['name']} entering a Week {week_num + 1} bye{oo_str}, {owner}'s remaining healthy {wn['pos']} options are: {hb_str}."
+            )
+
+        # 3. Positive Return Rumors on Sidelined Stars
+        already_mentioned_ids = {h['id'] for hlist in affected_positions.values() for h in hlist}
+        for rn in return_notes:
+            if rn['id'] in already_mentioned_ids:
+                continue
+            owner_lines.append(
+                f"  - 📈 **Reinforcement Rumor — {format_caliber(rn)}:** {rn['headline']}"
+            )
+
+        if owner_lines:
+            team_blocks.append(f"- **{owner} — Moving Forward Roster & Injury Outlook:**\n" + "\n".join(owner_lines))
+
+    if not team_blocks:
+        return ""
+
+    out = "**🔮 MOVING FORWARD: INJURY FALLOUT, PLAYER CALIBER, PROJECTED TIMELINES & ROSTER DEPTH (DISCUSS ON AIR):**\n"
+    out += "*Weave these real ESPN/Rotowire injury timelines, expected remaining point impacts, and positional depth checks into your breakdown of this matchup:*\n"
+    out += "\n".join(team_blocks) + "\n\n"
+    return out
+
 
 def generate_payload(season: int, week_num: int):
     print(f"📡 Fetching live ESPN data for Season {season}, Week {week_num}...")
@@ -1342,7 +1805,8 @@ def generate_payload(season: int, week_num: int):
     payload += "     b) **Division & Wild Card Race Impact (CRITICAL):** Explicitly discuss how this result changed both owners' Division standing, Playoff Seed (#1–#7 vs Bubble), tiebreakers, and Monte Carlo Playoff Odds!\n"
     payload += "     c) **Direct Owner Quotes & Discord Trash Talk (MANDATORY):** Read verbatim and react to the **💬 TIMESTAMPED DISCORD CHATTER & OWNER QUOTES** embedded inside each matchup! Respect the exact `[Timestamp | Slate Window]` tags.\n"
     payload += "     d) **Live Game Desk Win-Probability Swings & MNF Drama:** Break down the 4th-quarter comebacks, Sunday Night shockwaves, and Monday Night Football miracles.\n"
-    payload += "     e) **Studs, Duds & Start/Sit Blunders for BOTH Teams:** Discuss the top 3 starters, bench blunders, and play-by-play NFL statlines for both the winner and the loser.\n\n"
+    payload += "     e) **Studs, Duds, Preseason Expectation vs. Reality & Multi-Week Trends:** Discuss the top 3 starters, bench blunders, and play-by-play NFL statlines for both the winner and the loser. Drop sharp analytical tidbits from the `*📊 Player Expectation vs. Reality & Multi-Week Trend:*` notes—calling out players massively outperforming their preseason ADP/projections (like Matthew Golden, Christian Watson, Jordan Love, or Bucky Irving) as well as their 3-game usage and scoring trends!\n"
+    payload += "     f) **Moving Forward: Injury Fallout, Player Caliber, Timelines & Positional Depth (When Present):** Whenever a matchup includes a `🔮 MOVING FORWARD: INJURY FALLOUT, PLAYER CALIBER, PROJECTED TIMELINES & ROSTER DEPTH` block, discuss the injury severity/timelines from ESPN/Rotowire, the caliber of the player (`Positional Rank`, `PPG`, `Expected Remaining Regular-Season Points`), and whether the team has bench depth at that position or faces a roster crisis!\n\n"
     payload += f"3. **ACT 3: THE TWO-MINUTE DRILL & NEXT WEEK LOOKAHEAD (FINAL ~10–15% OF THE EPISODE / 3–4 MINUTES)**\n"
     payload += f"   - Preview all 8 Week {week_num + 1} matchups, emphasizing **Divisional Showdowns**, 18-year H2H history, and **Win/Loss Playoff Leverage Swings**.\n"
     payload += "   - Closing thoughts, sign-off banter, and parting barbs.\n\n"
@@ -1351,7 +1815,10 @@ def generate_payload(season: int, week_num: int):
     payload += "### ⚡ CRITICAL SHOW DIRECTIVES (MUST FOLLOW):\n"
     payload += f"1. **MANDATORY SPORTSCENTER DESK INTRO & NO HYPOTHETICAL SHTICK:** Never open the episode asking listeners to 'imagine' a scenario or asking rhetorical questions. Open like professional sports anchors: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover, I'm Chris alongside Dave!' NEVER use the term 'Data Sheet'—always refer to the board as the **'Scoreboard'**.\n"
     payload += "2. **20–30 MINUTE TARGET LENGTH & DEEP DIVISION / WILD CARD COVERAGE:** Do NOT cut the show short at 13 minutes, and DO NOT gloss over the division standings! Late in the season, the 4 Division Title Races, Head-to-Head / Points-For Tiebreakers, and the 3 Wild Card spots (Seeds #5–#7) are paramount. Unpack the playoff picture thoroughly in Act 1 AND inside every matchup in Act 2.\n"
-    payload += "3. **DO NOT INVENT MID-GAME INJURIES (CRITICAL ACCURACY RULE):** NEVER claim a player got injured mid-game unless they are explicitly listed under a `🚨 VERIFIED IN-GAME INJURY REPORT` block! If a player scored 0 to 6 points and is NOT listed in a Verified In-Game Injury Report, they did NOT get hurt mid-game—they were healthy and simply laid an egg (a dud performance). Roast healthy players who disappeared; only sympathize with verified in-game injuries.\n"
+    payload += "3. **INJURY ACCURACY & MOVING-FORWARD DEPTH ANALYSIS (CRITICAL RULES):**\n"
+    payload += "   - **ZERO MANAGERS STARTED AN ALREADY-INJURED OR INACTIVE PLAYER THIS WEEK:** Every single starter across all 16 teams was active and projected to score at kickoff! NEVER claim an owner started someone who was already injured or ruled out before their game.\n"
+    payload += "   - **DO NOT INVENT MID-GAME INJURIES:** NEVER claim a low-scoring player (< 8 pts) got injured mid-game unless they are explicitly listed under a `🚨 VERIFIED IN-GAME INJURY REPORT` block! If a player scored 0 to 6 points and is NOT listed in a Verified In-Game Injury Report, they were healthy and simply laid an egg (a dud performance).\n"
+    payload += "   - **DISCUSS 'MOVING FORWARD' INJURY TIMELINES, PLAYER CALIBER & POSITIONAL DEPTH:** When a matchup includes a `🔮 MOVING FORWARD` section, discuss the post-game injury news, projected recovery timelines (e.g., IR stints, surgery, concussions, day-to-day statuses), the player's caliber (`Positional Rank`, `PPG`, `Expected Remaining Points`), and whether that owner has healthy bench depth at that position or is down to 0–1 healthy options!\n"
     
     # Dynamic continuity highlights
     undefeated_teams = [t['owner'] for t in teams.values() if trajectories[t['id']]['overall_l'] == 0]
@@ -1472,39 +1939,70 @@ def generate_payload(season: int, week_num: int):
         payload += "- No teams currently on a 2+ game losing skid.\n\n"
 
     # --- BUILD RICH PLAYER CONTEXT ---
+    pos_map_ctx = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
+    rem_reg_weeks = max(1, 14 - week_num)
     player_context = {}
     for t in raw_data.get('teams', []):
         for entry in t.get('roster', {}).get('entries', []):
-            p_data = entry.get('playerPoolEntry', {}).get('player', {})
+            pe = entry.get('playerPoolEntry', {})
+            p_data = pe.get('player', {})
             pid = p_data.get('id')
             if pid:
                 outlook = p_data.get('seasonOutlook', '')
+                pos_id = p_data.get('defaultPositionId', 0)
+                pos_name = pos_map_ctx.get(pos_id, 'FLEX')
+                rat_0 = pe.get('ratings', {}).get('0', {})
+                pos_rank = rat_0.get('positionalRanking', 999)
+                total_rank = rat_0.get('totalRanking', 999)
                 season_avg = 0.0
+                season_pts = 0.0
+                ros_avg = 0.0
+                preseason_proj_avg = 0.0
+                wk_prev_pts = 0.0
+                ppr_draft_rank = (p_data.get('draftRanksByRankType') or {}).get('PPR', {}).get('rank', 999)
                 for s in p_data.get('stats', []):
+                    sid_str = str(s.get('id', ''))
                     if s.get('statSourceId') == 0 and s.get('scoringPeriodId') == 0 and s.get('seasonId') == season:
                         season_avg = round(s.get('appliedAverage', 0.0), 1)
-                        break
-                        
+                        season_pts = round(s.get('appliedTotal', 0.0), 1)
+                    elif sid_str == f"12{season}" and s.get('statSourceId') == 1 and s.get('scoringPeriodId') == 0:
+                        preseason_proj_avg = round(s.get('appliedAverage', 0.0), 1)
+                    elif sid_str == f"10{season}" and s.get('statSourceId') == 1 and s.get('scoringPeriodId') == 0:
+                        if s.get('appliedAverage', 0.0) > 0:
+                            ros_avg = round(s.get('appliedAverage', 0.0), 1)
+                    elif s.get('statSourceId') == 0 and s.get('scoringPeriodId') == week_num - 1 and s.get('seasonId') == season:
+                        wk_prev_pts = round(s.get('appliedTotal', 0.0), 2)
+                eff_avg = max(season_avg, ros_avg)
                 player_context[pid] = {
                     'injury': p_data.get('injuryStatus', 'ACTIVE'),
                     'outlook': outlook,
                     'adp': p_data.get('ownership', {}).get('averageDraftPosition', 200.0),
+                    'ppr_draft_rank': ppr_draft_rank,
+                    'preseason_proj_avg': preseason_proj_avg,
+                    'wk_prev_pts': wk_prev_pts,
                     'season_avg': season_avg,
+                    'season_pts': season_pts,
+                    'ros_avg': ros_avg or season_avg,
+                    'expected_rem_pts': round(eff_avg * rem_reg_weeks, 1),
+                    'pos_name': pos_name,
+                    'pos_rank': pos_rank,
+                    'total_rank': total_rank,
                     'tenure': ''
                 }
 
-    # Fetch official NFL experience and draft tenure for all active players
+    # Fetch official NFL experience, draft tenure, and Rotowire news in parallel for all active players
     from concurrent.futures import ThreadPoolExecutor
     all_pids = list(player_context.keys())
     with ThreadPoolExecutor(max_workers=12) as executor:
         tenures = list(executor.map(fetch_athlete_tenure, all_pids))
+        list(executor.map(fetch_rotowire_details, all_pids))
     for pid, ten in zip(all_pids, tenures):
         player_context[pid]['tenure'] = ten
     save_tenure_cache()
 
     # Extract per-matchup Live Game Desk swings & map owner quotes with conversation-aware attribution
     per_matchup_live, full_live_desk_md = extract_live_desk_by_matchup(season, week_num, matchups)
-    per_matchup_chatter = attribute_discord_chatter_to_matchups(detailed_chatter, matchups, perfs) if detailed_chatter else {}
+    per_matchup_chatter = attribute_discord_chatter_to_matchups(detailed_chatter, matchups, perfs, recent_trades=recent_trades) if detailed_chatter else {}
     quotes_by_owner = {}
     if verified_quotes:
         for q in verified_quotes:
@@ -1591,7 +2089,7 @@ def generate_payload(season: int, week_num: int):
             w_perf = perfs[w['id']]
             l_perf = perfs[l['id']]
             
-            # Identify verified in-game injuries for both teams
+            # Identify verified in-game injuries that curtailed a starter's Week score (< 8.0 pts)
             matchup_injuries = []
             for s in w_perf.get('starters', []) + l_perf.get('starters', []):
                 inj = detect_in_game_injury(s, player_context)
@@ -1602,11 +2100,19 @@ def generate_payload(season: int, week_num: int):
             if matchup_injuries:
                 payload += "**🚨 VERIFIED IN-GAME INJURY REPORT (CRITICAL CONTEXT - DO NOT CALL THESE BLUNDERS):**\n"
                 for s_owner, s, inj in matchup_injuries:
-                    payload += f"- **{s['name']}** ({s_owner}'s starter): Scored {s['pts']} pts (Proj: {s['proj']}). SUFFERED A VERIFIED IN-GAME INJURY! {inj['headline']} — {inj['story'][:180]}...\n"
-                    payload += f"  *Directive:* {s_owner} did NOT make a mistake starting him. He was healthy at kickoff and exited with an injury during the game. Sympathize with {s_owner}!\n"
+                    pr_lbl = f" (`{inj['pos_name']}{inj['pos_rank']} Overall`, `{inj['season_avg']} PPG`, `~{inj['expected_rem_pts']} Expected Remaining Reg-Season Pts`)" if inj.get('pos_rank', 999) <= 120 else ""
+                    payload += f"- **{s['name']}**{pr_lbl} ({s_owner}'s starter): Scored {inj['pts']} pts (Proj: {inj['proj']}). SUFFERED A VERIFIED IN-GAME INJURY! {inj['headline']} — {inj['story'][:200]}...\n"
+                    payload += f"  *Directive:* {s_owner} did NOT make a mistake starting him. He was active and healthy at kickoff and suffered this injury during the game. Sympathize with {s_owner}!\n"
                 payload += "\n"
             else:
-                payload += "*Note: Zero mid-game injuries occurred in this matchup. Any low-scoring starters were healthy duds!*\n\n"
+                payload += "*Note: Zero low-scoring starters (< 8 pts) exited early with an injury in this matchup; all starters were active at kickoff.*\n\n"
+
+            # Inject Moving Forward: Injury Fallout, Player Caliber, Timelines & Positional Depth Analysis (when relevant)
+            moving_forward_md = build_matchup_moving_forward_intel(
+                w['id'], l['id'], teams, raw_data, player_context, week_num, recent_trades=recent_trades
+            )
+            if moving_forward_md:
+                payload += moving_forward_md
 
             # Top Performers
             w_starters = sorted(w_perf.get('starters', []), key=lambda x: x['pts'], reverse=True)
@@ -1615,17 +2121,19 @@ def generate_payload(season: int, week_num: int):
             payload += "**Winner's Top 3 Starters:**\n"
             for p in w_starters[:3]:
                 ctx = player_context.get(p['id'], {'outlook': ''})
-                payload += f"- {format_player_string(p, player_context)}\n"
-                if ctx['outlook']: payload += f"  *Season Outlook:* {ctx['outlook']}\n"
                 roto = fetch_rotowire_details(p['id'])
+                payload += f"- {format_player_string(p, player_context)}\n"
+                payload += build_player_intelligence_tidbit(p, player_context, roto)
+                if ctx['outlook']: payload += f"  *Season Outlook:* {ctx['outlook']}\n"
                 if roto.get('spin'): payload += f"  *Recent News & Spin:* {roto['spin']}\n"
             
             payload += "\n**Loser's Top 3 Starters:**\n"
             for p in l_starters[:3]:
                 ctx = player_context.get(p['id'], {'outlook': ''})
-                payload += f"- {format_player_string(p, player_context)}\n"
-                if ctx['outlook']: payload += f"  *Season Outlook:* {ctx['outlook']}\n"
                 roto = fetch_rotowire_details(p['id'])
+                payload += f"- {format_player_string(p, player_context)}\n"
+                payload += build_player_intelligence_tidbit(p, player_context, roto)
+                if ctx['outlook']: payload += f"  *Season Outlook:* {ctx['outlook']}\n"
                 if roto.get('spin'): payload += f"  *Recent News & Spin:* {roto['spin']}\n"
             
             payload += "\n**Roster Decisions, Blunders & Duds:**\n"
@@ -1648,6 +2156,7 @@ def generate_payload(season: int, week_num: int):
                 elif b['diff'] >= m['margin']:
                     payload += f"- GAME-LOSING BLUNDER: {l['owner']} lost by {m['margin']}, and it is entirely because they benched {format_player_string(b['benched'], player_context)} to start healthy bust {format_player_string(b['started'], player_context)}! This single bad decision cost them {round(b['diff'], 2)} points and the win. Roast them for this massive mistake.\n"
                     roto_s = fetch_rotowire_details(b['started']['id'])
+                    payload += build_player_intelligence_tidbit(b['started'], player_context, roto_s)
                     if roto_s.get('spin'): payload += f"  *News on the started bust:* {roto_s['spin']}\n"
                 else:
                     payload += f"- BENCH BLUNDER: {l['owner']} lost by {m['margin']} and left points on the bench. Their biggest mistake was benching {format_player_string(b['benched'], player_context)} to start {format_player_string(b['started'], player_context)}, leaving {round(b['diff'], 2)} points on the table.\n"
@@ -1661,6 +2170,7 @@ def generate_payload(season: int, week_num: int):
                     else:
                         payload += f"- TEAM UNDERPERFORMED (HEALTHY DUD): {l['owner']} lost by {m['margin']}. Their biggest healthy bust was {format_player_string(biggest_bust, player_context)}. Discuss how this player disappeared.\n"
                         roto_s = fetch_rotowire_details(biggest_bust['id'])
+                        payload += build_player_intelligence_tidbit(biggest_bust, player_context, roto_s)
                         if roto_s.get('spin'): payload += f"  *News on the biggest bust:* {roto_s['spin']}\n"
             
             payload += "\n"
