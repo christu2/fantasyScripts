@@ -1278,11 +1278,11 @@ def compute_live_playoff_picture(raw_data: dict, week_num: int, teams: dict, tra
         }
 
     weeks_left = max(0, 14 - week_num)
-    md = f"## 🏆 LIVE 7-TEAM PLAYOFF BRACKET, WILD CARD CUTLINE & DIVISION DYNAMICS (THROUGH WEEK {week_num} — {weeks_left} WEEKS LEFT!)\n"
+    md = f"## 🏆 ACT 3: POST-WEEK {week_num} STANDINGS, LIVE 7-TEAM PLAYOFF BRACKET, WILD CARD CUTLINE & DIVISION DYNAMICS ({weeks_left} WEEKS LEFT — DISCUSS ONLY AFTER ALL 8 MATCHUPS!)\n"
     md += (
-        f"*🚨 MANDATORY PRODUCER DIRECTIVE (DO NOT GLANCE OVER!): With Week {week_num} in the books and only **{weeks_left} regular-season weeks remaining** before the Week 15 Playoffs, "
+        f"*🚨 MANDATORY PRODUCER DIRECTIVE (SPOILER-FREE ORDER — DISCUSS ONLY AFTER ALL 8 GAMES ARE COVERED!): Now that all 8 Week {week_num} matchups have been revealed in Act 2 and only **{weeks_left} regular-season weeks remain** before the Week 15 Playoffs, "
         f"the **4 Division Title Races** and the **3 Wild Card Spots (Seeds #5–#7)** are one of the single most important storylines in the league! "
-        f"Spend **3 to 4 full minutes** breaking down every division leader, the head-to-head and Points-For (PF) tiebreakers, who holds the #1 First-Round Bye, "
+        f"Spend **3.5 to 4.5 full minutes** right here in Act 3 breaking down every division leader, the head-to-head and Points-For (PF) tiebreakers, who holds the #1 First-Round Bye, "
         f"which teams hold the 3 Wild Card spots, and which bubble teams are on the outside looking in!*\n\n"
     )
 
@@ -1780,41 +1780,41 @@ def generate_payload(season: int, week_num: int):
     payload += f"**THIS WEEK'S PODCAST THEME:** {weekly_theme}\n\n"
 
     # --- MANDATORY SHOW COLD OPEN ---
-    payload += "### 📺 MANDATORY BROADCAST COLD OPEN (SPORTSCENTER / SPORTS RADIO STYLE):\n"
+    payload += "### 📺 MANDATORY BROADCAST COLD OPEN (SPORTSCENTER / SPORTS RADIO STYLE — SPOILER-FREE!):\n"
     payload += "- **STRICTLY BANNED OPENING SHTICK:** ABSOLUTELY DO NOT open the show with rhetorical questions, hypothetical scenarios, or philosophical musings (e.g. 'Imagine scoring a high number of points but still losing, how would you feel?', 'Picture this...', 'Have you ever wondered...'). NO hypothetical opening monologues!\n"
+    payload += "- **NO STANDINGS OR SCORE SPOILERS BEFORE THE GAMES:** DO NOT reveal the updated post-Week standings, division records, or final game scores in the opening segment! Keep the intro spoiler-free so each of the 8 matchups builds suspense when you break it down in Act 2, and save the full Standings, Division Races, and 7-Team Playoff Picture for **Act 3 AFTER all 8 games have been covered**!\n"
     payload += "- **MANDATORY BROADCAST INTRO:** You MUST start the episode immediately as a clean, authentic broadcast desk introduction:\n"
     payload += f"  1. Welcome the audience: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover!'\n"
     payload += "  2. The hosts MUST introduce themselves right away: 'I'm Chris alongside Dave...'\n"
-    payload += f"  3. Deliver a punchy 2-sentence teaser of Week {week_num}'s biggest headlines, upsets, and division shifts.\n"
-    payload += "  4. Immediately transition straight into the action and the recap of the week!\n\n"
+    payload += f"  3. Deliver a punchy 2-sentence spoiler-free teaser of Week {week_num}'s stakes and drama (without giving away final scores or updated records).\n"
+    payload += "  4. Briefly mention this week's trades (if any, max 60 seconds) and immediately dive straight into Matchup #1!\n\n"
 
     # --- STRICT PACING & BROADCAST TIME ALLOCATION (TARGET: 20 TO 30 MINUTES) ---
-    payload += "### ⏱️ MANDATORY EPISODE LENGTH (20–30 MINUTES) & TIME ALLOCATION\n"
-    payload += "**CRITICAL DURATION DIRECTIVE:** This is a full-length **20 to 30 minute** weekly flagship broadcast! DO NOT rush through the games or wrap up in 12–13 minutes. Take your time unpacking the Division & Wild Card Playoff Race in Act 1 (~3–4 mins) and all 8 matchups & owner quotes in Act 2 (~16–22 mins, ~2.5 to 3.5 minutes per matchup)!\n\n"
-    payload += "1. **ACT 1: THE OPENING DRIVE, DIVISION DYNAMICS & WILD CARD RACE (DEDICATED 3.5 TO 4.5 MINUTES — DO NOT GLANCE OVER!)**\n"
-    payload += f"   - **SportsCenter Desk Welcome:** Welcome listeners to the Week {week_num} edition of the Tuesday Morning Hangover, Chris & Dave introduce themselves, and tease the biggest headlines of the week.\n"
-    payload += f"   - **DEEP-DIVE INTO DIVISION LEADERS, TIEBREAKERS & THE 7-TEAM WILD CARD RACE (MANDATORY 3 TO 4 MINUTES):** With {max(0, 14 - week_num)} weeks left in the regular season, the Division Races and Wild Card Cutline are **one of the most important parts of the entire show**! DO NOT just glance over the standings! Go division-by-division (East, North, South, West) and break down:\n"
-    payload += "     a) **Seeds #1–#4 (The 4 Division Leaders & #1 Seed First-Round Bye Race):** Who leads each division, who holds the head-to-head and Points-For (PF) tiebreakers in deadlocked divisions, and who controls the #1 overall seed.\n"
-    payload += "     b) **Seeds #5–#7 (The 3 Wild Card Spots):** Which 3 non-division winners currently hold the Wild Card berths and how Total Points For (`PF`) is deciding tiebreakers.\n"
-    payload += "     c) **On The Bubble / In The Hunt (#8–#12):** Which teams are sitting at #8 (First Team Out) or 1 game back, and whether their best path is winning their division or chasing a Wild Card spot.\n"
-    payload += "   - **Trades From This Past Week ONLY (Strict 60-Second Cap):** ONLY mention trades that happened in the last 7 days (since last Tuesday morning). Spend **NO MORE THAN 60 SECONDS TOTAL** on trades!\n\n"
-    payload += f"2. **ACT 2: DEEP-DIVE GAME-BY-GAME BREAKDOWNS & OWNER QUOTES (THE CORE 70–75% OF THE EPISODE / 16–22 MINUTES)**\n"
-    payload += "   - **MANDATORY DEEP COVERAGE (2.5 TO 3.5 MINUTES PER GAME):** You MUST cover **ALL 8 MATCHUPS and ALL 16 TEAMS** in full detail! Spend 2.5 to 3.5 minutes on EVERY SINGLE matchup so the full show runs 20–30 minutes.\n"
+    payload += "### ⏱️ MANDATORY EPISODE LENGTH (20–30 MINUTES) & SPOILER-FREE 3-ACT SHOW ORDER\n"
+    payload += "**CRITICAL DURATION & ORDER DIRECTIVE:** This is a full-length **20 to 30 minute** weekly flagship broadcast! Follow this exact **Spoiler-Free 3-Act Order**: cover **all 8 matchups FIRST** (~16–22 mins, ~2.5 to 3.5 minutes per matchup), and save the **Updated Standings, Division Tiebreakers & 7-Team Playoff Bracket for AFTER all 8 matchups** (~4–6 mins) so no game results are spoiled early!\n\n"
+    payload += "1. **ACT 1: SPOILER-FREE DESK COLD OPEN & THIS WEEK'S TRADES (1 TO 2 MINUTES — DO NOT SPOIL SCORES OR STANDINGS!)**\n"
+    payload += f"   - **SportsCenter Desk Welcome:** Welcome listeners to the Week {week_num} edition of the Tuesday Morning Hangover, Chris & Dave introduce themselves, and set the stage for Week {week_num} **without spoiling game winners or post-week standings**.\n"
+    payload += "   - **Trades From This Past Week ONLY (Strict 60-Second Cap):** ONLY mention trades that happened in the last 7 days (since last Tuesday morning). Spend **NO MORE THAN 60 SECONDS TOTAL** on trades before jumping straight into Game #1!\n\n"
+    payload += f"2. **ACT 2: DEEP-DIVE GAME-BY-GAME BREAKDOWNS & OWNER QUOTES (THE CORE 70–75% OF THE EPISODE / 16–22 MINUTES — COVER ALL 8 GAMES BEFORE STANDINGS!)**\n"
+    payload += "   - **MANDATORY DEEP COVERAGE (2.5 TO 3.5 MINUTES PER GAME):** You MUST cover **ALL 8 MATCHUPS and ALL 16 TEAMS** in full detail before discussing the league-wide standings! Spend 2.5 to 3.5 minutes on EVERY SINGLE matchup so the full show runs 20–30 minutes.\n"
     payload += "   - **WHAT TO COVER FOR EVERY SINGLE GAME (DO NOT RUSH):**\n"
-    payload += "     a) **Final Score, Margin & 18-Year All-Time Rivalry Context:** Who won, by how much, and how it shifts their all-time head-to-head series.\n"
-    payload += "     b) **Division & Wild Card Race Impact (CRITICAL):** Explicitly discuss how this result changed both owners' Division standing, Playoff Seed (#1–#7 vs Bubble), tiebreakers, and Monte Carlo Playoff Odds!\n"
-    payload += "     c) **Direct Owner Quotes & Discord Trash Talk (MANDATORY):** Read verbatim and react to the **💬 TIMESTAMPED DISCORD CHATTER & OWNER QUOTES** embedded inside each matchup! Respect the exact `[Timestamp | Slate Window]` tags.\n"
-    payload += "     d) **Live Game Desk Win-Probability Swings & MNF Drama:** Break down the 4th-quarter comebacks, Sunday Night shockwaves, and Monday Night Football miracles.\n"
-    payload += "     e) **Studs, Duds, Preseason Expectation vs. Reality & Multi-Week Trends:** Discuss the top 3 starters, bench blunders, and play-by-play NFL statlines for both the winner and the loser. Drop sharp analytical tidbits from the `*📊 Player Expectation vs. Reality & Multi-Week Trend:*` notes—calling out players massively outperforming their preseason ADP/projections (like Matthew Golden, Christian Watson, Jordan Love, or Bucky Irving) as well as their 3-game usage and scoring trends!\n"
-    payload += "     f) **Moving Forward: Injury Fallout, Player Caliber, Timelines & Positional Depth (When Present):** Whenever a matchup includes a `🔮 MOVING FORWARD: INJURY FALLOUT, PLAYER CALIBER, PROJECTED TIMELINES & ROSTER DEPTH` block, discuss the injury severity/timelines from ESPN/Rotowire, the caliber of the player (`Positional Rank`, `PPG`, `Expected Remaining Regular-Season Points`), and whether the team has bench depth at that position or faces a roster crisis!\n\n"
-    payload += f"3. **ACT 3: THE TWO-MINUTE DRILL & NEXT WEEK LOOKAHEAD (FINAL ~10–15% OF THE EPISODE / 3–4 MINUTES)**\n"
-    payload += f"   - Preview all 8 Week {week_num + 1} matchups, emphasizing **Divisional Showdowns**, 18-year H2H history, and **Win/Loss Playoff Leverage Swings**.\n"
-    payload += "   - Closing thoughts, sign-off banter, and parting barbs.\n\n"
+    payload += "     a) **Final Score, Margin & 18-Year All-Time Rivalry Context:** Reveal who won, by how much, and how it shifts their all-time head-to-head series.\n"
+    payload += "     b) **Direct Owner Quotes & Discord Trash Talk (MANDATORY):** Read verbatim and react to the **💬 TIMESTAMPED DISCORD CHATTER & OWNER QUOTES** embedded inside each matchup! Respect the exact `[Timestamp | Slate Window]` tags.\n"
+    payload += "     c) **Live Game Desk Win-Probability Swings & MNF Drama:** Break down the 4th-quarter comebacks, Sunday Night shockwaves, and Monday Night Football miracles.\n"
+    payload += "     d) **Studs, Duds, Preseason Expectation vs. Reality & Multi-Week Trends:** Discuss the top 3 starters, bench blunders, and play-by-play NFL statlines for both the winner and the loser. Drop sharp analytical tidbits from the `*📊 Player Expectation vs. Reality & Multi-Week Trend:*` notes—calling out players massively outperforming their preseason ADP/projections (like Matthew Golden, Christian Watson, Jordan Love, or Bucky Irving) as well as their 3-game usage and scoring trends!\n"
+    payload += "     e) **Moving Forward: Injury Fallout, Player Caliber, Timelines & Positional Depth (When Present):** Whenever a matchup includes a `🔮 MOVING FORWARD: INJURY FALLOUT, PLAYER CALIBER, PROJECTED TIMELINES & ROSTER DEPTH` block, discuss the injury severity/timelines from ESPN/Rotowire, the caliber of the player (`Positional Rank`, `PPG`, `Expected Remaining Regular-Season Points`), and whether the team has bench depth at that position or faces a roster crisis!\n"
+    payload += "     f) **Immediate Standings Impact for These Two Teams:** Briefly note what this win/loss did to these two owners' records and playoff odds, setting up the full league-wide Standings & Playoff Bracket breakdown in Act 3.\n\n"
+    payload += f"3. **ACT 3: THE BIG BOARD — POST-WEEK {week_num} STANDINGS, DIVISION RACES, 7-TEAM WILD CARD CUTLINE & WEEK {week_num + 1} LOOKAHEAD (FINAL 5 TO 7 MINUTES — AFTER ALL 8 GAMES ARE REVEALED!)**\n"
+    payload += f"   - **DEEP-DIVE INTO DIVISION LEADERS, TIEBREAKERS & THE 7-TEAM WILD CARD RACE (MANDATORY 3.5 TO 4.5 MINUTES — DO NOT GLANCE OVER!):** Now that all 8 games have been revealed with zero spoilers, zoom out to the updated post-Week {week_num} Scoreboard! With {max(0, 14 - week_num)} weeks left in the regular season, go division-by-division (East, North, South, West) and break down:\n"
+    payload += "     a) **Seeds #1–#4 (The 4 Division Leaders & #1 Seed First-Round Bye Race):** Who leads each division after this week's games, who holds the head-to-head and Points-For (PF) tiebreakers in deadlocked divisions, and who controls the #1 overall seed.\n"
+    payload += "     b) **Seeds #5–#7 (The 3 Wild Card Spots):** Which 3 non-division winners currently hold the Wild Card berths and how Total Points For (`PF`) is deciding tiebreakers.\n"
+    payload += "     c) **On The Bubble / In The Hunt (#8–#13) & League Momentum:** Which teams are sitting at #8 (First Team Out) or 1 game back, who is surging or in freefall, and the 10,000-simulation Monte Carlo Playoff Odds.\n"
+    payload += f"   - **THE TWO-MINUTE DRILL — WEEK {week_num + 1} PREVIEW (~2 MINUTES):** Preview all 8 Week {week_num + 1} matchups, emphasizing **Divisional Showdowns**, 18-year H2H history, and **Win/Loss Playoff Leverage Swings**, then sign off.\n\n"
 
     # --- CRITICAL HOST DIRECTIVES ---
     payload += "### ⚡ CRITICAL SHOW DIRECTIVES (MUST FOLLOW):\n"
     payload += f"1. **MANDATORY SPORTSCENTER DESK INTRO & NO HYPOTHETICAL SHTICK:** Never open the episode asking listeners to 'imagine' a scenario or asking rhetorical questions. Open like professional sports anchors: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover, I'm Chris alongside Dave!' NEVER use the term 'Data Sheet'—always refer to the board as the **'Scoreboard'**.\n"
-    payload += "2. **20–30 MINUTE TARGET LENGTH & DEEP DIVISION / WILD CARD COVERAGE:** Do NOT cut the show short at 13 minutes, and DO NOT gloss over the division standings! Late in the season, the 4 Division Title Races, Head-to-Head / Points-For Tiebreakers, and the 3 Wild Card spots (Seeds #5–#7) are paramount. Unpack the playoff picture thoroughly in Act 1 AND inside every matchup in Act 2.\n"
+    payload += "2. **SPOILER-FREE SHOW ORDER (MATCHUPS FIRST, STANDINGS AFTER!) & 20–30 MINUTE TARGET LENGTH:** NEVER discuss the updated league-wide standings or division records before covering the 8 matchups! Break down all 8 games first in Act 2 (~16–22 mins), and then do the deep 3.5–4.5 minute breakdown of the 4 Division Title Races, Head-to-Head / Points-For Tiebreakers, and the 3 Wild Card spots (Seeds #5–#7) in Act 3 once all results are on the table!\n"
     payload += "3. **INJURY ACCURACY & MOVING-FORWARD DEPTH ANALYSIS (CRITICAL RULES):**\n"
     payload += "   - **ZERO MANAGERS STARTED AN ALREADY-INJURED OR INACTIVE PLAYER THIS WEEK:** Every single starter across all 16 teams was active and projected to score at kickoff! NEVER claim an owner started someone who was already injured or ruled out before their game.\n"
     payload += "   - **DO NOT INVENT MID-GAME INJURIES:** NEVER claim a low-scoring player (< 8 pts) got injured mid-game unless they are explicitly listed under a `🚨 VERIFIED IN-GAME INJURY REPORT` block! If a player scored 0 to 6 points and is NOT listed in a Verified In-Game Injury Report, they were healthy and simply laid an egg (a dud performance).\n"
@@ -1865,11 +1865,53 @@ def generate_payload(season: int, week_num: int):
     recent_trades = [tr for tr in trades if tr.get('week') in recent_weeks]
     roster_moves = fetch_recent_roster_moves(raw_data, week_num, season, cookies, teams)
 
-    # --- LEAGUE-WIDE POINTS RANKINGS & SCORING SUMMARY ---
-    payload += "## 📊 LEAGUE-WIDE SCORING & POINTS SUMMARY\n"
-    payload += "*Analytical reference for Act 1: Quick data comparison of total points scored (PF) versus points allowed (PA). Use purely as statistical context, not as an opening philosophical debate.*\n\n"
-    payload += "| Rank | Owner | Team | Record | Points For (Avg PPG) | Points Against (Opp PPG) | Scoring Profile |\n"
-    payload += "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
+    # Pre-build Act 3 Standings, Playoff Bracket, Monte Carlo Odds, Momentum & Scoring Summary
+    # so seed_map is available inside each matchup while the full Standings & Playoff Bracket
+    # sections are placed AFTER all 8 matchups in Act 3 (preventing any pre-matchup spoilers!).
+    seed_map, live_playoff_md = compute_live_playoff_picture(raw_data, week_num, teams, trajectories, playoff_odds)
+
+    act3_standings_md = "\n" + live_playoff_md
+
+    if playoff_odds:
+        act3_standings_md += f"## 🎲 10,000-SIMULATION PLAYOFF ODDS, BYE RACE & LEVERAGE STAKES (ENTERING WEEK {week_num + 1})\n"
+        act3_standings_md += "*Weave these real Monte Carlo percentages into your Act 3 Standings & Playoff Bracket breakdown and your Week " + str(week_num + 1) + " must-win leverage preview:*\n\n"
+        sorted_po = sorted(playoff_odds.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct'], x['pf']), reverse=True)
+        for rank, r in enumerate(sorted_po, 1):
+            act3_standings_md += (
+                f"- **#{rank} {r['owner']} ({r['record']}, {r['division']}):** "
+                f"**{r['playoff_pct']}% Playoff Odds** | {r['div_title_pct']}% Div Title | {r['bye_pct']}% #1 Seed Bye | {r['champ_pct']}% Ring | "
+                f"Week {week_num + 1} vs {r['next_opp']}: Win ➡️ `{r['win_po_pct']}%` / Loss ➡️ `{r['loss_po_pct']}%` (**±{r['leverage_swing']}% Leverage Swing**) | "
+                f"Loser's Bracket #1 Draft Pick Odds: {r['draft_choice_fav_pct']}%\n"
+            )
+        act3_standings_md += "\n"
+
+    # --- SEASON TRAJECTORIES & MOMENTUM (FOR ACT 3) ---
+    act3_standings_md += "## 📈 LEAGUE MOMENTUM & TRAJECTORIES (POST-WEEK " + str(week_num) + ")\n"
+    act3_standings_md += "### 🔥 Surging Teams (On Fire):\n"
+    surging_items = []
+    for tid, tr in sorted(trajectories.items(), key=lambda x: (x[1]['streak_cnt'], x[1]['overall_w']), reverse=True):
+        if tr['streak_type'] == 'W' and tr['streak_cnt'] >= 2:
+            surging_items.append(f"- **{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']}, {tr['streak_str']}):** Won {tr['streak_cnt']} straight ({round(tr['points_for'], 1)} PF, Rank #{tr['pf_rank']}).")
+    if surging_items:
+        act3_standings_md += "\n".join(surging_items) + "\n\n"
+    else:
+        act3_standings_md += "- No teams currently on a 2+ game winning streak.\n\n"
+    
+    act3_standings_md += "### 🧊 Teams in Freefall (Losing Skids):\n"
+    freefall_items = []
+    for tid, tr in sorted(trajectories.items(), key=lambda x: (x[1]['streak_cnt'], -x[1]['overall_w']), reverse=True):
+        if tr['streak_type'] == 'L' and tr['streak_cnt'] >= 2:
+            freefall_items.append(f"- **{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']}, {tr['streak_str']}):** Dropped {tr['streak_cnt']} straight ({round(tr['points_for'], 1)} PF, Rank #{tr['pf_rank']}; {round(tr['points_against'], 1)} PA, Rank #{tr['pa_rank']} hardest).")
+    if freefall_items:
+        act3_standings_md += "\n".join(freefall_items) + "\n\n"
+    else:
+        act3_standings_md += "- No teams currently on a 2+ game losing skid.\n\n"
+
+    # --- LEAGUE-WIDE POINTS RANKINGS & SCORING SUMMARY (FOR ACT 3) ---
+    act3_standings_md += "## 📊 LEAGUE-WIDE SCORING & POINTS SUMMARY (POST-WEEK " + str(week_num) + ")\n"
+    act3_standings_md += "*Analytical reference for Act 3 (after all matchups are covered): Quick data comparison of total points scored (PF) versus points allowed (PA).*\n\n"
+    act3_standings_md += "| Rank | Owner | Team | Record | Points For (Avg PPG) | Points Against (Opp PPG) | Scoring Profile |\n"
+    act3_standings_md += "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n"
     
     all_teams_by_pf = sorted(teams.values(), key=lambda t: trajectories[t['id']]['points_for'], reverse=True)
     for rank, t in enumerate(all_teams_by_pf, 1):
@@ -1888,55 +1930,29 @@ def generate_payload(season: int, week_num: int):
         else:
             diagnosis = "⚖️ Balanced Matchups"
             
-        payload += f"| #{rank} | **{t['owner']}** | {t['name']} | **{tr['overall_w']}-{tr['overall_l']}** | {round(tr['points_for'], 1)} ({round(avg_ppg, 1)} PPG) | {round(tr['points_against'], 1)} ({round(opp_ppg, 1)} PPG) | {diagnosis} |\n"
-    payload += "\n"
+        act3_standings_md += f"| #{rank} | **{t['owner']}** | {t['name']} | **{tr['overall_w']}-{tr['overall_l']}** | {round(tr['points_for'], 1)} ({round(avg_ppg, 1)} PPG) | {round(tr['points_against'], 1)} ({round(opp_ppg, 1)} PPG) | {diagnosis} |\n"
+    act3_standings_md += "\n"
     
-    payload += "### 🗣️ TALKING POINTS ON POINTS & SCORING:\n"
+    act3_standings_md += "### 🗣️ TALKING POINTS ON POINTS & SCORING:\n"
     if pt_callouts:
-        payload += f"- **Low-Scoring Winning Teams:** {', '.join(pt_callouts)}. Winning with clutch defense and low-scoring dogfights!\n"
+        act3_standings_md += f"- **Low-Scoring Winning Teams:** {', '.join(pt_callouts)}. Winning with clutch defense and low-scoring dogfights!\n"
     if unlucky_callouts:
-        payload += f"- **High-Scoring Losing Teams:** {', '.join(unlucky_callouts)}. Scoring big points but running into high opponent totals.\n"
+        act3_standings_md += f"- **High-Scoring Losing Teams:** {', '.join(unlucky_callouts)}. Scoring big points but running into high opponent totals.\n"
     if gauntlet_callouts:
-        payload += f"- **Hardest Schedules:** {', '.join(gauntlet_callouts)}. Opponents are putting up big totals against them.\n\n"
+        act3_standings_md += f"- **Hardest Schedules:** {', '.join(gauntlet_callouts)}. Opponents are putting up big totals against them.\n\n"
 
-    # --- LIVE PLAYOFF BRACKET, WILD CARD CUTLINE & DIVISION STANDINGS DYNAMICS ---
-    seed_map, live_playoff_md = compute_live_playoff_picture(raw_data, week_num, teams, trajectories, playoff_odds)
-    payload += live_playoff_md
-
-    if playoff_odds:
-        payload += f"## 🎲 10,000-SIMULATION PLAYOFF ODDS, BYE RACE & LEVERAGE STAKES (ENTERING WEEK {week_num + 1})\n"
-        payload += "*Weave these real Monte Carlo percentages into Act 1 (Standings), Act 2 (what the result did to their odds), and Act 3 (next week's must-win leverage games):*\n\n"
-        sorted_po = sorted(playoff_odds.values(), key=lambda x: (x['playoff_pct'], x['top3_payout_pct'], x['pf']), reverse=True)
-        for rank, r in enumerate(sorted_po, 1):
-            payload += (
-                f"- **#{rank} {r['owner']} ({r['record']}, {r['division']}):** "
-                f"**{r['playoff_pct']}% Playoff Odds** | {r['div_title_pct']}% Div Title | {r['bye_pct']}% #1 Seed Bye | {r['champ_pct']}% Ring | "
-                f"Week {week_num + 1} vs {r['next_opp']}: Win ➡️ `{r['win_po_pct']}%` / Loss ➡️ `{r['loss_po_pct']}%` (**±{r['leverage_swing']}% Leverage Swing**) | "
-                f"Loser's Bracket #1 Draft Pick Odds: {r['draft_choice_fav_pct']}%\n"
-            )
-        payload += "\n"
-
-    # --- SEASON TRAJECTORIES & MOMENTUM ---
-    payload += "## 📈 LEAGUE MOMENTUM & TRAJECTORIES\n"
-    payload += "### 🔥 Surging Teams (On Fire):\n"
-    surging_items = []
-    for tid, tr in sorted(trajectories.items(), key=lambda x: (x[1]['streak_cnt'], x[1]['overall_w']), reverse=True):
-        if tr['streak_type'] == 'W' and tr['streak_cnt'] >= 2:
-            surging_items.append(f"- **{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']}, {tr['streak_str']}):** Won {tr['streak_cnt']} straight ({round(tr['points_for'], 1)} PF, Rank #{tr['pf_rank']}).")
-    if surging_items:
-        payload += "\n".join(surging_items) + "\n\n"
-    else:
-        payload += "- No teams currently on a 2+ game winning streak.\n\n"
-    
-    payload += "### 🧊 Teams in Freefall (Losing Skids):\n"
-    freefall_items = []
-    for tid, tr in sorted(trajectories.items(), key=lambda x: (x[1]['streak_cnt'], -x[1]['overall_w']), reverse=True):
-        if tr['streak_type'] == 'L' and tr['streak_cnt'] >= 2:
-            freefall_items.append(f"- **{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']}, {tr['streak_str']}):** Dropped {tr['streak_cnt']} straight ({round(tr['points_for'], 1)} PF, Rank #{tr['pf_rank']}; {round(tr['points_against'], 1)} PA, Rank #{tr['pa_rank']} hardest).")
-    if freefall_items:
-        payload += "\n".join(freefall_items) + "\n\n"
-    else:
-        payload += "- No teams currently on a 2+ game losing skid.\n\n"
+    # --- ACT 1B: THIS WEEK'S TRANSACTIONS (STRICT 60–90 SECOND CAP BEFORE THE GAMES) ---
+    if recent_trades or roster_moves:
+        payload += "## 🔄 ACT 1: THIS WEEK'S TRANSACTIONS (STRICT 60–90 SECOND CAP BEFORE DIVING INTO MATCHUP #1)\n"
+        payload += "*STRICT TIME LIMIT: Spend NO MORE THAN 60–90 seconds total on these transactions right after your cold open! Only trades from the last 7 days (since last Tuesday morning) are listed here. Do NOT spoil any game scores or post-week standings yet—after covering this trade, jump straight into Matchup #1!*\n\n"
+        if recent_trades:
+            for tr in recent_trades:
+                payload += format_in_depth_trade(tr)
+        if roster_moves:
+            payload += "### 📋 Minor Free Agent Pickups (10-Second Passing Mention Only):\n"
+            for rm in roster_moves[:4]:
+                payload += f"- {rm}\n"
+            payload += "\n"
 
     # --- BUILD RICH PLAYER CONTEXT ---
     pos_map_ctx = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
@@ -2181,18 +2197,8 @@ def generate_payload(season: int, week_num: int):
                     history_str += f"- **{owner}**: {ctx['rings']} Rings. {ctx['tagline']}\n"
                     seen_owners.add(owner)
 
-    # Include THIS WEEK'S trades only (strictly capped at 60-90 seconds)
-    if recent_trades or roster_moves:
-        payload += "## 🔄 THIS WEEK'S TRANSACTIONS (STRICT 60–90 SECOND CAP — DO NOT DWELL)\n"
-        payload += "*STRICT TIME LIMIT: Spend NO MORE THAN 60–90 seconds total on these transactions! Only trades from the last 7 days (since last Tuesday morning) are listed here. Do NOT discuss older trades from prior weeks!*\n\n"
-        if recent_trades:
-            for tr in recent_trades:
-                payload += format_in_depth_trade(tr)
-        if roster_moves:
-            payload += "### 📋 Minor Free Agent Pickups (10-Second Passing Mention Only):\n"
-            for rm in roster_moves[:4]:
-                payload += f"- {rm}\n"
-            payload += "\n"
+    # --- ACT 3: POST-WEEK STANDINGS, PLAYOFF BRACKET, WILD CARD CUTLINE, ODDS & MOMENTUM (AFTER ALL 8 GAMES!) ---
+    payload += act3_standings_md
 
     payload += history_str
     
@@ -2285,9 +2291,8 @@ def generate_payload(season: int, week_num: int):
     # Write ready-to-paste NotebookLM 'Customize' prompt file
     customize_prompt = (
         f"Host a 20-30 min SportsCenter-style Week {week_num} BFL recap as Chris & Dave. "
-        f"Spend 3-4 mins dissecting all 4 Division Races, H2H/PF tiebreakers & the 7-team Wild Card cutline (don't gloss over standings!). "
-        f"Spend 18-22 mins (2.5-3.5m/game) on ALL 8 matchups AND reading every Discord quote verbatim with its exact [Timestamp | Slate Window] context. "
-        f"Cap this week's trades at 60s. Never say a player got hurt mid-game unless in a Verified Injury Report."
+        f"NO SPOILERS FIRST: Open with a quick intro & this week's trade (60s cap), then go straight into ALL 8 matchups (18-22 mins, 2.5-3.5m/game) reading every Discord quote verbatim with its [Timestamp | Slate Window] context, ADP/trend tidbits & Moving Forward injury/depth analysis. "
+        f"ONLY AFTER all 8 games are covered, spend 4-5 mins dissecting the updated Standings, 4 Division Races, H2H/PF tiebreakers, 7-team Wild Card cutline & Week {week_num + 1} preview."
     )
     customize_file = out_dir / f"notebook_customize_prompt_week_{week_num}_{season}.txt"
     with open(customize_file, 'w') as f:
