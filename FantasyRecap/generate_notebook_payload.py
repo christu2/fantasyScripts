@@ -17,7 +17,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, analyze_week, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, standardize_name, compile_all_time_h2h
-from FantasyRecap.press_conference_manager import get_verified_manager_quotes, harvest_detailed_discord_chatter
+from FantasyRecap.press_conference_manager import (
+    get_verified_manager_quotes,
+    harvest_detailed_discord_chatter,
+    attribute_discord_chatter_to_matchups,
+)
 from FantasyRecap.playoff_odds_simulator import (
     simulate_league_playoff_odds_from_espn,
     resolve_division_tiebreakers,
@@ -910,18 +914,29 @@ def format_contextual_discord_entry(d: dict, w_owner: str = None, l_owner: str =
     # Outcome & Reverse-Jinx guardrails when inside a specific matchup
     low_text = text.lower()
     doom_phrases = [
-        "over", "rest easy", "cooked", "done", "lost", "lose", "good night",
-        "bid you all", "gg", "congrats", "white flag", "pain", "exhausted"
+        "season over", "is over", "rest easy", "cooked", "i'm done", "im done",
+        "we're done", "i lost", "gonna lose", "good night", "bid you all",
+        "white flag", "it was a good run"
     ]
     if w_owner and l_owner and w_pts is not None and l_pts is not None:
+        pk = tuple(sorted([w_owner, l_owner]))
+        attr_reason = (d.get("attribution_notes") or {}).get(pk, "")
+        if attr_reason and not attr_reason.endswith("matchup comment") and not attr_reason.endswith("own matchup"):
+            notes.append(f"📌 Context: {attr_reason}")
+
         if speaker == w_owner and any(p in low_text for p in doom_phrases) and "Post-MNF" not in slate:
             notes.append(
                 f"📌 Mid-Game Reverse-Jinx / Plot Twist: {w_owner} posted this at {ts_str} ({slate}) while sweating/trailing mid-matchup—BEFORE rallying to WIN {w_pts} to {l_pts} over {l_owner}!"
             )
         elif speaker == w_owner and "Post-MNF" in slate:
-            notes.append(
-                f"📌 Post-MNF Victory Reaction: {w_owner} posted this immediately after completing the Monday Night Football win over {l_owner} ({w_pts} to {l_pts})."
-            )
+            if any(k in low_text for k in ["wild card", "5-3", "division", "standings", "playoff"]):
+                notes.append(
+                    f"📌 Post-MNF Standings & Wild Card Reaction: {w_owner} (who defeated {l_owner}, {w_pts} to {l_pts}) reacting to the league-wide playoff and Wild Card standings after MNF."
+                )
+            else:
+                notes.append(
+                    f"📌 Post-MNF Reaction ({w_owner} def. {l_owner}, {w_pts} to {l_pts})."
+                )
         elif speaker == l_owner and ("Sunday" in slate or "Monday" in slate):
             notes.append(
                 f"📌 Matchup Outcome Context: {l_owner} posted this during {slate} ({ts_str}); {l_owner} ultimately LOST this matchup to {w_owner}, {w_pts} to {l_pts}."
@@ -930,6 +945,12 @@ def format_contextual_discord_entry(d: dict, w_owner: str = None, l_owner: str =
             notes.append(
                 f"📌 Third-Party League Reaction during {slate} ({ts_str}) on the {w_owner} ({w_pts}) vs. {l_owner} ({l_pts}) matchup."
             )
+    else:
+        t_pairs = d.get("target_pairs") or []
+        if t_pairs:
+            pair_labels = [f"{p[0]} vs. {p[1]}" for p in t_pairs if p]
+            if pair_labels:
+                notes.append(f"📌 Matchup Topic: {', '.join(pair_labels)}")
 
     note_suffix = f"\n  *[{'; '.join(notes)}]*" if notes else ""
     return f"- 💬 **[{ts_str} | {slate} | {chan}] {speaker}{reply_str}:** \"{text}\"{note_suffix}"
@@ -1471,8 +1492,9 @@ def generate_payload(season: int, week_num: int):
         player_context[pid]['tenure'] = ten
     save_tenure_cache()
 
-    # Extract per-matchup Live Game Desk swings & map owner quotes
+    # Extract per-matchup Live Game Desk swings & map owner quotes with conversation-aware attribution
     per_matchup_live, full_live_desk_md = extract_live_desk_by_matchup(season, week_num, matchups)
+    per_matchup_chatter = attribute_discord_chatter_to_matchups(detailed_chatter, matchups, perfs) if detailed_chatter else {}
     quotes_by_owner = {}
     if verified_quotes:
         for q in verified_quotes:
@@ -1541,22 +1563,11 @@ def generate_payload(season: int, week_num: int):
             w_pts_fin = max(m['away_score'], m['home_score'])
             l_pts_fin = min(m['away_score'], m['home_score'])
             matchup_quote_lines = []
-            if detailed_chatter:
-                for d in detailed_chatter:
-                    mentioned = d.get("mentioned_owners", [])
-                    reply_to_own = d.get("reply_to_owner")
-                    mentions_this_pair = (
-                        w['owner'] in mentioned
-                        or l['owner'] in mentioned
-                        or reply_to_own in (w['owner'], l['owner'])
+            if per_matchup_chatter:
+                for d in per_matchup_chatter.get(pair_key, []):
+                    matchup_quote_lines.append(
+                        format_contextual_discord_entry(d, w['owner'], l['owner'], w_pts_fin, l_pts_fin)
                     )
-                    mentions_other_only = (
-                        bool(mentioned or reply_to_own) and not mentions_this_pair
-                    )
-                    if mentions_this_pair or (d.get("speaker") in (w['owner'], l['owner']) and not mentions_other_only):
-                        matchup_quote_lines.append(
-                            format_contextual_discord_entry(d, w['owner'], l['owner'], w_pts_fin, l_pts_fin)
-                        )
             else:
                 for m_own in [w['owner'], l['owner']]:
                     if m_own in quotes_by_owner:
