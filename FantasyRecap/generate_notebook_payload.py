@@ -121,8 +121,18 @@ def detect_in_game_injury(player: dict, player_context: dict = None) -> dict:
     # The HEADLINE is always about this specific player (not a teammate).
     # Require that the headline itself mentions an injury or in-game exit, OR the player is officially flagged injured on ESPN
     # AND the first sentence of the story/headline explicitly states they exited/suffered an injury.
+    # Exclude pre-game activation headlines (e.g. "activated from injured reserve", "removed his questionable designation")
+    activation_signals = [
+        "activated from injured reserve", "removed his questionable designation",
+        "cleared to play", "expected to play", "active for sunday", "active for monday", "active for thursday"
+    ]
+    if any(act in headline_lower for act in activation_signals):
+        return None
+
     headline_has_inj = any(kw in headline_lower for kw in INJURY_KEYWORDS)
-    has_exit_signal = any(sig in full_text for sig in IN_GAME_EXIT_SIGNALS)
+    has_exit_signal = any(sig in headline_lower for sig in IN_GAME_EXIT_SIGNALS) or (
+        espn_status not in ('ACTIVE', '') and any(sig in full_text for sig in IN_GAME_EXIT_SIGNALS)
+    )
 
     if headline_has_inj and has_exit_signal:
         return {
@@ -818,7 +828,7 @@ def extract_live_desk_by_matchup(season: int, week_num: int, matchups: list) -> 
                     bullets.append(b_str)
                     per_matchup[pair_key].append(b_str)
                 elif fin_margin <= 2.5 and st_m.get('last_alert_time', 0) > 0:
-                    b_str = f"- ⚡ **SUNDAY NIGHT 4TH-QUARTER SHOCKWAVE & LEAD CHANGE (`#live-game-desk`):** **{fin_winner}** pulled off a jaw-dropping late rally to edge **{fin_loser}** `{fin_w_pts:.2f}` to `{fin_l_pts:.2f}` (Margin: **`{fin_margin:.2f}` pts**), capped by a late probability shockwave and lead overtake on the Live Game Desk!"
+                    b_str = f"- ⚡ **LATE-GAME NAIL-BITER & LEAD CHANGE (`#live-game-desk`):** **{fin_winner}** pulled off a jaw-dropping late rally to edge **{fin_loser}** `{fin_w_pts:.2f}` to `{fin_l_pts:.2f}` (Margin: **`{fin_margin:.2f}` pts**), capped by a late probability shockwave and lead overtake on the Live Game Desk!"
                     bullets.append(b_str)
                     per_matchup[pair_key].append(b_str)
 

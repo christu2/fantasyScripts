@@ -614,7 +614,8 @@ def attribute_discord_chatter_to_matchups(detailed_chatter: list, matchups: list
                     pk = owner_to_pair[bo]
                     if pk not in direct_pairs:
                         direct_pairs.append(pk)
-                    direct_reasons[pk] = f"Reacting to #live-game-desk alert on {bo}"
+                    if pk not in direct_reasons:
+                        direct_reasons[pk] = f"Reacting to #live-game-desk alert on {pk[0]} vs. {pk[1]}"
 
             # Special league-context phrases
             if "undefeated" in text_low and "winless" in text_low:
