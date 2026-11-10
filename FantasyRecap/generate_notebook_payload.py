@@ -138,11 +138,44 @@ def _parse_recent_gamelog_trend(gl: dict) -> str:
     return ""
 
 
+def _parse_rotowire_age_days(pub_str: str):
+    """
+    Parses ESPN's rotowire 'published' timestamp (e.g. 'Mon Nov 09 14:17:43 PST 2026')
+    and returns the age in days relative to current time (or None if unparseable).
+    """
+    if not pub_str or not isinstance(pub_str, str):
+        return None
+    try:
+        parts = pub_str.strip().split()
+        if len(parts) == 6:
+            # Strip timezone token at index 4 (e.g. PST / PDT / EST / EDT)
+            dt_clean = f"{parts[0]} {parts[1]} {parts[2]} {parts[3]} {parts[5]}"
+            dt = datetime.datetime.strptime(dt_clean, "%a %b %d %H:%M:%S %Y")
+            now = datetime.datetime.now()
+            return max(0.0, (now - dt).total_seconds() / 86400.0)
+    except Exception:
+        pass
+    return None
+
+
 def fetch_rotowire_details(pid: int) -> dict:
-    """Fetch real-time Rotowire headline, story, global fantasy ownership, and 3-game usage trends."""
+    """
+    Fetch real-time Rotowire headline, story, global fantasy ownership, and 3-game usage trends.
+    Strictly parses the 'published' timestamp so stale news (> 3 days old for injury news,
+    or > 4.3 days old for TNF box-score recaps) is never surfaced as current news.
+    """
     if pid in rotowire_cache:
         return rotowire_cache[pid]
-    res = {'headline': '', 'story': '', 'date': '', 'sentiment': '', 'spin': '', 'trend_3gm': ''}
+    res = {
+        'headline': '',
+        'story': '',
+        'date': '',
+        'age_days': None,
+        'is_fresh_3d': False,
+        'sentiment': '',
+        'spin': '',
+        'trend_3gm': '',
+    }
     try:
         url = f"https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{pid}/overview"
         r = requests.get(url, timeout=3)
@@ -158,20 +191,37 @@ def fetch_rotowire_details(pid: int) -> dict:
                 trend_dir = "Up" if float(trend) > 0 else "Down"
                 sentiment = f" | Global Sentiment: Rostered in {fantasy_data['percentOwned']}% of leagues ({trend_dir} {abs(float(trend))}% this week)."
             
-            headline = roto.get('headline', '') if isinstance(roto, dict) else ''
-            story = roto.get('story', '') if isinstance(roto, dict) else ''
-            date_str = roto.get('date', '') if isinstance(roto, dict) else ''
+            raw_headline = roto.get('headline', '') if isinstance(roto, dict) else ''
+            raw_story = roto.get('story', '') if isinstance(roto, dict) else ''
+            pub_str = (roto.get('published', '') or roto.get('date', '')) if isinstance(roto, dict) else ''
+            age_days = _parse_rotowire_age_days(pub_str)
+            is_fresh_3d = (age_days is not None and age_days <= 3.0)
+
+            # Only keep headline/story if it is from this week's slate (<= 4.3 days old for TNF stat recaps,
+            # and <= 3.0 days old if it is an injury report rather than a game stat recap).
+            has_inj_word = any(kw in raw_headline.lower() for kw in INJURY_KEYWORDS)
+            is_stat_recap = any(w in raw_headline.lower() for w in ["caught", "completed", "rushed", "carried", "made all", "went ", "converted", "brought in", "secured", "finished", "tallied"])
+            keep_blurb = False
+            if age_days is not None:
+                if age_days <= 3.0:
+                    keep_blurb = True
+                elif age_days <= 4.3 and is_stat_recap and not has_inj_word:
+                    # Allow Thursday Night Football box-score stat recaps (4.0 days old on Monday night)
+                    keep_blurb = True
+
+            headline = raw_headline if keep_blurb else ''
+            story = raw_story if keep_blurb else ''
             
             spin_str = ""
             if headline and story:
                 spin_str = f"{headline} Spin: {story}{sentiment}"
-            elif sentiment:
-                spin_str = f"News: None.{sentiment}"
-                
+            
             res = {
                 'headline': headline,
                 'story': story,
-                'date': date_str,
+                'date': pub_str,
+                'age_days': age_days,
+                'is_fresh_3d': is_fresh_3d,
                 'sentiment': sentiment,
                 'spin': spin_str,
                 'trend_3gm': trend_3gm,
@@ -220,6 +270,8 @@ def detect_in_game_injury(player: dict, player_context: dict = None) -> dict:
         espn_status = player_context[pid].get('injury', 'ACTIVE')
 
     details = fetch_rotowire_details(pid)
+    if not details.get('is_fresh_3d'):
+        return None
     headline_lower = details['headline'].lower()
     story_lower = details['story'].lower()
     full_text = headline_lower + ' ' + story_lower
@@ -1547,8 +1599,9 @@ def build_matchup_moving_forward_intel(
                 'slot_label': slot_label,
                 'injury': inj,
                 'adp': ctx.get('adp', 200.0),
-                'headline': roto.get('headline', ''),
-                'story': roto.get('story', ''),
+                'headline': roto.get('headline', '') if roto.get('is_fresh_3d') else '',
+                'story': roto.get('story', '') if roto.get('is_fresh_3d') else '',
+                'is_fresh_3d': bool(roto.get('is_fresh_3d')),
             })
 
         # Sort each position group by caliber (eff_ppg desc, pos_rank asc)
@@ -1561,6 +1614,8 @@ def build_matchup_moving_forward_intel(
 
         for pos, plist in pos_groups.items():
             for pl in plist:
+                if not pl.get('is_fresh_3d') or not pl.get('headline'):
+                    continue
                 hl_low = pl['headline'].lower()
                 st_low = pl['story'].lower()
                 full_low = hl_low + " " + st_low
@@ -1815,8 +1870,9 @@ def generate_payload(season: int, week_num: int):
     payload += "### ⚡ CRITICAL SHOW DIRECTIVES (MUST FOLLOW):\n"
     payload += f"1. **MANDATORY SPORTSCENTER DESK INTRO & NO HYPOTHETICAL SHTICK:** Never open the episode asking listeners to 'imagine' a scenario or asking rhetorical questions. Open like professional sports anchors: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover, I'm Chris alongside Dave!' NEVER use the term 'Data Sheet'—always refer to the board as the **'Scoreboard'**.\n"
     payload += "2. **SPOILER-FREE SHOW ORDER (MATCHUPS FIRST, STANDINGS AFTER!) & 20–30 MINUTE TARGET LENGTH:** NEVER discuss the updated league-wide standings or division records before covering the 8 matchups! Break down all 8 games first in Act 2 (~16–22 mins), and then do the deep 3.5–4.5 minute breakdown of the 4 Division Title Races, Head-to-Head / Points-For Tiebreakers, and the 3 Wild Card spots (Seeds #5–#7) in Act 3 once all results are on the table!\n"
-    payload += "3. **INJURY ACCURACY & MOVING-FORWARD DEPTH ANALYSIS (CRITICAL RULES):**\n"
+    payload += "3. **INJURY ACCURACY, STRICT 2–3 DAY RECENCY & MOVING-FORWARD DEPTH ANALYSIS (CRITICAL RULES):**\n"
     payload += "   - **ZERO MANAGERS STARTED AN ALREADY-INJURED OR INACTIVE PLAYER THIS WEEK:** Every single starter across all 16 teams was active and projected to score at kickoff! NEVER claim an owner started someone who was already injured or ruled out before their game.\n"
+    payload += "   - **ONLY DISCUSS FRESH INJURY NEWS (≤ 2–3 DAYS OLD):** NEVER bring up old multi-week injuries or stale recovery timelines for players who have already been on IR for weeks. Only discuss injuries, surgeries, or return rumors that broke in the last 2–3 days (explicitly listed in the `🔮 MOVING FORWARD` and `🚨 VERIFIED IN-GAME INJURY REPORT` blocks).\n"
     payload += "   - **DO NOT INVENT MID-GAME INJURIES:** NEVER claim a low-scoring player (< 8 pts) got injured mid-game unless they are explicitly listed under a `🚨 VERIFIED IN-GAME INJURY REPORT` block! If a player scored 0 to 6 points and is NOT listed in a Verified In-Game Injury Report, they were healthy and simply laid an egg (a dud performance).\n"
     payload += "   - **DISCUSS 'MOVING FORWARD' INJURY TIMELINES, PLAYER CALIBER & POSITIONAL DEPTH:** When a matchup includes a `🔮 MOVING FORWARD` section, discuss the post-game injury news, projected recovery timelines (e.g., IR stints, surgery, concussions, day-to-day statuses), the player's caliber (`Positional Rank`, `PPG`, `Expected Remaining Points`), and whether that owner has healthy bench depth at that position or is down to 0–1 healthy options!\n"
     
