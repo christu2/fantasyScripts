@@ -328,6 +328,10 @@ def check_and_run_orchestrator(override_season: int = None, override_week: int =
         # ---------------------------------------------------------------------
         if now_ct.weekday() == 1 and (now_ct.hour > 6 or (now_ct.hour == 6 and now_ct.minute >= 45)):
             if not st.get("tuesday_morning_payload_refreshed"):
+                run_py_script(
+                    ["bfl_history_db.py", "--sync", "--start-year", str(season)],
+                    f"Season {season} Week {week} Historical DB Sync",
+                )
                 ok_tue = run_py_script(
                     ["generate_notebook_payload.py", "--season", str(season), "--week", str(week)],
                     f"Week {week} Tuesday Morning Final Scoreboard Refresh",

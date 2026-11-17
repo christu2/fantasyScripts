@@ -241,12 +241,12 @@ INJURY_KEYWORDS = [
 ]
 
 IN_GAME_EXIT_SIGNALS = [
-    'early exit', 'exited', 'carted', 'did not return', 'forced out',
+    'early exit', 'exited', 'exiting', 'before exiting', 'carted', 'did not return', 'forced out',
     'knocked out', 'downgraded to out', 'left the game', 'ruled out for the remainder',
     'left sunday', 'left thursday', 'left monday',
     'sustained a', 'suffered a', 'evaluated for a', 'taken to the locker room',
     'headed to the locker room', 'went to the locker room', 'briefly exited',
-    'undergo surgery', 'out indefinitely', 'ir is a possibility',
+    'undergo surgery', 'undergo imaging', 'out indefinitely', 'ir is a possibility',
     'headed to injured reserve', 'out for the season', 'fractured'
 ]
 
@@ -1330,12 +1330,10 @@ def compute_live_playoff_picture(raw_data: dict, week_num: int, teams: dict, tra
         }
 
     weeks_left = max(0, 14 - week_num)
-    md = f"## 🏆 ACT 3: POST-WEEK {week_num} STANDINGS, LIVE 7-TEAM PLAYOFF BRACKET, WILD CARD CUTLINE & DIVISION DYNAMICS ({weeks_left} WEEKS LEFT — DISCUSS ONLY AFTER ALL 8 MATCHUPS!)\n"
+    md = f"## 🏆 ACT 3: POST-WEEK {week_num} STANDINGS, PLAYOFF BRACKET & DIVISION RACES ({weeks_left} WEEKS LEFT)\n"
     md += (
-        f"*🚨 MANDATORY PRODUCER DIRECTIVE (SPOILER-FREE ORDER — DISCUSS ONLY AFTER ALL 8 GAMES ARE COVERED!): Now that all 8 Week {week_num} matchups have been revealed in Act 2 and only **{weeks_left} regular-season weeks remain** before the Week 15 Playoffs, "
-        f"the **4 Division Title Races** and the **3 Wild Card Spots (Seeds #5–#7)** are one of the single most important storylines in the league! "
-        f"Spend **3.5 to 4.5 full minutes** right here in Act 3 breaking down every division leader, the head-to-head and Points-For (PF) tiebreakers, who holds the #1 First-Round Bye, "
-        f"which teams hold the 3 Wild Card spots, and which bubble teams are on the outside looking in!*\n\n"
+        f"*Now that all 8 Week {week_num} matchups are covered, unpack the updated playoff picture with {weeks_left} regular-season weeks remaining: "
+        f"the 4 division races, head-to-head and Points-For tiebreakers, who holds the #1 First-Round Bye, Seeds #5–#7 in the Wild Card race, and the bubble teams fighting to get in.*\n\n"
     )
 
     md += "### 🎟️ CURRENT 7-TEAM PLAYOFF PICTURE (IF THE REGULAR SEASON ENDED TODAY)\n"
@@ -1492,6 +1490,7 @@ def build_matchup_moving_forward_intel(
     player_context: dict,
     week_num: int,
     recent_trades: list = None,
+    already_reported_inj_ids: set = None,
 ) -> str:
     """
     Analyzes both teams in a matchup for post-Week injury fallout, ESPN/Rotowire severity & timeline
@@ -1693,16 +1692,21 @@ def build_matchup_moving_forward_intel(
                 if h['name'] in traded_to_map:
                     from_o, to_o = traded_to_map[h['name']]
                     trade_tag = f" **[🚨 JUST ACQUIRED VIA TRADE FROM {from_o.upper()} THIS WEEK!]**"
-                wk_ctx = (
-                    f"Scored `{h['wk_pts']}` pts (Proj `{h['wk_proj']}`) as {owner}'s {h['slot_label']} in Week {week_num}"
-                    if h['wk_proj'] > 0 or h['wk_pts'] > 0
-                    else f"Placed on IR this week"
-                )
-                story_snip = h['story'].split('. ')[0] + "." if h['story'] else ""
-                owner_lines.append(
-                    f"  - 🚑 **Injury & Timeline Report — {format_caliber(h)}{trade_tag}:** {wk_ctx}. "
-                    f"*ESPN/Rotowire Intel:* {h['headline']} {story_snip}".strip()
-                )
+                if already_reported_inj_ids and h['id'] in already_reported_inj_ids:
+                    owner_lines.append(
+                        f"  - 🚑 **Outlook — {format_caliber(h)}{trade_tag}**"
+                    )
+                else:
+                    wk_ctx = (
+                        f"Scored `{h['wk_pts']}` pts (Proj `{h['wk_proj']}`) as {owner}'s {h['slot_label']} in Week {week_num}"
+                        if h['wk_proj'] > 0 or h['wk_pts'] > 0
+                        else f"Placed on IR this week"
+                    )
+                    story_snip = h['story'].split('. ')[0] + "." if h['story'] else ""
+                    owner_lines.append(
+                        f"  - 🚑 **Injury & Timeline Report — {format_caliber(h)}{trade_tag}:** {wk_ctx}. "
+                        f"*ESPN/Rotowire Intel:* {h['headline']} {story_snip}".strip()
+                    )
 
             # Positional Depth & Vulnerability Audit
             req = required_starters.get(pos, 1)
@@ -1715,7 +1719,7 @@ def build_matchup_moving_forward_intel(
                 s_parts = []
                 for ox in other_sidelined:
                     ox_hl = ox['headline']
-                    ret_hint = " — *expected back Week 10!*" if "expected to be back" in ox_hl.lower() or "on track to return" in ox_hl.lower() else ""
+                    ret_hint = f" — *expected back Week {week_num + 1}!*" if "expected to be back" in ox_hl.lower() or "on track to return" in ox_hl.lower() else ""
                     s_parts.append(f"**{ox['name']}** (`{pos}{ox['pos_rank']}`, `{ox['season_avg']} PPG`, `{ox['injury']}`{ret_hint})")
                 sidelined_str = f" | Other Sidelined {pos}s on Roster: {', '.join(s_parts)}"
 
@@ -1727,14 +1731,13 @@ def build_matchup_moving_forward_intel(
             )
             if is_crisis:
                 owner_lines.append(
-                    f"  - 🚨 **SEVERE {pos} DEPTH CRISIS FOR {owner.upper()} ({total_cnt} Total {pos}s Rostered, Only {len(healthy_options)} Healthy!):** "
-                    f"With {', '.join([h['name'] for h in hurt_list])} banged up, {owner} is down to just **{len(healthy_options)} healthy {pos}(s)** on the entire roster: {healthy_str}{sidelined_str}. "
-                    f"Discuss whether {owner} has to scramble to the waiver wire or make a desperation move entering Week {week_num + 1}!"
+                    f"  - 🚨 **{pos} Depth Alert for {owner} ({total_cnt} {pos}s Rostered, {len(healthy_options)} Healthy):** "
+                    f"With {', '.join([h['name'] for h in hurt_list])} sidelined, {owner} is down to just **{len(healthy_options)} healthy {pos}(s)**: {healthy_str}{sidelined_str} — putting real pressure on waivers or trade talks before Week {week_num + 1}."
                 )
             else:
                 owner_lines.append(
-                    f"  - 🛡️ **{pos} Roster Depth & Next-Man-Up Check ({total_cnt} Total {pos}s Rostered, {len(healthy_options)} Healthy Options Available):** "
-                    f"Healthy {pos} replacements on {owner}'s roster: {healthy_str}{sidelined_str}."
+                    f"  - 🛡️ **{pos} Depth Check ({total_cnt} Rostered, {len(healthy_options)} Healthy):** "
+                    f"Available healthy {pos}s for {owner}: {healthy_str}{sidelined_str}."
                 )
 
         # 2. Workload / Bye-week crunch notes for elite starters
@@ -1770,8 +1773,7 @@ def build_matchup_moving_forward_intel(
     if not team_blocks:
         return ""
 
-    out = "**🔮 MOVING FORWARD: INJURY FALLOUT, PLAYER CALIBER, PROJECTED TIMELINES & ROSTER DEPTH (DISCUSS ON AIR):**\n"
-    out += "*Weave these real ESPN/Rotowire injury timelines, expected remaining point impacts, and positional depth checks into your breakdown of this matchup:*\n"
+    out = "**🔮 Looking Ahead (Injury Fallout & Roster Depth):**\n"
     out += "\n".join(team_blocks) + "\n\n"
     return out
 
@@ -1810,8 +1812,8 @@ def generate_payload(season: int, week_num: int):
         stakes_desc = "We have officially crossed the first month of the season. Every win and loss shapes division races, winning streaks, and playoff momentum."
 
     payload += "## 🎙️ HOST INSTRUCTIONS & SHOW IDENTITY\n"
-    payload += "You are hosting the 'Tuesday Morning Hangover', the premier fantasy football post-game show for the Beasts Football League (BFL).\n"
-    payload += "Hosts: Chris & Dave. Style: High energy, sharp comedic banter, authentic television/radio sports desk style (like ESPN's SportsCenter or NFL Live) where the anchors introduce themselves and immediately dive into the real action.\n\n"
+    payload += "You are hosting the 'Tuesday Morning Hangover', the premier fantasy football post-game podcast for the Beasts Football League (BFL).\n"
+    payload += "Hosts: Chris & Dave. Style: Natural, high-energy, genuinely funny conversational sports-talk banter—like two sharp co-hosts who know this league inside and out hanging out at a sports desk (think Bill Simmons / Dan Le Batard meets SportsCenter).\n\n"
     
     themes = {
         1: "Overreactions and Panic. Everyone is freaking out over Week 1.",
@@ -1834,47 +1836,22 @@ def generate_payload(season: int, week_num: int):
     
     payload += f"**THIS WEEK'S PODCAST THEME:** {weekly_theme}\n\n"
 
-    # --- MANDATORY SHOW COLD OPEN ---
-    payload += "### 📺 MANDATORY BROADCAST COLD OPEN (SPORTSCENTER / SPORTS RADIO STYLE — SPOILER-FREE!):\n"
-    payload += "- **STRICTLY BANNED OPENING SHTICK:** ABSOLUTELY DO NOT open the show with rhetorical questions, hypothetical scenarios, or philosophical musings (e.g. 'Imagine scoring a high number of points but still losing, how would you feel?', 'Picture this...', 'Have you ever wondered...'). NO hypothetical opening monologues!\n"
-    payload += "- **NO STANDINGS OR SCORE SPOILERS BEFORE THE GAMES:** DO NOT reveal the updated post-Week standings, division records, or final game scores in the opening segment! Keep the intro spoiler-free so each of the 8 matchups builds suspense when you break it down in Act 2, and save the full Standings, Division Races, and 7-Team Playoff Picture for **Act 3 AFTER all 8 games have been covered**!\n"
-    payload += "- **MANDATORY BROADCAST INTRO:** You MUST start the episode immediately as a clean, authentic broadcast desk introduction:\n"
-    payload += f"  1. Welcome the audience: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover!'\n"
-    payload += "  2. The hosts MUST introduce themselves right away: 'I'm Chris alongside Dave...'\n"
-    payload += f"  3. Deliver a punchy 2-sentence spoiler-free teaser of Week {week_num}'s stakes and drama (without giving away final scores or updated records).\n"
-    payload += "  4. Briefly mention this week's trades (if any, max 60 seconds) and immediately dive straight into Matchup #1!\n\n"
+    # --- SHOW COLD OPEN & CONVERSATIONAL FLOW ---
+    payload += "### 📺 OPENING & CONVERSATIONAL FLOW (NO SPOILERS UP FRONT!):\n"
+    payload += "- **Clean Broadcast Open (Skip the Hypotheticals):** Open naturally like a real sports radio show—'Welcome to the Week {wk} edition of the Tuesday Morning Hangover, I'm Chris alongside Dave...'—with a quick 2-sentence tease of the week's drama before diving straight in. Skip cliché rhetorical intros ('Imagine scoring...').\n".format(wk=week_num)
+    payload += "- **Spoiler-Free Show Order (~20–30 Minutes Total):**\n"
+    payload += f"  1. **Intro & Trades (~1–2 mins):** Quick desk welcome and a brief take on this past week's trades (keep trade chatter to ~60 seconds) without spoiling game results or updated standings.\n"
+    payload += f"  2. **All 8 Matchups (~16–22 mins):** Cover all 8 matchups organically before zooming out to the league-wide standings.\n"
+    payload += f"  3. **Post-Week {week_num} Standings, Playoff Picture & Week {week_num + 1} Preview (~4–6 mins):** Once all 8 results are in, unpack the 4 division races, H2H/PF tiebreakers, 7-team Wild Card cutline, Monte Carlo playoff odds, and next week's matchups.\n\n"
+    payload += "- **Keep Every Matchup Organic (Don't Read Off a Checklist!):**\n"
+    payload += "  - **Vary Your Entry Point:** Do NOT walk through every matchup in the exact same robotic sequence. Let the biggest storyline drive each segment—lead with a wild Monday Night swing in one game, an injury heartbreaker in the next, an embarrassing bench call in another, or hilarious Discord trash talk.\n"
+    payload += "  - **Natural Roasting vs. Injury Luck (Show, Don't Meta-Explain):** When an owner leaves points on the bench that cost them a close game, gets torched by a bust, or talks smack in Discord before losing, rib them naturally as part of the banter—and when a starter exits mid-game with an injury, react like normal fans ('brutal break losing Drake Maye early'). **NEVER** announce or explain the criteria on air (never say things like 'and we shouldn't roast him because this wasn't a blunder' or 'now here's someone we ARE allowed to roast'). Let the comedy and empathy flow naturally.\n"
+    payload += "  - **Weave Details Seamlessly:** Blend the timestamped Discord quotes, Live Desk probability swings, ADP/preseason surprises, 3-game trends, and Looking Ahead injury/depth notes directly into the back-and-forth wherever they fit best.\n\n"
 
-    # --- STRICT PACING & BROADCAST TIME ALLOCATION (TARGET: 20 TO 30 MINUTES) ---
-    payload += "### ⏱️ MANDATORY EPISODE LENGTH (20–30 MINUTES) & SPOILER-FREE 3-ACT SHOW ORDER\n"
-    payload += "**CRITICAL DURATION & ORDER DIRECTIVE:** This is a full-length **20 to 30 minute** weekly flagship broadcast! Follow this exact **Spoiler-Free 3-Act Order**: cover **all 8 matchups FIRST** (~16–22 mins, ~2.5 to 3.5 minutes per matchup), and save the **Updated Standings, Division Tiebreakers & 7-Team Playoff Bracket for AFTER all 8 matchups** (~4–6 mins) so no game results are spoiled early!\n\n"
-    payload += "1. **ACT 1: SPOILER-FREE DESK COLD OPEN & THIS WEEK'S TRADES (1 TO 2 MINUTES — DO NOT SPOIL SCORES OR STANDINGS!)**\n"
-    payload += f"   - **SportsCenter Desk Welcome:** Welcome listeners to the Week {week_num} edition of the Tuesday Morning Hangover, Chris & Dave introduce themselves, and set the stage for Week {week_num} **without spoiling game winners or post-week standings**.\n"
-    payload += "   - **Trades From This Past Week ONLY (Strict 60-Second Cap):** ONLY mention trades that happened in the last 7 days (since last Tuesday morning). Spend **NO MORE THAN 60 SECONDS TOTAL** on trades before jumping straight into Game #1!\n\n"
-    payload += f"2. **ACT 2: DEEP-DIVE GAME-BY-GAME BREAKDOWNS & OWNER QUOTES (THE CORE 70–75% OF THE EPISODE / 16–22 MINUTES — COVER ALL 8 GAMES BEFORE STANDINGS!)**\n"
-    payload += "   - **MANDATORY DEEP COVERAGE (2.5 TO 3.5 MINUTES PER GAME):** You MUST cover **ALL 8 MATCHUPS and ALL 16 TEAMS** in full detail before discussing the league-wide standings! Spend 2.5 to 3.5 minutes on EVERY SINGLE matchup so the full show runs 20–30 minutes.\n"
-    payload += "   - **WHAT TO COVER FOR EVERY SINGLE GAME (DO NOT RUSH):**\n"
-    payload += "     a) **Final Score, Margin & 18-Year All-Time Rivalry Context:** Reveal who won, by how much, and how it shifts their all-time head-to-head series.\n"
-    payload += "     b) **Direct Owner Quotes & Discord Trash Talk (MANDATORY):** Read verbatim and react to the **💬 TIMESTAMPED DISCORD CHATTER & OWNER QUOTES** embedded inside each matchup! Respect the exact `[Timestamp | Slate Window]` tags.\n"
-    payload += "     c) **Live Game Desk Win-Probability Swings & MNF Drama:** Break down the 4th-quarter comebacks, Sunday Night shockwaves, and Monday Night Football miracles.\n"
-    payload += "     d) **Studs, Duds, Preseason Expectation vs. Reality & Multi-Week Trends:** Discuss the top 3 starters, bench blunders, and play-by-play NFL statlines for both the winner and the loser. Drop sharp analytical tidbits from the `*📊 Player Expectation vs. Reality & Multi-Week Trend:*` notes—calling out players massively outperforming their preseason ADP/projections (like Matthew Golden, Christian Watson, Jordan Love, or Bucky Irving) as well as their 3-game usage and scoring trends!\n"
-    payload += "     e) **Moving Forward: Injury Fallout, Player Caliber, Timelines & Positional Depth (When Present):** Whenever a matchup includes a `🔮 MOVING FORWARD: INJURY FALLOUT, PLAYER CALIBER, PROJECTED TIMELINES & ROSTER DEPTH` block, discuss the injury severity/timelines from ESPN/Rotowire, the caliber of the player (`Positional Rank`, `PPG`, `Expected Remaining Regular-Season Points`), and whether the team has bench depth at that position or faces a roster crisis!\n"
-    payload += "     f) **Immediate Standings Impact for These Two Teams:** Briefly note what this win/loss did to these two owners' records and playoff odds, setting up the full league-wide Standings & Playoff Bracket breakdown in Act 3.\n\n"
-    payload += f"3. **ACT 3: THE BIG BOARD — POST-WEEK {week_num} STANDINGS, DIVISION RACES, 7-TEAM WILD CARD CUTLINE & WEEK {week_num + 1} LOOKAHEAD (FINAL 5 TO 7 MINUTES — AFTER ALL 8 GAMES ARE REVEALED!)**\n"
-    payload += f"   - **DEEP-DIVE INTO DIVISION LEADERS, TIEBREAKERS & THE 7-TEAM WILD CARD RACE (MANDATORY 3.5 TO 4.5 MINUTES — DO NOT GLANCE OVER!):** Now that all 8 games have been revealed with zero spoilers, zoom out to the updated post-Week {week_num} Scoreboard! With {max(0, 14 - week_num)} weeks left in the regular season, go division-by-division (East, North, South, West) and break down:\n"
-    payload += "     a) **Seeds #1–#4 (The 4 Division Leaders & #1 Seed First-Round Bye Race):** Who leads each division after this week's games, who holds the head-to-head and Points-For (PF) tiebreakers in deadlocked divisions, and who controls the #1 overall seed.\n"
-    payload += "     b) **Seeds #5–#7 (The 3 Wild Card Spots):** Which 3 non-division winners currently hold the Wild Card berths and how Total Points For (`PF`) is deciding tiebreakers.\n"
-    payload += "     c) **On The Bubble / In The Hunt (#8–#13) & League Momentum:** Which teams are sitting at #8 (First Team Out) or 1 game back, who is surging or in freefall, and the 10,000-simulation Monte Carlo Playoff Odds.\n"
-    payload += f"   - **THE TWO-MINUTE DRILL — WEEK {week_num + 1} PREVIEW (~2 MINUTES):** Preview all 8 Week {week_num + 1} matchups, emphasizing **Divisional Showdowns**, 18-year H2H history, and **Win/Loss Playoff Leverage Swings**, then sign off.\n\n"
-
-    # --- CRITICAL HOST DIRECTIVES ---
-    payload += "### ⚡ CRITICAL SHOW DIRECTIVES (MUST FOLLOW):\n"
-    payload += f"1. **MANDATORY SPORTSCENTER DESK INTRO & NO HYPOTHETICAL SHTICK:** Never open the episode asking listeners to 'imagine' a scenario or asking rhetorical questions. Open like professional sports anchors: 'Welcome to the Week {week_num} edition of the Tuesday Morning Hangover, I'm Chris alongside Dave!' NEVER use the term 'Data Sheet'—always refer to the board as the **'Scoreboard'**.\n"
-    payload += "2. **SPOILER-FREE SHOW ORDER (MATCHUPS FIRST, STANDINGS AFTER!) & 20–30 MINUTE TARGET LENGTH:** NEVER discuss the updated league-wide standings or division records before covering the 8 matchups! Break down all 8 games first in Act 2 (~16–22 mins), and then do the deep 3.5–4.5 minute breakdown of the 4 Division Title Races, Head-to-Head / Points-For Tiebreakers, and the 3 Wild Card spots (Seeds #5–#7) in Act 3 once all results are on the table!\n"
-    payload += "3. **INJURY ACCURACY, STRICT 2–3 DAY RECENCY & MOVING-FORWARD DEPTH ANALYSIS (CRITICAL RULES):**\n"
-    payload += "   - **ZERO MANAGERS STARTED AN ALREADY-INJURED OR INACTIVE PLAYER THIS WEEK:** Every single starter across all 16 teams was active and projected to score at kickoff! NEVER claim an owner started someone who was already injured or ruled out before their game.\n"
-    payload += "   - **ONLY DISCUSS FRESH INJURY NEWS (≤ 2–3 DAYS OLD):** NEVER bring up old multi-week injuries or stale recovery timelines for players who have already been on IR for weeks. Only discuss injuries, surgeries, or return rumors that broke in the last 2–3 days (explicitly listed in the `🔮 MOVING FORWARD` and `🚨 VERIFIED IN-GAME INJURY REPORT` blocks).\n"
-    payload += "   - **DO NOT INVENT MID-GAME INJURIES:** NEVER claim a low-scoring player (< 8 pts) got injured mid-game unless they are explicitly listed under a `🚨 VERIFIED IN-GAME INJURY REPORT` block! If a player scored 0 to 6 points and is NOT listed in a Verified In-Game Injury Report, they were healthy and simply laid an egg (a dud performance).\n"
-    payload += "   - **DISCUSS 'MOVING FORWARD' INJURY TIMELINES, PLAYER CALIBER & POSITIONAL DEPTH:** When a matchup includes a `🔮 MOVING FORWARD` section, discuss the post-game injury news, projected recovery timelines (e.g., IR stints, surgery, concussions, day-to-day statuses), the player's caliber (`Positional Rank`, `PPG`, `Expected Remaining Points`), and whether that owner has healthy bench depth at that position or is down to 0–1 healthy options!\n"
+    # --- SHOW FACTS & GUARDRAILS ---
+    payload += "### ⚡ FACTUAL GUARDRAILS & BROADCAST NOTES:\n"
+    payload += f"1. **Refer to This Document as the 'Scoreboard'** (never 'Data Sheet').\n"
+    payload += "2. **Injury Accuracy & 3-Day Recency:** All starters across all 16 teams were active at kickoff this week. Never invent a mid-game injury unless it is noted under `🩹 In-Game Injury`, and stick strictly to fresh injury news from the last 2–3 days (already filtered into this Scoreboard—skip old multi-week IR storylines).\n"
     
     # Dynamic continuity highlights
     undefeated_teams = [t['owner'] for t in teams.values() if trajectories[t['id']]['overall_l'] == 0]
@@ -1884,25 +1861,18 @@ def generate_payload(season: int, week_num: int):
         continuity_snippets.append(f"{', '.join(undefeated_teams)} remaining undefeated")
     if winless_teams:
         continuity_snippets.append(f"{', '.join(winless_teams)} still searching for win #1")
-    continuity_str = f" This is Episode {week_num}! DO NOT repeat static multi-year owner biographies or ring counts from scratch. Instead, focus on the DYNAMIC {season} SEASON STORY: " + (", ".join(continuity_snippets) if continuity_snippets else "the tight playoff and division races taking shape") + ".\n"
-    payload += f"4. **EPISODIC CONTINUITY & ANTI-REPETITION:**{continuity_str}"
-    payload += "5. **HEAVY FOCUS ON OWNER QUOTES & STRICT TIMESTAMP CONTEXT (CRITICAL):**\n"
-    payload += "   - Every Discord quote in this Scoreboard is tagged with its exact **Central Time timestamp and NFL Game-Slate Window** (e.g., `[Thu 10/29 3:15 PM CT | Thursday Pre-TNF Banter]`, `[Sun 11/01 2:54 PM CT | Live During Sunday 12:00 PM Early Slate]`, `[Sun 11/01 8:27 PM CT | Live During Sunday Night Football]`, `[Mon 11/02 10:12 PM CT | Monday Night Post-MNF Final Reaction]`).\n"
-    payload += "   - **NEVER CONFUSE WHEN A QUOTE HAPPENED:** Do NOT treat a Tuesday/Thursday pre-game comment as if it happened during Sunday's games! And if an owner posted a dramatic mid-game reaction during the Sunday early slate (like prematurely declaring their undefeated season over while trailing at 2:54 PM CT) before coming back to win on Sunday Night, call out the exact timeline of their mid-game panic/reverse-jinx!\n"
-    payload += "6. **STRICT 60–90 SECOND CAP ON TRADES (LAST 7 DAYS ONLY):** Only discuss trades that occurred this past week (since last Tuesday morning), and spend at most 60–90 seconds on them total. Do NOT let trade talk eat into matchup breakdown time.\n"
-    payload += "7. **TIMELINE REALITY & PLAYER TENURE (DO NOT CALL VETERANS ROOKIES):** The current NFL season is 2026!\n"
-    payload += "   - Every player in this document has their official NFL tenure tag right next to their name (e.g. `[2nd-Year Sophomore (Drafted 2025)]` or `[3rd-Year Player (Drafted 2024)]`).\n"
-    payload += "   - **Colston Loveland, Luther Burden III, Tyler Warren, Jeremiyah Love, and Quinshon Judkins** were drafted in 2025 and ARE IN THEIR 2ND SEASON (SOPHOMORES). THEY ARE NOT ROOKIES!\n"
-    payload += "   - **Caleb Williams, Jayden Daniels, Bo Nix, Marvin Harrison Jr, Malik Nabers, Rome Odunze, and Brock Bowers** were drafted in 2024 and ARE IN THEIR 3RD SEASON (VETERANS).\n"
-    payload += "   - ONLY players explicitly labeled `[Rookie (1st Year, Class of 2026)]` are rookies.\n"
-    payload += "8. **CENTRAL TIME ZONE:** The BFL operates in Central Time (CT). Sunday games kick off at 12:00 PM CT (noon).\n"
+    continuity_str = f" Focus on the live {season} Week {week_num} storylines rather than repeating static owner bios from scratch (" + (", ".join(continuity_snippets) if continuity_snippets else "the tight playoff and division races taking shape") + ").\n"
+    payload += f"3. **Episodic Continuity:**{continuity_str}"
+    payload += "4. **Respect Discord Quote Timing:** Each Discord quote carries its `[Day Time CT | Slate Window]` tag—don't treat a Thursday pre-game message as a Sunday reaction, and frame mid-game panic/reverse-jinxes against how the matchup actually ended.\n"
+    payload += "5. **Player Tenure (Current Season is 2026):** Check each player's tenure tag (`[2nd-Year Sophomore]`, `[3rd-Year Player]`, etc.)—guys like Luther Burden III, Colston Loveland, Tyler Warren, Jeremiyah Love, and Quinshon Judkins are sophomores, not rookies. Only `[Rookie (1st Year, Class of 2026)]` players are rookies.\n"
+    payload += "6. **Central Time Zone:** All times in the Scoreboard are Central Time (CT).\n"
     
     # Dynamic Luck Directive
     pt_callouts = [f"{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']} with {round(tr['points_for'], 1)} PF, #{tr['pf_rank']} scoring)" for tid, tr in trajectories.items() if tr['overall_w'] > tr['overall_l'] and tr['pf_rank'] >= 10]
     unlucky_callouts = [f"{teams[tid]['owner']} ({tr['overall_w']}-{tr['overall_l']} despite {round(tr['points_for'], 1)} PF, #{tr['pf_rank']} scoring)" for tid, tr in trajectories.items() if tr['overall_w'] <= tr['overall_l'] and tr['pf_rank'] <= 6]
     gauntlet_callouts = [f"{teams[tid]['owner']} ({round(tr['points_against'], 1)} PA, #{tr['pa_rank']} schedule)" for tid, tr in trajectories.items() if tr['pa_rank'] <= 2]
     
-    payload += "9. **OFFICIAL PRONUNCIATION, NICKNAMES & INSIDE JOKES GUIDE (MANDATORY):**\n"
+    payload += "7. **Pronunciations & League Nicknames:**\n"
     payload += "   - **The Jabroni Trophy:** Pronounced *'Jah-BRO-nee'* (the coveted league championship trophy).\n"
     payload += "   - **Saagar Gupta:** Pronounced *'SAH-gur'* (also known as 'King Gupta').\n"
     payload += "   - **rej hoxha:** Pronounced *'Ray'* (first name Rej is spoken like Ray).\n"
@@ -2081,9 +2051,9 @@ def generate_payload(season: int, week_num: int):
             q_owner = q['header'].rstrip(':').strip()
             quotes_by_owner[q_owner] = q['desc']
 
-    # --- MATCHUPS & BOX SCORES (ACT 2: CORE 75%+ OF THE EPISODE) ---
-    payload += f"## 🏈 ACT 2 (CORE 75%+ OF SHOW — 16 TO 22 MINUTES): WEEK {week_num} MATCHUPS, OWNER QUOTES & BOX SCORES\n"
-    payload += "*PRODUCER PACING RULE: Spend **2.5 to 3.5 minutes on EVERY SINGLE ONE of these 8 matchups** so the full episode runs **20 to 30 minutes**! Read the embedded Owner Quotes verbatim and break down both sides of every game.*\n\n"
+    # --- MATCHUPS & BOX SCORES (ACT 2: CORE OF THE EPISODE) ---
+    payload += f"## 🏈 ACT 2: WEEK {week_num} MATCHUPS, OWNER CHATTER & BOX SCORES\n"
+    payload += "*Lead each matchup with its biggest storyline and let the stats, quotes, injuries, and teasing flow organically in conversation.*\n\n"
     seen_owners = set()
     history_str = "## 📚 LEAGUE LORE & OWNER CONTEXT (MINIMAL RECAP)\n"
     
@@ -2108,8 +2078,8 @@ def generate_payload(season: int, week_num: int):
             
             div_tag = " [💥 DIVISIONAL RIVALRY]" if w_team.get('division') == l_team.get('division') else ""
 
-            payload += f"### 🏟️ MATCHUP #{idx_m} OF 8 (Target: ~3 Minutes On-Air): {w['owner']} ({w_rec}) vs {l['owner']} ({l_rec}){div_tag}\n"
-            payload += f"**Result:** {w['owner']} ({w['name']}) DEFEATED {l['owner']} ({l['name']})\n"
+            payload += f"### 🏟️ MATCHUP #{idx_m} OF 8: {w['owner']} ({w_rec}) vs {l['owner']} ({l_rec}){div_tag}\n"
+            payload += f"**Result:** {w['owner']} ({w['name']}) def. {l['owner']} ({l['name']})\n"
             payload += f"**Final Score:** {max(m['away_score'], m['home_score'])} to {min(m['away_score'], m['home_score'])} (Margin: {m['margin']})\n"
             payload += f"{build_completed_matchup_h2h_tidbit(w['owner'], l['owner'], h2h_through_week, season, week_num)}\n"
 
@@ -2124,9 +2094,9 @@ def generate_payload(season: int, week_num: int):
             l_s = seed_map.get(l['owner'], {})
             if w_po and l_po:
                 payload += (
-                    f"**🏆 Division & Wild Card Standings Impact (DISCUSS ON AIR):** "
-                    f"**{w['owner']}** now sits at **{w_s.get('role', 'Contender')}** with **{w_po['playoff_pct']}% Playoff Odds** ({w_po['div_title_pct']}% {w_team.get('division', '')} Title, {w_po['bye_pct']}% #1 Bye) | "
-                    f"**{l['owner']}** now sits at **{l_s.get('role', 'Chaser')}** with **{l_po['playoff_pct']}% Playoff Odds** ({l_po['div_title_pct']}% {l_team.get('division', '')} Title)\n"
+                    f"**🏆 Playoff Picture Impact:** "
+                    f"**{w['owner']}** moves to **{w_s.get('role', 'Contender')}** (**{w_po['playoff_pct']}% Playoff Odds**, {w_po['div_title_pct']}% {w_team.get('division', '')} Title, {w_po['bye_pct']}% #1 Bye) | "
+                    f"**{l['owner']}** sits at **{l_s.get('role', 'Chaser')}** (**{l_po['playoff_pct']}% Playoff Odds**, {l_po['div_title_pct']}% {l_team.get('division', '')} Title)\n"
                 )
             payload += "\n"
 
@@ -2134,7 +2104,7 @@ def generate_payload(season: int, week_num: int):
             pair_key = tuple(sorted([w['owner'], l['owner']]))
             m_live_bullets = per_matchup_live.get(pair_key, [])
             if m_live_bullets:
-                payload += "**⚡ LIVE GAME DESK WIN-PROBABILITY SWINGS IN THIS MATCHUP:**\n"
+                payload += "**⚡ Live Game Desk Swings:**\n"
                 for lb in m_live_bullets:
                     payload += f"{lb}\n"
                 payload += "\n"
@@ -2154,8 +2124,7 @@ def generate_payload(season: int, week_num: int):
                         matchup_quote_lines.append(f"- **💬 {m_own} (in Discord this week):** *{quotes_by_owner[m_own]}*")
 
             if matchup_quote_lines:
-                payload += "**🎤 TIMESTAMPED DISCORD CHATTER & OWNER QUOTES FOR THIS MATCHUP (MANDATORY — READ VERBATIM WITH PROPER TIMING CONTEXT!):**\n"
-                payload += "*PRODUCER CONTEXT RULE: Pay strict attention to the `[Day Date Time CT | Slate Window]` tags and `[📌 Context Notes]` below! NEVER treat a Tue–Sat pre-game comment as an in-game Sunday reaction, and always frame mid-game reverse-jinxes against the final score!*\n"
+                payload += "**🎤 Discord Chatter & Owner Quotes:**\n"
                 payload += "\n".join(matchup_quote_lines) + "\n\n"
             
             w_perf = perfs[w['id']]
@@ -2170,18 +2139,18 @@ def generate_payload(season: int, week_num: int):
                     matchup_injuries.append((s_owner, s, inj))
 
             if matchup_injuries:
-                payload += "**🚨 VERIFIED IN-GAME INJURY REPORT (CRITICAL CONTEXT - DO NOT CALL THESE BLUNDERS):**\n"
+                payload += "**🩹 In-Game Injury:**\n"
                 for s_owner, s, inj in matchup_injuries:
                     pr_lbl = f" (`{inj['pos_name']}{inj['pos_rank']} Overall`, `{inj['season_avg']} PPG`, `~{inj['expected_rem_pts']} Expected Remaining Reg-Season Pts`)" if inj.get('pos_rank', 999) <= 120 else ""
-                    payload += f"- **{s['name']}**{pr_lbl} ({s_owner}'s starter): Scored {inj['pts']} pts (Proj: {inj['proj']}). SUFFERED A VERIFIED IN-GAME INJURY! {inj['headline']} — {inj['story'][:200]}...\n"
-                    payload += f"  *Directive:* {s_owner} did NOT make a mistake starting him. He was active and healthy at kickoff and suffered this injury during the game. Sympathize with {s_owner}!\n"
+                    payload += f"- **{s['name']}**{pr_lbl} ({s_owner}'s starter — `{inj['pts']}` pts on `{inj['proj']}` proj): Exited early due to injury. {inj['headline']} {inj['story'][:200]}...\n"
                 payload += "\n"
-            else:
-                payload += "*Note: Zero low-scoring starters (< 8 pts) exited early with an injury in this matchup; all starters were active at kickoff.*\n\n"
 
             # Inject Moving Forward: Injury Fallout, Player Caliber, Timelines & Positional Depth Analysis (when relevant)
+            reported_inj_ids = {s.get('id') for _, s, _ in matchup_injuries if s.get('id')}
             moving_forward_md = build_matchup_moving_forward_intel(
-                w['id'], l['id'], teams, raw_data, player_context, week_num, recent_trades=recent_trades
+                w['id'], l['id'], teams, raw_data, player_context, week_num,
+                recent_trades=recent_trades,
+                already_reported_inj_ids=reported_inj_ids,
             )
             if moving_forward_md:
                 payload += moving_forward_md
@@ -2208,42 +2177,54 @@ def generate_payload(season: int, week_num: int):
                 if ctx['outlook']: payload += f"  *Season Outlook:* {ctx['outlook']}\n"
                 if roto.get('spin'): payload += f"  *Recent News & Spin:* {roto['spin']}\n"
             
-            payload += "\n**Roster Decisions, Blunders & Duds:**\n"
-            
-            # Winner blunder evaluation
-            if w_perf.get('blunders') and w_perf['blunders'][0]['diff'] > 15.0:
+            lineup_notes = []
+
+            # Winner lineup note: only flag a notable healthy skill-position benching (>= 15 pts left on the bench)
+            if w_perf.get('blunders') and w_perf['blunders'][0]['diff'] >= 15.0:
                 b = w_perf['blunders'][0]
                 started_inj = detect_in_game_injury(b['started'], player_context)
-                if started_inj:
-                    payload += f"- WINNER OVERCAME INJURY: {w['owner']} won despite losing {b['started']['name']} early to injury ({started_inj['headline']}). Leaving {b['benched']['name']} on the bench didn't cost them the win.\n"
-                else:
-                    payload += f"- WINNER'S BLUNDER: {w['owner']} won, but benched {format_player_string(b['benched'], player_context)} to start {format_player_string(b['started'], player_context)}. Laugh at them for getting away with it.\n"
-            
-            # Loser blunder evaluation
+                if not started_inj and b['started'].get('pos_id') not in (5, 16):
+                    lineup_notes.append(
+                        f"- **Left on the Bench (Winner):** {w['owner']} still won, despite leaving `{round(b['diff'], 2)}` pts on the bench by starting {format_player_string(b['started'], player_context)} over {format_player_string(b['benched'], player_context)}."
+                    )
+
+            # Loser lineup note: separate genuine costly healthy decisions from injury bad luck, and skip tiny <10 pt noise in blowouts
             if l_perf.get('blunders'):
                 b = l_perf['blunders'][0]
                 started_inj = detect_in_game_injury(b['started'], player_context)
                 if started_inj:
-                    payload += f"- 🚑 CRUEL INJURY MISFORTUNE (NOT A COACHING BLUNDER): {l['owner']} lost by {m['margin']}, and lost {b['started']['name']} to an in-game injury ({started_inj['headline']}) after scoring only {b['started']['pts']} points! While {b['benched']['name']} scored {b['benched']['pts']} on the bench, starting {b['started']['name']} was 100% the correct call before kickoff. DO NOT roast {l['owner']}—this was heartbreak caused by the injury gods!\n"
-                elif b['diff'] >= m['margin']:
-                    payload += f"- GAME-LOSING BLUNDER: {l['owner']} lost by {m['margin']}, and it is entirely because they benched {format_player_string(b['benched'], player_context)} to start healthy bust {format_player_string(b['started'], player_context)}! This single bad decision cost them {round(b['diff'], 2)} points and the win. Roast them for this massive mistake.\n"
+                    if b['diff'] >= 8.0:
+                        lineup_notes.append(
+                            f"- **Bad Injury Break:** {l['owner']} lost {b['started']['name']} early to injury ({b['started']['pts']} pts), leaving {b['benched']['name']}'s {b['benched']['pts']} pts on the bench."
+                        )
+                elif b['diff'] >= m['margin'] and b['diff'] >= 4.0:
+                    lineup_notes.append(
+                        f"- **Costly Start/Sit:** {l['owner']} lost by `{m['margin']}`, and starting {format_player_string(b['started'], player_context)} over benched {format_player_string(b['benched'], player_context)} left `{round(b['diff'], 2)}` points on the table—the exact swing in a game this close."
+                    )
                     roto_s = fetch_rotowire_details(b['started']['id'])
-                    payload += build_player_intelligence_tidbit(b['started'], player_context, roto_s)
-                    if roto_s.get('spin'): payload += f"  *News on the started bust:* {roto_s['spin']}\n"
-                else:
-                    payload += f"- BENCH BLUNDER: {l['owner']} lost by {m['margin']} and left points on the bench. Their biggest mistake was benching {format_player_string(b['benched'], player_context)} to start {format_player_string(b['started'], player_context)}, leaving {round(b['diff'], 2)} points on the table.\n"
+                    tid_s = build_player_intelligence_tidbit(b['started'], player_context, roto_s)
+                    if tid_s: lineup_notes.append(tid_s.rstrip())
+                    if roto_s.get('spin'): lineup_notes.append(f"  *Recent News & Spin:* {roto_s['spin']}")
+                elif b['diff'] >= 10.0 and b['started'].get('pos_id') not in (5, 16):
+                    lineup_notes.append(
+                        f"- **Left on the Bench:** {l['owner']} left `{round(b['diff'], 2)}` points on the bench starting {format_player_string(b['started'], player_context)} over {format_player_string(b['benched'], player_context)}."
+                    )
             else:
                 busts = sorted(l_starters, key=lambda x: x['pts'] - x['proj'])
-                if busts and (busts[0]['pts'] - busts[0]['proj'] < -3):
+                if busts and busts[0].get('proj', 0.0) >= 10.0 and (busts[0]['pts'] - busts[0]['proj'] <= -6.0):
                     biggest_bust = busts[0]
                     started_inj = detect_in_game_injury(biggest_bust, player_context)
-                    if started_inj:
-                        payload += f"- IN-GAME INJURY HEARTBREAK: {l['owner']}'s player {biggest_bust['name']} got injured during the game ({started_inj['headline']}), sinking their chances.\n"
-                    else:
-                        payload += f"- TEAM UNDERPERFORMED (HEALTHY DUD): {l['owner']} lost by {m['margin']}. Their biggest healthy bust was {format_player_string(biggest_bust, player_context)}. Discuss how this player disappeared.\n"
+                    if not started_inj:
+                        lineup_notes.append(
+                            f"- **Quiet Day from a Key Starter:** {l['owner']} needed more from {format_player_string(biggest_bust, player_context)} in a `{m['margin']}`-point loss."
+                        )
                         roto_s = fetch_rotowire_details(biggest_bust['id'])
-                        payload += build_player_intelligence_tidbit(biggest_bust, player_context, roto_s)
-                        if roto_s.get('spin'): payload += f"  *News on the biggest bust:* {roto_s['spin']}\n"
+                        tid_s = build_player_intelligence_tidbit(biggest_bust, player_context, roto_s)
+                        if tid_s: lineup_notes.append(tid_s.rstrip())
+                        if roto_s.get('spin'): lineup_notes.append(f"  *Recent News & Spin:* {roto_s['spin']}")
+
+            if lineup_notes:
+                payload += "\n**Lineup Notes & Key Misses:**\n" + "\n".join(lineup_notes) + "\n"
             
             payload += "\n"
             
@@ -2346,9 +2327,9 @@ def generate_payload(season: int, week_num: int):
 
     # Write ready-to-paste NotebookLM 'Customize' prompt file
     customize_prompt = (
-        f"Host a 20-30 min SportsCenter-style Week {week_num} BFL recap as Chris & Dave. "
-        f"NO SPOILERS FIRST: Open with a quick intro & this week's trade (60s cap), then go straight into ALL 8 matchups (18-22 mins, 2.5-3.5m/game) reading every Discord quote verbatim with its [Timestamp | Slate Window] context, ADP/trend tidbits & Moving Forward injury/depth analysis. "
-        f"ONLY AFTER all 8 games are covered, spend 4-5 mins dissecting the updated Standings, 4 Division Races, H2H/PF tiebreakers, 7-team Wild Card cutline & Week {week_num + 1} preview."
+        f"Host a natural, conversational 20-30 min Week {week_num} BFL podcast as Chris & Dave (sports-talk banter, not a checklist). "
+        f"Spoiler-free order: open with a quick desk intro & this week's trade (~60s), then break down all 8 matchups organically (16-22 mins)—leading each game with its best story while weaving in Discord quotes, ADP/trend tidbits, natural teasing on real lineup blunders, and recent injury/depth fallout without ever over-explaining show rules on air. "
+        f"After all 8 games, spend 4-6 mins unpacking the Standings, 4 Division Races, Wild Card cutline & Week {week_num + 1} preview."
     )
     customize_file = out_dir / f"notebook_customize_prompt_week_{week_num}_{season}.txt"
     with open(customize_file, 'w') as f:

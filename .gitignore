@@ -105,3 +105,6 @@ FantasyRecap/*.md
 FantasyRecap/output/
 !FantasyRecap/README.md
 archive_2025_draft/
+
+# Historical SQLite database (auto-built locally via bfl_history_db.py --sync)
+FantasyRecap/live_state/*.db
