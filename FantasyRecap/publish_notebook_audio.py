@@ -39,26 +39,40 @@ def publish_notebook_audio(season: int, week_num: int, audio_path: str, notes: s
     print(f"🎵 Loaded NotebookLM Audio: {mins}m {secs}s")
 
     # 2. Compress Audio to fit safely under Discord's 10 MB unboosted webhook limit
-    # Target ~8.8 MB max so even 35-40m episodes upload cleanly on any Discord server tier
-    target_kbps = min(64, int((8.8 * 8192) / max(dur_seconds, 1)))
-    bitrate_str = "64k" if target_kbps >= 56 else ("48k" if target_kbps >= 44 else "32k")
+    # Target ~8.8 MB max regardless of episode duration (supports 60–90+ min episodes)
+    target_kbps = max(12, min(64, int((8.8 * 8192) / max(dur_seconds, 1))))
+    valid_kbps = [64, 56, 48, 40, 32, 24, 16, 12]
+    chosen_kbps = next((k for k in valid_kbps if k <= target_kbps), 12)
+
     out_dir = Path(__file__).resolve().parent / "output"
     out_dir.mkdir(exist_ok=True)
     compressed_audio_path = str(out_dir / f"bfl_notebooklm_hangover_week_{week_num}_{season}.mp3")
-    print(f"🗜️ Compressing audio for Discord ({bitrate_str} MP3)...")
-    
-    cmd_compress = [
-        "ffmpeg", "-y",
-        "-i", audio_path,
-        "-ac", "1",
-        "-c:a", "libmp3lame", "-b:a", bitrate_str,
-        compressed_audio_path
-    ]
-    subprocess.run(cmd_compress, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
-    # Check size
-    size_mb = os.path.getsize(compressed_audio_path) / (1024 * 1024)
-    print(f"✅ Audio compressed! Final size: {size_mb:.2f} MB")
+
+    while True:
+        bitrate_str = f"{chosen_kbps}k"
+        print(f"🗜️ Compressing audio for Discord ({bitrate_str} mono MP3)...")
+        cmd_compress = [
+            "ffmpeg", "-y",
+            "-i", audio_path,
+            "-ac", "1",
+        ]
+        if chosen_kbps < 32:
+            cmd_compress.extend(["-ar", "22050"])
+        cmd_compress.extend([
+            "-c:a", "libmp3lame", "-b:a", bitrate_str,
+            compressed_audio_path,
+        ])
+        subprocess.run(cmd_compress, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        size_mb = os.path.getsize(compressed_audio_path) / (1024 * 1024)
+        if size_mb <= 9.6 or chosen_kbps <= 12:
+            break
+        # Step down one bitrate tier if still close to Discord's 10 MB limit
+        idx = valid_kbps.index(chosen_kbps)
+        if idx + 1 >= len(valid_kbps):
+            break
+        chosen_kbps = valid_kbps[idx + 1]
+
+    print(f"✅ Audio compressed! Final size: {size_mb:.2f} MB ({chosen_kbps}k)")
 
     # 3. Discord Upload or In-Place Edit
     webhook = os.getenv("DISCORD_WEBHOOK_PODCAST")
