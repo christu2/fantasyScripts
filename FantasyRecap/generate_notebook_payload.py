@@ -372,18 +372,92 @@ def fetch_athlete_tenure(pid: int) -> str:
     athlete_tenure_cache[pid_str] = ""
     return ""
 
+def fetch_league_draft_context(season: int, cookies: dict) -> dict:
+    """
+    Fetches our actual BFL draft (`mDraftDetail` + `kona_player_info`) and returns a dict mapping
+    `player_id -> {'draft_pick': int, 'draft_round': int, 'pos_draft_rank': int, 'pos_name': str}`.
+    Disk-cached per season so draft order is exact and apples-to-apples with current positional rank.
+    """
+    cache_file = Path(__file__).resolve().parent / "live_state" / f"bfl_draft_{season}.json"
+    if cache_file.exists():
+        try:
+            with open(cache_file, "r") as f:
+                raw_cached = json.load(f)
+                return {int(k): v for k, v in raw_cached.items()}
+        except Exception:
+            pass
+
+    pos_map = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
+    out = {}
+    try:
+        url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{ESPN_LEAGUE_ID}?view=mDraftDetail"
+        r = requests.get(url, cookies=cookies, timeout=8)
+        if r.status_code != 200:
+            return out
+        picks = sorted(r.json().get("draftDetail", {}).get("picks", []), key=lambda x: x.get("overallPickNumber", 9999))
+        if not picks:
+            return out
+
+        all_pids = [pk.get("playerId") for pk in picks if pk.get("playerId")]
+        pos_by_pid = {}
+        if all_pids:
+            headers = {"x-fantasy-filter": json.dumps({"players": {"filterIds": {"value": all_pids}}})}
+            kr = requests.get(
+                f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{ESPN_LEAGUE_ID}?view=kona_player_info",
+                cookies=cookies,
+                headers=headers,
+                timeout=8,
+            )
+            if kr.status_code == 200:
+                for p_entry in kr.json().get("players", []):
+                    pl = p_entry.get("player", {})
+                    if pl.get("id"):
+                        pos_by_pid[pl["id"]] = pos_map.get(pl.get("defaultPositionId", 0), "FLEX")
+
+        pos_counters = {}
+        for pk in picks:
+            pid = pk.get("playerId")
+            ovr = pk.get("overallPickNumber")
+            rnd = pk.get("roundId")
+            if not pid or not ovr:
+                continue
+            pname = pos_by_pid.get(pid, "FLEX")
+            pos_counters[pname] = pos_counters.get(pname, 0) + 1
+            out[int(pid)] = {
+                "draft_pick": int(ovr),
+                "draft_round": int(rnd or 0),
+                "pos_draft_rank": int(pos_counters[pname]),
+                "pos_name": pname,
+            }
+
+        if out:
+            cache_file.parent.mkdir(exist_ok=True)
+            with open(cache_file, "w") as f:
+                json.dump({str(k): v for k, v in out.items()}, f, indent=2)
+    except Exception:
+        pass
+    return out
+
+
 def format_player_string(p, player_context):
     """
     Formats a player's Week box-score line WITHOUT post-game ESPN injury tags ([OUT]/[DOUBTFUL])
     so NotebookLM never mistakes a Monday post-game injury designation for a pre-game inactive starter.
-    Includes the player's current positional ranking to establish player caliber.
+    Includes the player's actual BFL draft slot & current positional ranking.
     """
     ctx = player_context.get(p['id'], {'injury': 'ACTIVE', 'outlook': '', 'adp': 200.0, 'season_avg': 0.0, 'tenure': '', 'pos_name': 'FLEX', 'pos_rank': 999})
-    adp_str = f"ADP {ctx['adp']}" if ctx['adp'] < 180 else "Undrafted Flyer"
+    pos_name = ctx.get('pos_name', p.get('pos_name', 'FLEX'))
+    if ctx.get('draft_pick'):
+        pdr = ctx.get('pos_draft_rank')
+        pdr_str = f", {pos_name}{pdr} drafted" if pdr else ""
+        draft_str = f"BFL Pick #{ctx['draft_pick']} (Rd {ctx.get('draft_round', '?')}{pdr_str})"
+    elif ctx.get('has_bfl_draft'):
+        draft_str = "Undrafted in BFL"
+    else:
+        draft_str = f"ADP {ctx['adp']}" if ctx['adp'] < 180 else "Undrafted Flyer"
     avg_str = f", Avg {ctx['season_avg']} pts/gm" if ctx['season_avg'] > 0 else ""
     tenure_str = f" [{ctx['tenure']}]" if ctx.get('tenure') else ""
     pos_rank = ctx.get('pos_rank', 999)
-    pos_name = ctx.get('pos_name', p.get('pos_name', 'FLEX'))
     rank_str = f" [{pos_name}{pos_rank} Overall]" if 1 <= pos_rank <= 100 and pos_name in ('QB', 'RB', 'WR', 'TE') else ""
     stats_str = format_nfl_statline(p.get('stats_dict', {}))
     
@@ -392,14 +466,14 @@ def format_player_string(p, player_context):
     
     pts_clean = round(float(p.get('pts', 0.0)), 2)
     proj_clean = round(float(p.get('proj', 0.0)), 2)
-    return f"{p['name']}{team_str}{tenure_str}{rank_str} (Scored: {pts_clean}, Proj: {proj_clean}, {adp_str}{avg_str}{stats_str})"
+    return f"{p['name']}{team_str}{tenure_str}{rank_str} (Scored: {pts_clean}, Proj: {proj_clean}, {draft_str}{avg_str}{stats_str})"
 
 
-def build_player_intelligence_tidbit(p: dict, player_context: dict, roto: dict = None) -> str:
+def build_player_intelligence_tidbit(p: dict, player_context: dict, roto: dict = None, week_num: int = None) -> str:
     """
-    Generates high-IQ analytical context on a player's Preseason Expectation vs. Actual Season Reality
-    (ADP, Preseason Rank & Preseason Projected PPG vs. Current Positional Rank & Actual PPG)
-    plus their Last 3 Games NFL usage & fantasy scoring trend.
+    Generates apples-to-apples analytical context on a player's Preseason Draft Slot vs. Actual Season Reality
+    (comparing BFL Positional Draft Rank vs. Current Positional Rank, plus Preseason Proj PPG vs. Actual PPG)
+    and their Last 3 Games NFL usage & fantasy scoring trend.
     """
     ctx = player_context.get(p['id'], {})
     pos_name = ctx.get('pos_name', p.get('pos_name', 'FLEX'))
@@ -409,7 +483,10 @@ def build_player_intelligence_tidbit(p: dict, player_context: dict, roto: dict =
     pos_rank = ctx.get('pos_rank', 999)
     total_rank = ctx.get('total_rank', 999)
     adp = round(float(ctx.get('adp', 200.0)), 1)
-    ppr_rank = ctx.get('ppr_draft_rank', 999)
+    draft_pick = ctx.get('draft_pick')
+    draft_round = ctx.get('draft_round')
+    pos_draft_rank = ctx.get('pos_draft_rank')
+    has_bfl_draft = ctx.get('has_bfl_draft', False)
     pre_avg = ctx.get('preseason_proj_avg', 0.0)
     season_avg = ctx.get('season_avg', 0.0)
     wk_prev = ctx.get('wk_prev_pts', 0.0)
@@ -418,33 +495,77 @@ def build_player_intelligence_tidbit(p: dict, player_context: dict, roto: dict =
     parts = []
     if season_avg > 0 and 1 <= pos_rank <= 100:
         ppg_diff = round(season_avg - pre_avg, 1) if pre_avg > 0 else 0.0
-        rank_leap = (ppr_rank - total_rank) if (ppr_rank < 350 and total_rank < 350) else 0
-        adp_lbl = f"ADP {adp}" if adp < 170 else "Undrafted/Late-Round Flyer (ADP 170+)"
-        pre_rank_lbl = f", #{ppr_rank} Preseason PPR Rank" if ppr_rank < 300 else ""
+
+        # Apples-to-apples comparisons only:
+        # 1) Positional Draft Rank vs Current Positional Rank (e.g. TE14 drafted -> TE2 Overall = +12 TE spots)
+        # 2) BFL Overall Pick vs Current Overall Rank (e.g. Pick #124 -> #44 Overall = +80 overall spots)
+        pos_leap = (pos_draft_rank - pos_rank) if (pos_draft_rank and pos_rank <= 100) else 0
+        ovr_leap = (draft_pick - total_rank) if (draft_pick and total_rank < 350) else 0
+
+        if draft_pick:
+            draft_lbl = f"BFL Pick #{draft_pick} (Rd {draft_round}, {pos_name}{pos_draft_rank} drafted)"
+        elif has_bfl_draft:
+            draft_lbl = "Undrafted in the BFL Draft"
+        else:
+            draft_lbl = f"ADP {adp}" if adp < 170 else "Undrafted/Late-Round Flyer (ADP 170+)"
+
         pre_proj_lbl = f", `{pre_avg} PPG` preseason projection" if pre_avg > 0 else ""
 
-        if ppg_diff >= 2.5 or rank_leap >= 35 or (adp >= 85 and pos_rank <= 16 and season_avg >= 11.0):
-            leap_note = f", leaping `+{rank_leap}` spots above his preseason rank" if rank_leap >= 20 else ""
-            diff_note = f" (`{ppg_diff:+.1f} PPG` over preseason expectation{leap_note})" if pre_avg > 0 else f"{leap_note}"
+        is_outperformer = (
+            ppg_diff >= 2.5
+            or pos_leap >= 8
+            or ovr_leap >= 35
+            or (has_bfl_draft and not draft_pick and pos_rank <= 24 and season_avg >= 10.0)
+        )
+        is_elite_anchor = (
+            ((draft_pick and draft_pick <= 32) or (not has_bfl_draft and adp <= 28))
+            and pos_rank <= 8
+        )
+        is_underperformer = (
+            ((draft_pick and draft_pick <= 64) or (not has_bfl_draft and adp <= 55))
+            and (ppg_diff <= -2.5 or (pos_leap <= -10 if pos_draft_rank else pos_rank >= 24))
+        )
+
+        if draft_pick:
+            draft_verb = f"Taken at `{draft_lbl}`"
+        elif has_bfl_draft:
+            draft_verb = "Undrafted in the BFL Draft"
+        else:
+            draft_verb = f"Drafted at `{draft_lbl}`"
+
+        if is_outperformer:
+            leap_clauses = []
+            if pos_leap >= 5:
+                leap_clauses.append(f"`+{pos_leap}` {pos_name} spots above where he was drafted")
+            if ovr_leap >= 20:
+                leap_clauses.append(f"`+{ovr_leap}` overall spots (`Pick #{draft_pick}` ➡️ `#{total_rank} Overall`)")
+            leap_str = f" — {', '.join(leap_clauses)}" if leap_clauses else ""
+            diff_str = f"`{ppg_diff:+.1f} PPG` over preseason projection" if pre_avg > 0 else ""
+            detail_bits = [b for b in [diff_str] if b]
+            detail_paren = f" ({', '.join(detail_bits)})" if detail_bits else ""
             parts.append(
-                f"🚀 **Preseason Expectation vs. Reality (MASSIVE ADP OUTPERFORMER):** Drafted at `{adp_lbl}`{pre_rank_lbl}{pre_proj_lbl}, "
-                f"{p['name']} is smashing preseason expectations at **`{pos_name}{pos_rank} Overall` (`#{total_rank} Overall`, `{season_avg} PPG`){diff_note}**!"
+                f"🚀 **Draft Value vs. Reality (DRAFT STEAL / OUTPERFORMER):** {draft_verb}{pre_proj_lbl}, "
+                f"{p['name']} is outperforming expectations as **`{pos_name}{pos_rank} Overall` (`#{total_rank} Overall`, `{season_avg} PPG`)**{detail_paren}{leap_str}!"
             )
-        elif adp <= 28 and pos_rank <= 8:
+        elif is_elite_anchor:
             parts.append(
-                f"👑 **Preseason Expectation vs. Reality (ELITE DRAFT ANCHOR):** Invested with premium draft capital (`{adp_lbl}`{pre_rank_lbl}{pre_proj_lbl}), "
-                f"{p['name']} is fully delivering as **`{pos_name}{pos_rank} Overall` (`#{total_rank} Overall`, `{season_avg} PPG`)**."
+                f"👑 **Draft Value vs. Reality (ELITE DRAFT ANCHOR):** Drafted at `{draft_lbl}`{pre_proj_lbl}, "
+                f"{p['name']} is delivering as **`{pos_name}{pos_rank} Overall` (`#{total_rank} Overall`, `{season_avg} PPG`)**."
             )
-        elif adp <= 55 and (ppg_diff <= -2.5 or pos_rank >= 24):
-            diff_note = f" (`{ppg_diff:+.1f} PPG` vs. `{pre_avg} PPG` preseason projection)" if pre_avg > 0 else ""
+        elif is_underperformer:
+            diff_str = f" (`{ppg_diff:+.1f} PPG` vs. `{pre_avg} PPG` preseason projection)" if pre_avg > 0 else ""
+            pos_drop_str = f" (`{pos_leap}` {pos_name} spots vs. draft slot)" if pos_leap <= -8 else ""
             parts.append(
-                f"📉 **Preseason Expectation vs. Reality (UNDERPERFORMING ADP):** Drafted early at `{adp_lbl}`{pre_rank_lbl}, "
-                f"{p['name']} currently sits at **`{pos_name}{pos_rank} Overall` (`{season_avg} PPG`){diff_note}**."
+                f"📉 **Draft Value vs. Reality (UNDERPERFORMING DRAFT SLOT):** Taken early at `{draft_lbl}`, "
+                f"{p['name']} sits at **`{pos_name}{pos_rank} Overall` (`{season_avg} PPG`)**{diff_str}{pos_drop_str}."
             )
 
     trend_3gm = (roto or {}).get('trend_3gm', '')
     if trend_3gm:
-        pts_note = f" [Recent Fantasy Scores: Wk 8 `{wk_prev}` pts ➡️ Wk 9 `{wk_curr}` pts]" if wk_prev > 0 else ""
+        if week_num and week_num >= 2 and wk_prev > 0:
+            pts_note = f" [Recent Fantasy Scores: Wk {week_num - 1} `{wk_prev}` pts ➡️ Wk {week_num} `{wk_curr}` pts]"
+        else:
+            pts_note = ""
         parts.append(f"📈 **Recent Multi-Week Trend:** {trend_3gm}{pts_note}")
 
     if not parts:
@@ -1983,6 +2104,8 @@ def generate_payload(season: int, week_num: int):
     # --- BUILD RICH PLAYER CONTEXT ---
     pos_map_ctx = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
     rem_reg_weeks = max(1, 14 - week_num)
+    bfl_draft_map = fetch_league_draft_context(season, cookies)
+    has_bfl_draft = bool(bfl_draft_map)
     player_context = {}
     for t in raw_data.get('teams', []):
         for entry in t.get('roster', {}).get('entries', []):
@@ -2015,11 +2138,16 @@ def generate_payload(season: int, week_num: int):
                     elif s.get('statSourceId') == 0 and s.get('scoringPeriodId') == week_num - 1 and s.get('seasonId') == season:
                         wk_prev_pts = round(s.get('appliedTotal', 0.0), 2)
                 eff_avg = max(season_avg, ros_avg)
+                d_info = bfl_draft_map.get(int(pid), {})
                 player_context[pid] = {
                     'injury': p_data.get('injuryStatus', 'ACTIVE'),
                     'outlook': outlook,
                     'adp': p_data.get('ownership', {}).get('averageDraftPosition', 200.0),
                     'ppr_draft_rank': ppr_draft_rank,
+                    'has_bfl_draft': has_bfl_draft,
+                    'draft_pick': d_info.get('draft_pick'),
+                    'draft_round': d_info.get('draft_round'),
+                    'pos_draft_rank': d_info.get('pos_draft_rank'),
                     'preseason_proj_avg': preseason_proj_avg,
                     'wk_prev_pts': wk_prev_pts,
                     'season_avg': season_avg,
@@ -2164,7 +2292,7 @@ def generate_payload(season: int, week_num: int):
                 ctx = player_context.get(p['id'], {'outlook': ''})
                 roto = fetch_rotowire_details(p['id'])
                 payload += f"- {format_player_string(p, player_context)}\n"
-                payload += build_player_intelligence_tidbit(p, player_context, roto)
+                payload += build_player_intelligence_tidbit(p, player_context, roto, week_num=week_num)
                 if ctx['outlook']: payload += f"  *Season Outlook:* {ctx['outlook']}\n"
                 if roto.get('spin'): payload += f"  *Recent News & Spin:* {roto['spin']}\n"
             
@@ -2173,7 +2301,7 @@ def generate_payload(season: int, week_num: int):
                 ctx = player_context.get(p['id'], {'outlook': ''})
                 roto = fetch_rotowire_details(p['id'])
                 payload += f"- {format_player_string(p, player_context)}\n"
-                payload += build_player_intelligence_tidbit(p, player_context, roto)
+                payload += build_player_intelligence_tidbit(p, player_context, roto, week_num=week_num)
                 if ctx['outlook']: payload += f"  *Season Outlook:* {ctx['outlook']}\n"
                 if roto.get('spin'): payload += f"  *Recent News & Spin:* {roto['spin']}\n"
             
@@ -2202,7 +2330,7 @@ def generate_payload(season: int, week_num: int):
                         f"- **Costly Start/Sit:** {l['owner']} lost by `{m['margin']}`, and starting {format_player_string(b['started'], player_context)} over benched {format_player_string(b['benched'], player_context)} left `{round(b['diff'], 2)}` points on the table—the exact swing in a game this close."
                     )
                     roto_s = fetch_rotowire_details(b['started']['id'])
-                    tid_s = build_player_intelligence_tidbit(b['started'], player_context, roto_s)
+                    tid_s = build_player_intelligence_tidbit(b['started'], player_context, roto_s, week_num=week_num)
                     if tid_s: lineup_notes.append(tid_s.rstrip())
                     if roto_s.get('spin'): lineup_notes.append(f"  *Recent News & Spin:* {roto_s['spin']}")
                 elif b['diff'] >= 10.0 and b['started'].get('pos_id') not in (5, 16):
@@ -2219,7 +2347,7 @@ def generate_payload(season: int, week_num: int):
                             f"- **Quiet Day from a Key Starter:** {l['owner']} needed more from {format_player_string(biggest_bust, player_context)} in a `{m['margin']}`-point loss."
                         )
                         roto_s = fetch_rotowire_details(biggest_bust['id'])
-                        tid_s = build_player_intelligence_tidbit(biggest_bust, player_context, roto_s)
+                        tid_s = build_player_intelligence_tidbit(biggest_bust, player_context, roto_s, week_num=week_num)
                         if tid_s: lineup_notes.append(tid_s.rstrip())
                         if roto_s.get('spin'): lineup_notes.append(f"  *Recent News & Spin:* {roto_s['spin']}")
 
