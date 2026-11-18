@@ -59,43 +59,36 @@ def calculate_matchup_win_probability(away_starters: list, home_starters: list, 
     
     Returns: (away_win_prob, home_win_prob, away_live_exp, home_live_exp)
     """
-    away_rem_exp = 0.0
-    away_rem_var = 0.0
-    for p in away_starters:
-        base_proj = p.get('baseline_proj', 0.0)
-        curr_score = p.get('current_score', 0.0)
-        status = p.get('game_status', 'PRE') # PRE, IN_PROGRESS, FINAL
-        pct_rem = p.get('pct_remaining', 1.0) # 1.0 = pre-game, 0.5 = halftime, 0.0 = final
-        pos_id = p.get('pos_id', 3)
-        std_dev = POSITION_STD_DEV.get(pos_id, 5.5)
-        
-        if status == 'FINAL' or pct_rem <= 0.0:
-            pass # No remaining projection or variance
-        elif status == 'IN_PROGRESS':
-            away_rem_exp += (base_proj * pct_rem)
-            away_rem_var += ((std_dev ** 2) * pct_rem)
-        else: # PRE
-            away_rem_exp += base_proj
-            away_rem_var += (std_dev ** 2)
-            
-    home_rem_exp = 0.0
-    home_rem_var = 0.0
-    for p in home_starters:
-        base_proj = p.get('baseline_proj', 0.0)
-        curr_score = p.get('current_score', 0.0)
-        status = p.get('game_status', 'PRE')
-        pct_rem = p.get('pct_remaining', 1.0)
-        pos_id = p.get('pos_id', 3)
-        std_dev = POSITION_STD_DEV.get(pos_id, 5.5)
-        
-        if status == 'FINAL' or pct_rem <= 0.0:
-            pass
-        elif status == 'IN_PROGRESS':
-            home_rem_exp += (base_proj * pct_rem)
-            home_rem_var += ((std_dev ** 2) * pct_rem)
-        else: # PRE
-            home_rem_exp += base_proj
-            home_rem_var += (std_dev ** 2)
+    def _accumulate_team_rem(starters: list) -> tuple:
+        rem_exp = 0.0
+        rem_var = 0.0
+        for p in starters:
+            base_proj = p.get('baseline_proj', 0.0)
+            curr_score = p.get('current_score', 0.0)
+            status = p.get('game_status', 'PRE')  # PRE, IN_PROGRESS, FINAL
+            pct_rem = p.get('pct_remaining', 1.0)  # 1.0 = pre-game, 0.5 = halftime, 0.0 = final
+            pos_id = p.get('pos_id', 3)
+            std_dev = POSITION_STD_DEV.get(pos_id, 5.5)
+
+            if status == 'FINAL' or pct_rem <= 0.0:
+                pass  # No remaining projection or variance
+            elif status == 'IN_PROGRESS':
+                if pos_id == 16:
+                    # ESPN initializes D/ST at +10.0 pts on kickoff (0 PA / <100 YA bonus), which is
+                    # an unearned starting cushion rather than additive production. Subtract the
+                    # remaining unearned kickoff bonus so win probability does not spike at kickoff.
+                    unearned_cushion = max(0.0, min(10.0, curr_score)) * pct_rem
+                    rem_exp += (base_proj * pct_rem) - unearned_cushion
+                else:
+                    rem_exp += (base_proj * pct_rem)
+                rem_var += ((std_dev ** 2) * pct_rem)
+            else:  # PRE
+                rem_exp += base_proj
+                rem_var += (std_dev ** 2)
+        return rem_exp, rem_var
+
+    away_rem_exp, away_rem_var = _accumulate_team_rem(away_starters)
+    home_rem_exp, home_rem_var = _accumulate_team_rem(home_starters)
             
     total_away_exp = away_current_pts + away_rem_exp
     total_home_exp = home_current_pts + home_rem_exp

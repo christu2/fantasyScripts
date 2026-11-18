@@ -271,10 +271,32 @@ def parse_live_matchup_state(raw_data, week_num: int, season: int = int(CONFIG_Y
 
     return state
 
+def _dst_kickoff_cushion_jump(prev_match: dict, curr_match: dict) -> dict:
+    """
+    Computes how many points on each side came strictly from a D/ST transitioning from
+    PRE (0.0 pts) to IN_PROGRESS (+10.0 starting bonus), so kickoff never fakes a score jump.
+    """
+    prev_map = {
+        s['name']: s
+        for s in prev_match.get('away_starters', []) + prev_match.get('home_starters', [])
+    }
+    cushion = {'away': 0.0, 'home': 0.0}
+    for key, starters_key in [('away', 'away_starters'), ('home', 'home_starters')]:
+        for s in curr_match.get(starters_key, []):
+            if s.get('pos_id') == 16 or s.get('pos') == 'D/ST':
+                ps = prev_map.get(s['name'], {})
+                if ps.get('game_status', 'PRE') == 'PRE' and float(ps.get('current_score', 0.0)) == 0.0:
+                    curr_pts = float(s.get('current_score', 0.0))
+                    if s.get('game_status') == 'IN_PROGRESS' and curr_pts > 0.0:
+                        cushion[key] += min(10.0, curr_pts)
+    return cushion
+
+
 def _find_swing_catalyst_player(prev_match: dict, curr_match: dict, min_delta: float = 2.5, target_side: str = None) -> tuple:
     """
     Identifies the exact active player whose scoring jump catalyzed a probability shockwave or lead change.
-    Returns (catalyst_str, best_delta). Ignores players whose games were already FINAL in prev_match.
+    Returns (catalyst_str, best_delta). Ignores players whose games were already FINAL in prev_match,
+    and excludes a D/ST's automatic +10.0 kickoff starting bonus when transitioning from PRE -> IN_PROGRESS.
     """
     prev_scores = {}
     prev_status = {}
@@ -299,6 +321,10 @@ def _find_swing_catalyst_player(prev_match: dict, curr_match: dict, min_delta: f
                 continue
             curr_pts = float(s.get('current_score', 0.0))
             prev_pts = prev_scores.get(pname, curr_pts)
+            is_dst = (s.get('pos_id') == 16 or s.get('pos') == 'D/ST')
+            if is_dst and prev_status.get(pname) == 'PRE' and prev_pts == 0.0 and s.get('game_status') == 'IN_PROGRESS' and curr_pts > 0.0:
+                # Discount the automatic +10.0 kickoff bonus; only attribute actual net positive points above 10
+                prev_pts = min(10.0, curr_pts)
             delta = round(curr_pts - prev_pts, 2)
             if delta > best_delta and delta >= min_delta:
                 best_delta = delta
@@ -399,9 +425,10 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
             if not catalyst:
                 catalyst, best_delta = _find_swing_catalyst_player(snap_m, c_m, min_delta=2.5)
 
+            dst_cushion = _dst_kickoff_cushion_jump(snap_m, c_m)
             team_score_jump = max(
-                round(c_m['away_score'] - float(snap_m.get('away_score', c_m['away_score'])), 2),
-                round(c_m['home_score'] - float(snap_m.get('home_score', c_m['home_score'])), 2)
+                round(c_m['away_score'] - float(snap_m.get('away_score', c_m['away_score'])) - dst_cushion['away'], 2),
+                round(c_m['home_score'] - float(snap_m.get('home_score', c_m['home_score'])) - dst_cushion['home'], 2)
             )
             if best_delta < 2.5 and team_score_jump < 4.0:
                 log_live_desk_event(season, week_num, "SHOCKWAVE", "SUPPRESSED_CLOCK_DRIFT", mid, {
@@ -493,9 +520,18 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 if not catalyst:
                     catalyst, best_delta = _find_swing_catalyst_player(p_data, c_data, min_delta=0.5)
 
+                # Suppress fake lead changes caused solely by a D/ST receiving its +10.0 kickoff bonus
+                tick_cushion = _dst_kickoff_cushion_jump(p_data, c_data)
+                side_cushion = tick_cushion['away'] if leader_side == 'AWAY' else tick_cushion['home']
+                if side_cushion > 0 and best_delta < 0.4:
+                    log_live_desk_event(season, week_num, "LEAD_CHANGE", "SUPPRESSED_DST_KICKOFF", mid, {
+                        "matchup": f"{c_data['away_team']} vs {c_data['home_team']}",
+                        "new_leader": c_leader,
+                        "margin": margin
+                    })
                 # Only suppress if the exact same matchup already had a Lead Change alert in the last 5 minutes (300s)
                 # AND it's a tiny yardage seesaw (< 3.0 pts), so a real comeback overtake ALWAYS fires!
-                if time.time() - last_lead_ts < 300 and best_delta < 3.0:
+                elif time.time() - last_lead_ts < 300 and best_delta < 3.0:
                     log_live_desk_event(season, week_num, "LEAD_CHANGE", "SUPPRESSED_COOLDOWN", mid, {
                         "matchup": f"{c_data['away_team']} vs {c_data['home_team']}",
                         "new_leader": c_leader,
