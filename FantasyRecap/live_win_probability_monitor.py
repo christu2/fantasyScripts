@@ -26,16 +26,12 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Load .env
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    load_dotenv()
+from FantasyRecap.core.manifest import get_espn_credentials
 
-ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID", "157057")
-ESPN_S2 = os.getenv("ESPN_S2", "")
-ESPN_SWID = os.getenv("ESPN_SWID", "")
+_CREDS = get_espn_credentials()
+ESPN_LEAGUE_ID = _CREDS["league_id"]
+ESPN_S2 = _CREDS["espn_s2"]
+ESPN_SWID = _CREDS["espn_swid"]
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 # Positional standard deviations for fantasy scoring variance (per 60 mins)

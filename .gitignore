@@ -7,6 +7,7 @@ team_schedule_grid.csv
 .env
 credentials.json
 FantasyRecords/credentials.json
+FantasyConfigs/
 token.pickle
 *.pickle
 

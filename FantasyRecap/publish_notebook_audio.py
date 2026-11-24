@@ -14,17 +14,44 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists(): load_dotenv(dotenv_path=env_path)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from FantasyRecap.core.manifest import load_project_env
+load_project_env()
 
 import json
+from FantasyRecap.podcast_rss_builder import add_episode_to_rss
 
-def publish_notebook_audio(season: int, week_num: int, audio_path: str, notes: str = "", edit_thread_id: str = ""):
+
+def publish_notebook_audio(
+    season: int,
+    week_num: int,
+    audio_path: str,
+    notes: str = "",
+    edit_thread_id: str = "",
+    update_rss: bool = False,
+    rss_base_url: str = "",
+):
     print(f"🎙️ BFL AUDIO COMPILER (NotebookLM Edition) - Week {week_num}, {season}")
     
     if not os.path.exists(audio_path):
         print(f"❌ Error: Audio file '{audio_path}' not found!")
         return
+
+    # Optional: Export crisp 128 kbps MP3 & update Private Podcast RSS feed (Apple Podcasts / Spotify)
+    rss_info = None
+    if update_rss or rss_base_url or os.getenv("PODCAST_RSS_BASE_URL"):
+        try:
+            rss_info = add_episode_to_rss(
+                season=season,
+                week=week_num,
+                audio_path=audio_path,
+                notes=notes,
+                episode_type="notebooklm",
+                base_url=rss_base_url,
+            )
+            print(f"📡 Private RSS updated ({rss_info['size_mb']} MB HQ MP3): {rss_info['feed_path']}")
+        except Exception as exc:
+            print(f"⚠️ RSS build failed (continuing with Discord upload): {exc}")
 
     # 1. Get audio duration
     cmd_dur = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
@@ -79,7 +106,10 @@ def publish_notebook_audio(season: int, week_num: int, audio_path: str, notes: s
     if webhook:
         thread_title = f"☕ BFL Tuesday Hangover (NotebookLM): Week {week_num} [{season}]"
         notes_str = f"📝 **Episode Notes:**\n{notes}\n\n" if notes else ""
-        content_body = f"🏆 **BFL TUESDAY MORNING HANGOVER (NOTEBOOK LM EDITION)**\n\n⏱️ **Duration:** `{mins}m {secs}s`\n\n{notes_str}🎧 Listen to the Week {week_num} Recap below: 👇"
+        rss_line = ""
+        if rss_info and "example.com" not in rss_info["feed_url"]:
+            rss_line = f"📡 **Apple Podcasts / Spotify Private RSS:** {rss_info['feed_url']}\n\n"
+        content_body = f"🏆 **BFL TUESDAY MORNING HANGOVER (NOTEBOOK LM EDITION)**\n\n⏱️ **Duration:** `{mins}m {secs}s`\n\n{notes_str}{rss_line}🎧 Listen to the Week {week_num} Recap below: 👇"
 
         with open(compressed_audio_path, 'rb') as f_mp3:
             files = {
@@ -114,5 +144,15 @@ if __name__ == "__main__":
     parser.add_argument("--audio", type=str, required=True, help="Path to the NotebookLM MP3, M4A, or WAV file")
     parser.add_argument("--notes", type=str, default="", help="Optional notes to include in the Discord message")
     parser.add_argument("--edit-thread-id", type=str, default="", help="Optional Discord thread/message ID to update in place")
+    parser.add_argument("--rss", action="store_true", help="Also encode 128k HQ MP3 & update output/rss/feed.xml")
+    parser.add_argument("--rss-base-url", type=str, default="", help="Public HTTPS base URL for private RSS feed")
     args = parser.parse_args()
-    publish_notebook_audio(args.season, args.week, args.audio, args.notes, args.edit_thread_id)
+    publish_notebook_audio(
+        args.season,
+        args.week,
+        args.audio,
+        args.notes,
+        args.edit_thread_id,
+        update_rss=args.rss,
+        rss_base_url=args.rss_base_url,
+    )

@@ -9,16 +9,13 @@ Routes messages, embeds, and reports to their dedicated Discord channels:
 """
 
 import os
+import sys
 import requests
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Load .env
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    load_dotenv()
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from FantasyRecap.core.manifest import load_project_env
+load_project_env()
 
 DEFAULT_WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "")
 COMMISH_WEBHOOK = os.getenv("DISCORD_WEBHOOK_COMMISH") or DEFAULT_WEBHOOK

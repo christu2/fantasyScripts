@@ -14,8 +14,9 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists(): load_dotenv(dotenv_path=env_path)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from FantasyRecap.core.manifest import load_project_env
+load_project_env()
 
 def publish_human_podcast(season: int, week_num: int, audio_path: str, notes: str = "", bitrate: str = "64k"):
     print(f"🎙️ BFL AUDIO COMPILER (Commissioner Edition) - Week {week_num}, {season}")

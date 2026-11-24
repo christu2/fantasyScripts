@@ -13,91 +13,36 @@ Manages the weekly owner interview pipeline:
 
 import os
 import re
+import sys
 import requests
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path, override=True)
-else:
-    load_dotenv(override=True)
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
+from FantasyRecap.core.manifest import (
+    get_discord_id_to_owner,
+    get_discord_user_map,
+    get_owner_mention_triggers,
+    get_owner_team_keywords,
+    load_manifest,
+    load_project_env,
+)
+
+load_project_env(override=True)
+
+_DISCORD_DEFAULTS = load_manifest().get("discord_defaults", {})
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 DISCORD_WEBHOOK_PODCAST = os.getenv("DISCORD_WEBHOOK_PODCAST", "")
 DISCORD_QUOTES_CHANNEL_ID = os.getenv("DISCORD_QUOTES_CHANNEL_ID") or os.getenv("DISCORD_TRASH_TALK_CHANNEL_ID") or os.getenv("DISCORD_CHANNEL_ID", "")
-DISCORD_LIVE_DESK_CHANNEL_ID = os.getenv("DISCORD_LIVE_DESK_CHANNEL_ID", "1540867012996104203")
+DISCORD_LIVE_DESK_CHANNEL_ID = os.getenv("DISCORD_LIVE_DESK_CHANNEL_ID", _DISCORD_DEFAULTS.get("live_desk_channel_id", "1540867012996104203"))
 
-# Exact Discord User ID to BFL Owner mapping
-DISCORD_ID_TO_OWNER = {
-    '1540793260610560070': 'Nick Christus',
-    '339254563968385031': 'Nitesh Patel',
-    '1541444214632611882': 'Shawn Lukose',
-    '804923026927124501': 'Dino Davros',
-    '606885780190658706': 'Nael Ahmed',
-    '1551345621783543869': 'Saagar Gupta',
-    '650944454987087912': 'Samran Mirza',
-    '1550288879318204447': 'Daniel Kruszewski',
-    '768661044922417185': 'Adam Olen',
-    '1320585267849199619': 'rej hoxha',
-}
-
-# Discord username / nickname to BFL Owner mapping
-DISCORD_USER_MAP = {
-    'nchristus93': 'Nick Christus',
-    'nick': 'Nick Christus',
-    'christu2': 'Nick Christus',
-    'shawnlukose': 'Shawn Lukose',
-    'lukose': 'Shawn Lukose',
-    'thor': 'Shawn Ullenbrauck',
-    'ullenbrauck': 'Shawn Ullenbrauck',
-    'abe': 'Abe Thomas',
-    'crashee': 'Abe Thomas',
-    'kgarmy0447': 'Saagar Gupta',
-    'kgarmy': 'Saagar Gupta',
-    'saagar': 'Saagar Gupta',
-    'gupta': 'Saagar Gupta',
-    'venicado': 'Dino Davros',
-    'dino': 'Dino Davros',
-    'davros': 'Dino Davros',
-    'ao3312': 'Adam Olen',
-    'adam': 'Adam Olen',
-    'olen': 'Adam Olen',
-    'amo': 'Adam Olen',
-    'sydney': 'Sydney Miller',
-    'miller': 'Sydney Miller',
-    'savage69_09383': 'Daniel Kruszewski',
-    'savage69': 'Daniel Kruszewski',
-    'dan': 'Daniel Kruszewski',
-    'kruszewski': 'Daniel Kruszewski',
-    'dtm': 'Daniel Kruszewski',
-    'rej0406': 'rej hoxha',
-    'rej': 'rej hoxha',
-    'hoxha': 'rej hoxha',
-    'tommy': 'Tommy Ehrlich',
-    'thomas': 'Tommy Ehrlich',
-    'ehrlich': 'Tommy Ehrlich',
-    'smirza107986': 'Samran Mirza',
-    'smirza10': 'Samran Mirza',
-    'samran': 'Samran Mirza',
-    'mirza': 'Samran Mirza',
-    'naeleezy': 'Nael Ahmed',
-    'nael': 'Nael Ahmed',
-    'ahmed': 'Nael Ahmed',
-    'nmafia': 'Nael Ahmed',
-    'blake': 'Blake Whitehouse',
-    'whitehouse': 'Blake Whitehouse',
-    'alex': 'Alex Kite',
-    'kite': 'Alex Kite',
-    'shooter': 'Alex Kite',
-    'npate2076487': 'Nitesh Patel',
-    'npate207': 'Nitesh Patel',
-    'nitesh': 'Nitesh Patel',
-    'patel': 'Nitesh Patel',
-    'edgar': 'Nitesh Patel',
-    'nasties': 'Nitesh Patel'
-}
+# Loaded canonically from FantasyRecap/league_manifest.json
+DISCORD_ID_TO_OWNER = get_discord_id_to_owner()
+DISCORD_USER_MAP = get_discord_user_map()
 
 def post_monday_night_interview_call(
     season: int,
@@ -159,27 +104,11 @@ def post_monday_night_interview_call(
 
 from zoneinfo import ZoneInfo
 
-DISCORD_COMMISH_CHANNEL_ID = os.getenv("DISCORD_COMMISH_CHANNEL_ID", "1540866967462875186")
+DISCORD_COMMISH_CHANNEL_ID = os.getenv("DISCORD_COMMISH_CHANNEL_ID", _DISCORD_DEFAULTS.get("commish_channel_id", "1540866967462875186"))
 CT_TZ = ZoneInfo("America/Chicago")
 
-OWNER_TEAM_KEYWORDS = {
-    "Nick Christus": ["mykonos", "minotaurs", "nick christus"],
-    "Shawn Lukose": ["nilgiri", "tahrs", "shawn lukose"],
-    "Shawn Ullenbrauck": ["omarion", "wayward", "pat n", "shawn ullenbrauck"],
-    "Abe Thomas": ["substation", "shockers", "crashee", "bandicoot", "abe thomas"],
-    "Saagar Gupta": ["king gupta", "gupta's army", "saagar gupta"],
-    "Dino Davros": ["taliban", "mujahideen", "dino davros"],
-    "Adam Olen": ["cisse", "green and golden", "adam olen"],
-    "Sydney Miller": ["queen of fantasy", "30p chance", "sydney miller"],
-    "Daniel Kruszewski": ["dynasty destroyers", "daniel kruszewski"],
-    "rej hoxha": ["chase-ing", "steve bartman", "rej hoxha"],
-    "Tommy Ehrlich": ["ehrly birds", "tommy ehrlich"],
-    "Samran Mirza": ["de'von intervention", "samran mirza"],
-    "Nael Ahmed": ["mahomes alone", "nmafia", "nael ahmed"],
-    "Blake Whitehouse": ["dan loves obama", "block o", "blake whitehouse"],
-    "Alex Kite": ["future gym teachers", "send da trade", "alex kite"],
-    "Nitesh Patel": ["big nasties", "nitesh patel"],
-}
+OWNER_TEAM_KEYWORDS = get_owner_team_keywords()
+OWNER_MENTION_TRIGGERS = get_owner_mention_triggers()
 
 def _match_author_to_owner(author: dict) -> str:
     """Maps a Discord author object to a canonical BFL owner name."""
@@ -238,26 +167,7 @@ def _detect_mentioned_owners(text: str, speaker: str = "") -> list:
     clean_padded = re.sub(r"[^a-z0-9'\s]", " ", text.lower())
     lower = f" {clean_padded} "
     mentioned = []
-    # Explicit nickname & first-name triggers mapped to canonical owners
-    triggers = [
-        ("nick christus", "Nick Christus"), (" nick ", "Nick Christus"),
-        ("shawn lukose", "Shawn Lukose"), ("lukose", "Shawn Lukose"), ("4 time champ", "Shawn Lukose"), (" goat ", "Shawn Lukose"),
-        ("shawn ullenbrauck", "Shawn Ullenbrauck"), (" thor ", "Shawn Ullenbrauck"), ("shawn u", "Shawn Ullenbrauck"),
-        ("abe thomas", "Abe Thomas"), (" abe ", "Abe Thomas"), ("defending champ", "Abe Thomas"),
-        ("saagar gupta", "Saagar Gupta"), ("saagar", "Saagar Gupta"), ("gupta", "Saagar Gupta"),
-        ("dino davros", "Dino Davros"), (" dino ", "Dino Davros"),
-        ("adam olen", "Adam Olen"), ("ryan olen", "Adam Olen"), (" olen ", "Adam Olen"), (" adam ", "Adam Olen"), (" amo ", "Adam Olen"),
-        ("sydney miller", "Sydney Miller"), ("sydney", "Sydney Miller"),
-        ("daniel kruszewski", "Daniel Kruszewski"), (" dtm ", "Daniel Kruszewski"), (" dan ", "Daniel Kruszewski"),
-        ("rej hoxha", "rej hoxha"), (" rej ", "rej hoxha"), (" raj ", "rej hoxha"),
-        ("tommy ehrlich", "Tommy Ehrlich"), ("tommy", "Tommy Ehrlich"),
-        ("samran mirza", "Samran Mirza"), ("samran", "Samran Mirza"), ("72 dolphins", "Samran Mirza"),
-        ("nael ahmed", "Nael Ahmed"), (" nael ", "Nael Ahmed"),
-        ("blake whitehouse", "Blake Whitehouse"), (" blake ", "Blake Whitehouse"),
-        ("alex kite", "Alex Kite"), (" alex ", "Alex Kite"), ("shooter", "Alex Kite"),
-        ("nitesh patel", "Nitesh Patel"), ("nitesh", "Nitesh Patel"), ("edgar", "Nitesh Patel"),
-    ]
-    for trig, own in triggers:
+    for trig, own in OWNER_MENTION_TRIGGERS:
         if trig in lower and own not in mentioned and own != speaker:
             mentioned.append(own)
 

@@ -25,28 +25,18 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from FantasyRecap.core.manifest import get_divisions, get_owner_to_division, load_project_env
 from FantasyRecap.league_history_intelligence import TEAM_DETAILS_2026, standardize_name
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.config import CURRENT_YEAR as CONFIG_YEAR
 
-# Load .env
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    load_dotenv()
+load_project_env()
 
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 CURRENT_YEAR = int(os.getenv("SEASON_YEAR") or CONFIG_YEAR)
 
-DIVISIONS = {
-    'North': ['Nick Christus', 'Tommy Ehrlich', 'Daniel Kruszewski', 'Blake Whitehouse'],
-    'South': ['Abe Thomas', 'Saagar Gupta', 'Nael Ahmed', 'Nitesh Patel'],
-    'East': ['Shawn Lukose', 'Dino Davros', 'Samran Mirza', 'rej hoxha'],
-    'West': ['Sydney Miller', 'Shawn Ullenbrauck', 'Adam Olen', 'Alex Kite']
-}
-
-OWNER_TO_DIV = {t: div for div, mems in DIVISIONS.items() for t in mems}
+DIVISIONS = get_divisions()
+OWNER_TO_DIV = get_owner_to_division()
 
 CODE_TO_OWNER = {code: info['owner'] for code, info in TEAM_DETAILS_2026.items()}
 

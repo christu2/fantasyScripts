@@ -24,12 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from FantasyRecap.league_history_intelligence import get_owner_storyline_context, BFL_CHAMPIONSHIPS, OWNER_PROFILES, compile_all_time_h2h, TEAM_DETAILS_2026
 from FantasyRecap.config import LEAGUE_ID, CURRENT_YEAR as CONFIG_YEAR
 
-# Load .env
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    load_dotenv()
+from FantasyRecap.core.manifest import load_project_env
+load_project_env()
 
 ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID") or os.getenv("LEAGUE_ID") or str(LEAGUE_ID)
 ESPN_S2 = os.getenv("ESPN_S2", "")

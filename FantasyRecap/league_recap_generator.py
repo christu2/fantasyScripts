@@ -21,105 +21,31 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    load_dotenv()
+# Load .env safely via shared manifest helper
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
-from FantasyRecap.config import CURRENT_YEAR as CONFIG_YEAR, LEAGUE_ID
-CURRENT_YEAR = os.getenv("SEASON_YEAR") or str(CONFIG_YEAR)
-ESPN_LEAGUE_ID = os.getenv("ESPN_LEAGUE_ID") or os.getenv("LEAGUE_ID") or str(LEAGUE_ID)
-ESPN_S2 = os.getenv("ESPN_S2", "")
-ESPN_SWID = os.getenv("ESPN_SWID") or os.getenv("SWID", "")
+from FantasyRecap.core.manifest import get_espn_credentials, load_project_env
+load_project_env()
+from FantasyRecap.core.espn_client import (
+    ESPNClientError,
+    POSITION_MAP,
+    SLOT_MAP,
+    fetch_espn_week_data as _core_fetch_espn_week_data,
+    parse_league_members_and_teams,
+)
 
-POSITION_MAP = {
-    1: 'QB',
-    2: 'RB',
-    3: 'WR',
-    4: 'TE',
-    5: 'K',
-    16: 'D/ST'
-}
+_CREDS = get_espn_credentials()
+CURRENT_YEAR = str(_CREDS["season_year"])
+ESPN_LEAGUE_ID = _CREDS["league_id"]
+ESPN_S2 = _CREDS["espn_s2"]
+ESPN_SWID = _CREDS["espn_swid"]
 
-SLOT_MAP = {
-    0: 'QB',
-    2: 'RB',
-    4: 'WR',
-    6: 'TE',
-    16: 'D/ST',
-    17: 'K',
-    20: 'Bench',
-    21: 'IR',
-    23: 'FLEX'
-}
 
 def fetch_espn_week_data(league_id: str, season: str, week: int, s2: str, swid: str):
-    """Fetch boxscores, rosters, matchups, and members from ESPN API."""
-    url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}/segments/0/leagues/{league_id}?view=mMatchupScore&view=mBoxscore&view=mRoster&view=mTeam&view=mSettings&scoringPeriodId={week}"
-    cookies = {}
-    if s2 and swid:
-        cookies = {"espn_s2": s2, "SWID": swid}
-    
-    try:
-        resp = requests.get(url, cookies=cookies, timeout=12)
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            print(f"❌ ESPN API returned status code {resp.status_code}")
-            sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error connecting to ESPN API: {e}")
-        sys.exit(1)
-
-def parse_league_members_and_teams(data):
-    """Map team IDs to owners, team names, and divisions."""
-    members = {}
-    for m in data.get('members', []):
-        disp = m.get('displayName', '')
-        first = m.get('firstName', '').strip()
-        last = m.get('lastName', '').strip()
-        full = f"{first} {last}".strip()
-        members[m['id']] = full if full else disp
-        
-    divisions = {}
-    for d in data.get('settings', {}).get('scheduleSettings', {}).get('divisions', []):
-        divisions[d['id']] = d.get('name', f"Division {d['id']}")
-        
-    teams = {}
-    for t in data.get('teams', []):
-        tid = t['id']
-        t_name = t.get('name')
-        if not t_name:
-            loc = t.get('location') or ''
-            nick = t.get('nickname') or ''
-            t_name = f"{loc} {nick}".strip()
-            
-        owner_id = t.get('primaryOwner') or (t.get('owners', [None])[0])
-        owner_name = members.get(owner_id, 'Unknown')
-        
-        if not t_name or t_name.lower() in ['none none', 'none', '']:
-            t_name = owner_name
-            
-        div_id = t.get('divisionId', 0)
-        div_name = divisions.get(div_id, 'General')
-        
-        overall = t.get('record', {}).get('overall', {})
-        teams[tid] = {
-            'id': tid,
-            'name': t_name.strip(),
-            'owner': owner_name,
-            'abbrev': t.get('abbrev', ''),
-            'division': div_name,
-            'wins': overall.get('wins', 0),
-            'losses': overall.get('losses', 0),
-            'ties': overall.get('ties', 0),
-            'points_for': overall.get('pointsFor', 0.0),
-            'points_against': overall.get('pointsAgainst', 0.0),
-            'playoff_seed': t.get('playoffSeed', 99),
-        }
-    return teams
+    """Fetch boxscores, rosters, matchups, and members from ESPN API with retry/backoff."""
+    return _core_fetch_espn_week_data(league_id, str(season), week, s2, swid)
 
 def calculate_optimal_lineup(roster_entries, week_num: int = 1):
     """
@@ -478,7 +404,11 @@ def main():
     print(f"📊 GENERATING BFL WEEK {args.week} RECAP ({args.season})")
     print("="*75)
     
-    data = fetch_espn_week_data(args.league_id, args.season, args.week, ESPN_S2, ESPN_SWID)
+    try:
+        data = fetch_espn_week_data(args.league_id, args.season, args.week, ESPN_S2, ESPN_SWID)
+    except ESPNClientError as e:
+        print(f"❌ Error connecting to ESPN API: {e}")
+        sys.exit(1)
     matchups, team_performances, teams = analyze_week(data, args.week)
     awards = generate_weekly_awards(matchups, team_performances)
     

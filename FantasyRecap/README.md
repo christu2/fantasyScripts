@@ -11,6 +11,15 @@ The automated intelligence, NotebookLM podcast payload, and live Discord engagem
 | **`#commissioner-desk`** | Text | • Annual Preseason Preview & 18-Year Trophy Room<br>• Tuesday Playoff Odds, Win/Loss Leverage & Draft Stakes Board<br>• Thursday Starting Lineup Duels, Vegas Spreads & Interactive "Upset of the Week" Poll |
 | **`#live-game-desk`** | Text | • Live Win Probability Shockwaves ($\ge 25\%$ swings attributed to exact player TDs)<br>• 4th Quarter Lead Changes, Nuclear Player Alerts ($\ge 28$ pts) & Live In-Game Injury Sirens<br>• Sunday Night "Entering MNF" Miracle & Clinch Board |
 | **`#press-room-podcast`** | **Forum** | • Weekly Episode Forum Threads (`publish_notebook_audio.py` / `publish_human_podcast.py`)<br>• Monday Night Post-Game Manager Press Conference Calls |
+| **`#bot-ops`** *(optional)* | Text | • Private failure & ESPN API health alerts (`DISCORD_WEBHOOK_OPS` in `.env`) |
+
+---
+
+## 🏗️ Core Architecture (`league_manifest.json` & `core/`)
+- **[`league_manifest.json`](league_manifest.json)**: Single canonical source of truth for league ID, divisions, all 16 teams/owners, Discord IDs/usernames, mention triggers, phonetic guide, historical synonyms, and championship roll.
+- **[`core/espn_client.py`](core/espn_client.py)**: Pooled HTTP client with retry + exponential backoff raising `ESPNClientError` instead of terminating live loops.
+- **[`core/ops.py`](core/ops.py)**: Atomic macOS/Linux `fcntl.flock` process locking (`ProcessLock`) and `#bot-ops` Discord alerting (`notify_ops`).
+- **SQLite Fast-Path H2H**: `compile_all_time_h2h()` reads 2008–present history directly from `live_state/bfl_history.db` (<10ms) instead of 18+ ESPN HTTP calls.
 
 ---
 
@@ -23,11 +32,21 @@ The automated intelligence, NotebookLM podcast payload, and live Discord engagem
    ```
    *Includes: 15-70-15 3-Act Pacing Guide, SportsCenter Cold Open directive, Phonetics & League Nicknames dictionary (`Sah-gur`, `Ray`, `Luke-ose`, `Thor`, `AMO`), Live 10,000-Sim Playoff Odds & Leverage, In-Game Injury protection, 2026 NFL player tenure tags, Rotowire player news, in-depth trade motives, and real Discord quotes.*
 2. **Upload both files to Google NotebookLM** (`output/notebook_payload_week_X_2026.md` + `output/season_chronicle_weeks_1_to_X_2026.md`) and download the generated audio overview.
-3. **Compress & Publish to Discord `#press-room-podcast`**:
+3. **Compress & Publish to Discord `#press-room-podcast`** (optionally also generating a 128 kbps Apple Podcasts / Spotify Private RSS feed in `output/rss/`):
    ```bash
-   python3 FantasyRecap/publish_notebook_audio.py --season 2026 --week 6 --audio /path/to/downloaded_audio.mp4 --notes "Optional episode notes"
+   python3 FantasyRecap/publish_notebook_audio.py --season 2026 --week 6 --audio /path/to/downloaded_audio.mp4 --notes "Optional episode notes" --rss
    ```
-   *(Or use `publish_human_podcast.py` when uploading a live human-recorded Commissioner's episode.)*
+   *(Set `PODCAST_RSS_BASE_URL` in `.env` for your Cloudflare R2 / GitHub Pages URL, or use `publish_human_podcast.py` for human-recorded episodes.)*
+
+#### ⚡ Automated Alternative: Gemini Native Multi-Speaker TTS (`gemini_podcast_generator.py`)
+Generates Chris & Dave dialogue and renders expressive 2-host audio directly from `output/notebook_payload_week_{W}_{Y}.md`—no manual NotebookLM upload/download:
+```bash
+# 2–3 minute highlight clip to audition voice quality vs. NotebookLM
+python3 FantasyRecap/gemini_podcast_generator.py --season 2026 --week 10 --sample
+
+# Full 15–22 minute episode + auto-update Apple Podcasts Private RSS
+python3 FantasyRecap/gemini_podcast_generator.py --season 2026 --week 10 --full --rss
+```
 
 ---
 
@@ -79,4 +98,24 @@ python3 FantasyRecap/live_game_desk_daemon.py --season 2026 --week 7 --mnf-board
 * **Annual Preseason State of the League & 18-Year Trophy Room:**
   ```bash
   python3 FantasyRecap/annual_season_preview.py --season 2026
+  ```
+
+---
+
+### 6. 📚 Discord `/ask` Historian Bot & Test Suite
+* **Discord `/ask` & `/bflstats` Historian Bot** (Gemini Text-to-SQL over `live_state/bfl_history.db` — 2008–present games & 2018–present player boxscores):
+  ```bash
+  # Install dependency once
+  pip install discord.py
+
+  # Test locally without connecting to Discord
+  python3 FantasyRecap/bfl_historian_bot.py --dry-run "Who has the highest single-week score since 2018?" --show-sql
+
+  # Run interactively, or install as an auto-restarting Mac Mini LaunchAgent
+  python3 FantasyRecap/bfl_historian_bot.py
+  python3 FantasyRecap/bfl_historian_bot.py --install-launchd
+  ```
+* **Run Automated Unit Test Suite:**
+  ```bash
+  python3 -m unittest discover -s FantasyRecap/tests -v
   ```

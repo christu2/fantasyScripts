@@ -17,21 +17,23 @@ import time
 import json
 import argparse
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from FantasyRecap.core.espn_client import (
+    ESPNClientError,
+    fetch_nfl_scoreboard,
+    fetch_pro_team_schedules,
+)
+from FantasyRecap.core.ops import notify_ops
 from FantasyRecap.league_recap_generator import fetch_espn_week_data, parse_league_members_and_teams, ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID
 from FantasyRecap.live_win_probability_monitor import calculate_matchup_win_probability, detect_probability_shockwaves
 from FantasyRecap.config import CURRENT_YEAR as CONFIG_YEAR
 
-# Load .env
-env_path = Path(__file__).resolve().parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    load_dotenv()
+from FantasyRecap.core.manifest import load_project_env
+load_project_env()
 
 DISCORD_WEBHOOK_LIVE_DESK = (
     os.getenv("DISCORD_WEBHOOK_LIVE")
@@ -87,7 +89,7 @@ def post_live_desk_embed(title: str, description: str, color: int, fields: list,
             "color": color,
             "fields": fields,
             "footer": {"text": footer},
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }]
     }
 
@@ -105,61 +107,57 @@ def fetch_live_nfl_game_clocks(season: int, week_num: int) -> dict:
     """
     event_clocks = {}
     try:
-        sb_url = f"http://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={season}&seasontype=2&week={week_num}"
-        sb_resp = requests.get(sb_url, timeout=8)
-        if sb_resp.status_code == 200:
-            for ev in sb_resp.json().get("events", []):
-                ev_id = str(ev.get("id", ""))
-                st = ev.get("status", {})
-                st_type = st.get("type", {})
-                state_str = st_type.get("state", "pre")
-                name_str = st_type.get("name", "STATUS_SCHEDULED")
-                if state_str == "post" or name_str == "STATUS_FINAL":
-                    event_clocks[ev_id] = ("FINAL", 0.0)
-                elif state_str == "in" or "IN_PROGRESS" in name_str or "HALFTIME" in name_str or "END_PERIOD" in name_str:
-                    period = int(st.get("period", 1))
-                    clock = float(st.get("clock", 0.0))
-                    if period >= 5:
-                        pct_rem = 0.05
-                    else:
-                        rem_secs = max(0.0, (4 - period) * 900.0 + clock)
-                        pct_rem = round(min(1.0, rem_secs / 3600.0), 4)
-                    event_clocks[ev_id] = ("IN_PROGRESS", pct_rem)
+        sb_json = fetch_nfl_scoreboard(season=season, week=week_num, season_type=2, timeout=8.0)
+        for ev in sb_json.get("events", []):
+            ev_id = str(ev.get("id", ""))
+            st = ev.get("status", {})
+            st_type = st.get("type", {})
+            state_str = st_type.get("state", "pre")
+            name_str = st_type.get("name", "STATUS_SCHEDULED")
+            if state_str == "post" or name_str == "STATUS_FINAL":
+                event_clocks[ev_id] = ("FINAL", 0.0)
+            elif state_str == "in" or "IN_PROGRESS" in name_str or "HALFTIME" in name_str or "END_PERIOD" in name_str:
+                period = int(st.get("period", 1))
+                clock = float(st.get("clock", 0.0))
+                if period >= 5:
+                    pct_rem = 0.05
                 else:
-                    event_clocks[ev_id] = ("PRE", 1.0)
-    except Exception:
-        pass
+                    rem_secs = max(0.0, (4 - period) * 900.0 + clock)
+                    pct_rem = round(min(1.0, rem_secs / 3600.0), 4)
+                event_clocks[ev_id] = ("IN_PROGRESS", pct_rem)
+            else:
+                event_clocks[ev_id] = ("PRE", 1.0)
+    except Exception as exc:
+        print(f"⚠️ Could not fetch live NFL scoreboard clocks: {exc}")
 
     pro_team_clocks = {}
     try:
-        pt_url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}?view=proTeamSchedules_wl"
-        pt_resp = requests.get(pt_url, timeout=8)
-        if pt_resp.status_code == 200:
-            now_ms = time.time() * 1000
-            for pt in pt_resp.json().get("settings", {}).get("proTeams", []):
-                ptid = pt.get("id")
-                sched = pt.get("proGamesByScoringPeriod", {}).get(str(week_num), [])
-                if not sched:
-                    # Bye week team
+        pt_json = fetch_pro_team_schedules(season=season, timeout=8.0)
+        now_ms = time.time() * 1000
+        for pt in pt_json.get("settings", {}).get("proTeams", []):
+            ptid = pt.get("id")
+            sched = pt.get("proGamesByScoringPeriod", {}).get(str(week_num), [])
+            if not sched:
+                # Bye week team
+                pro_team_clocks[ptid] = ("FINAL", 0.0)
+                continue
+            g = sched[0]
+            gid = str(g.get("id", ""))
+            if g.get("statsOfficial") is True:
+                pro_team_clocks[ptid] = ("FINAL", 0.0)
+            elif gid in event_clocks:
+                pro_team_clocks[ptid] = event_clocks[gid]
+            else:
+                g_date = g.get("date", 0)
+                if g_date > 0 and now_ms > g_date + (4 * 3600 * 1000):
                     pro_team_clocks[ptid] = ("FINAL", 0.0)
-                    continue
-                g = sched[0]
-                gid = str(g.get("id", ""))
-                if g.get("statsOfficial") is True:
-                    pro_team_clocks[ptid] = ("FINAL", 0.0)
-                elif gid in event_clocks:
-                    pro_team_clocks[ptid] = event_clocks[gid]
+                elif g_date > 0 and now_ms >= g_date:
+                    elapsed_ratio = min(0.95, max(0.05, (now_ms - g_date) / (3.25 * 3600 * 1000)))
+                    pro_team_clocks[ptid] = ("IN_PROGRESS", round(1.0 - elapsed_ratio, 4))
                 else:
-                    g_date = g.get("date", 0)
-                    if g_date > 0 and now_ms > g_date + (4 * 3600 * 1000):
-                        pro_team_clocks[ptid] = ("FINAL", 0.0)
-                    elif g_date > 0 and now_ms >= g_date:
-                        elapsed_ratio = min(0.95, max(0.05, (now_ms - g_date) / (3.25 * 3600 * 1000)))
-                        pro_team_clocks[ptid] = ("IN_PROGRESS", round(1.0 - elapsed_ratio, 4))
-                    else:
-                        pro_team_clocks[ptid] = ("PRE", 1.0)
-    except Exception:
-        pass
+                    pro_team_clocks[ptid] = ("PRE", 1.0)
+    except Exception as exc:
+        print(f"⚠️ Could not fetch proTeamSchedules_wl clocks: {exc}")
 
     return pro_team_clocks
 
@@ -808,11 +806,23 @@ def post_mnf_miracle_board(season: int, week_num: int, print_only: bool = False)
 def monitor_continuously(season: int, week_num: int, interval_seconds: int = 60):
     """Runs the live game desk polling loop continuously during game windows."""
     print(f"⚡ Starting BFL Live Game Desk Daemon for Season {season}, Week {week_num} (Polling every {interval_seconds}s)...")
+    consecutive_errors = 0
     try:
         while True:
             t_start = time.time()
-            count = run_live_desk_tick(season, week_num)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Live Desk Tick: Monitored {count} matchups.")
+            try:
+                count = run_live_desk_tick(season, week_num)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Live Desk Tick: Monitored {count} matchups.")
+                consecutive_errors = 0
+            except (ESPNClientError, Exception) as exc:
+                consecutive_errors += 1
+                print(f"⚠️ [{datetime.now().strftime('%H:%M:%S')}] Live Desk Tick error (#{consecutive_errors}): {exc}")
+                if consecutive_errors in (3, 10):
+                    notify_ops(
+                        f"⚠️ Live Game Desk Poll Failing ({consecutive_errors}x)",
+                        f"Season {season} Week {week_num} error: `{exc}`",
+                        level="warning",
+                    )
             elapsed = time.time() - t_start
             time.sleep(max(10, interval_seconds - elapsed))
     except KeyboardInterrupt:

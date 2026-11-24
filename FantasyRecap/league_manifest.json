@@ -1,0 +1,371 @@
+{
+  "league_id": 1693766,
+  "legacy_league_ids": ["157057"],
+  "current_year": 2026,
+  "league_name": "Beasts Football League",
+  "league_short_name": "BFL",
+  "trophy_name": "Jabroni Trophy",
+  "timezone": "America/Chicago",
+  "divisions": ["North", "South", "East", "West"],
+  "regular_season_weeks": 14,
+  "total_playoff_teams": 7,
+  "discord_bot_enabled": true,
+  "discord_defaults": {
+    "commish_channel_id": "1540866967462875186",
+    "live_desk_channel_id": "1540867012996104203"
+  },
+  "podcast": {
+    "title": "BFL Tuesday Morning Hangover",
+    "description": "The official weekly recap, analytics, and post-game broadcast of the Beasts Football League.",
+    "author": "Beasts Football League Studio Desk",
+    "language": "en-us",
+    "category": "Sports",
+    "subcategory": "Fantasy Sports"
+  },
+  "teams": [
+    {
+      "code": "DTM",
+      "owner": "Daniel Kruszewski",
+      "team_name": "Dynasty Destroyers",
+      "division": "North",
+      "discord_ids": ["1550288879318204447"],
+      "discord_usernames": ["savage69_09383", "savage69", "dan", "kruszewski", "dtm"],
+      "team_keywords": ["dynasty destroyers", "daniel kruszewski"],
+      "mention_triggers": ["daniel kruszewski", " dtm ", " dan "],
+      "pronunciation": "Last name pronounced 'Cruise-sheff-skee' (or 'Dan' / 'DTM').",
+      "profile": {
+        "rings": 1,
+        "champ_years": [2010],
+        "runner_up_years": [2022, 2025],
+        "tagline": "2010 Champ (Heartbreak Era)",
+        "summary": "Won in 2010, but suffered brutal Super Bowl losses to Abe in 2022 and 2025."
+      }
+    },
+    {
+      "code": "Thomas",
+      "owner": "Tommy Ehrlich",
+      "team_name": "The Ehrly Birds",
+      "division": "North",
+      "discord_ids": [],
+      "discord_usernames": ["tommy", "thomas", "ehrlich"],
+      "team_keywords": ["ehrly birds", "tommy ehrlich"],
+      "mention_triggers": ["tommy ehrlich", "tommy"],
+      "pronunciation": "",
+      "profile": {
+        "rings": 0,
+        "champ_years": [],
+        "runner_up_years": [2013, 2015],
+        "tagline": "2x Finalist Chasing Jabroni #1",
+        "summary": "Two Super Bowl runner-up finishes (2013, 2015); perpetually hunting for his first Jabroni Trophy."
+      }
+    },
+    {
+      "code": "Nick",
+      "owner": "Nick Christus",
+      "team_name": "Mykonos Minotaurs",
+      "division": "North",
+      "discord_ids": ["1540793260610560070"],
+      "discord_usernames": ["nchristus93", "nick", "christu2"],
+      "team_keywords": ["mykonos", "minotaurs", "nick christus"],
+      "mention_triggers": ["nick christus", " nick "],
+      "pronunciation": "Mykonos Minotaurs pronounced 'Mee-ko-nos'.",
+      "profile": {
+        "rings": 3,
+        "champ_years": [2012, 2015, 2016],
+        "runner_up_years": [],
+        "tagline": "3-Time Champion (10-Year Drought)",
+        "summary": "Dominant back-to-back champ (2015-2016), currently fighting a 10-year title drought. The league Commissioner and husband to Sydney Miller."
+      }
+    },
+    {
+      "code": "Blake",
+      "owner": "Blake Whitehouse",
+      "team_name": "Block O meets O Block",
+      "division": "North",
+      "discord_ids": [],
+      "discord_usernames": ["blake", "whitehouse"],
+      "team_keywords": ["dan loves obama", "block o", "blake whitehouse"],
+      "mention_triggers": ["blake whitehouse", " blake "],
+      "pronunciation": "",
+      "profile": {
+        "rings": 0,
+        "champ_years": [],
+        "runner_up_years": [2011, 2016],
+        "tagline": "2x Finalist Chasing Jabroni #1",
+        "summary": "Two Super Bowl appearances (2011, 2016); searching for that elusive first Jabroni Trophy."
+      }
+    },
+    {
+      "code": "Nael",
+      "owner": "Nael Ahmed",
+      "team_name": "NMAfia",
+      "division": "South",
+      "discord_ids": ["606885780190658706"],
+      "discord_usernames": ["naeleezy", "nael", "ahmed", "nmafia"],
+      "team_keywords": ["mahomes alone", "nmafia", "nael ahmed"],
+      "mention_triggers": ["nael ahmed", " nael "],
+      "pronunciation": "Pronounced 'Nile'.",
+      "profile": {
+        "rings": 0,
+        "champ_years": [],
+        "runner_up_years": [],
+        "tagline": "Inaugural Solo Franchise",
+        "summary": "Split from the 'Big Nasties' franchise this year to launch his first solo campaign. Looking to prove he was the brains of the operation."
+      }
+    },
+    {
+      "code": "Saagar",
+      "owner": "Saagar Gupta",
+      "team_name": "King Gupta's Army",
+      "division": "South",
+      "discord_ids": ["1551345621783543869"],
+      "discord_usernames": ["kgarmy0447", "kgarmy", "saagar", "gupta"],
+      "team_keywords": ["king gupta", "gupta's army", "saagar gupta"],
+      "mention_triggers": ["saagar gupta", "saagar", "gupta"],
+      "pronunciation": "Pronounced 'SAH-gur' (also known as 'King Gupta').",
+      "profile": {
+        "rings": 1,
+        "champ_years": [2008],
+        "runner_up_years": [],
+        "tagline": "Inaugural Champion (18-Year Jabroni Drought)",
+        "summary": "Won the first-ever Jabroni Trophy in 2008; currently enduring the league's longest active title drought (18 years)."
+      }
+    },
+    {
+      "code": "Abe",
+      "owner": "Abe Thomas",
+      "team_name": "Crashee Bandicoot",
+      "division": "South",
+      "discord_ids": [],
+      "discord_usernames": ["abe", "crashee"],
+      "team_keywords": ["substation", "shockers", "crashee", "bandicoot", "abe thomas"],
+      "mention_triggers": ["abe thomas", " abe ", "defending champ"],
+      "pronunciation": "",
+      "profile": {
+        "rings": 3,
+        "champ_years": [2011, 2022, 2025],
+        "runner_up_years": [2014],
+        "tagline": "Defending Champion (3 Rings)",
+        "summary": "Won the 2025 Super Bowl. Tied for 2nd all-time with 3 Jabroni Trophies."
+      }
+    },
+    {
+      "code": "Nasties",
+      "owner": "Nitesh Patel",
+      "team_name": "Big Nasties",
+      "division": "South",
+      "discord_ids": ["339254563968385031"],
+      "discord_usernames": ["npate2076487", "npate207", "nitesh", "patel", "edgar", "nasties"],
+      "team_keywords": ["big nasties", "nitesh patel"],
+      "mention_triggers": ["nitesh patel", "nitesh", "edgar"],
+      "pronunciation": "",
+      "profile": {
+        "rings": 0,
+        "champ_years": [],
+        "runner_up_years": [],
+        "tagline": "Co-Owner of Big Nasties",
+        "summary": "Co-owns the Big Nasties franchise with Edgar. Retooling the squad to prove they don't need Nael to win a Jabroni Trophy."
+      }
+    },
+    {
+      "code": "Lukose",
+      "owner": "Shawn Lukose",
+      "team_name": "Nilgiri Tahrs",
+      "division": "East",
+      "discord_ids": ["1541444214632611882"],
+      "discord_usernames": ["shawnlukose", "lukose"],
+      "team_keywords": ["nilgiri", "tahrs", "shawn lukose"],
+      "mention_triggers": ["shawn lukose", "lukose", "4 time champ", " goat "],
+      "pronunciation": "Last name pronounced 'Luke-ose' (4-time BFL GOAT).",
+      "profile": {
+        "rings": 4,
+        "champ_years": [2009, 2018, 2021, 2023],
+        "runner_up_years": [2010, 2012, 2017],
+        "tagline": "The 4-Time GOAT",
+        "summary": "All-time BFL championship leader (4 Rings, 7 Super Bowl appearances)."
+      }
+    },
+    {
+      "code": "Rej",
+      "owner": "rej hoxha",
+      "team_name": "Steve Bartman",
+      "division": "East",
+      "discord_ids": ["1320585267849199619"],
+      "discord_usernames": ["rej0406", "rej", "hoxha"],
+      "team_keywords": ["chase-ing", "steve bartman", "rej hoxha"],
+      "mention_triggers": ["rej hoxha", " rej ", " raj "],
+      "pronunciation": "Pronounced 'Ray' (first name Rej is spoken like Ray).",
+      "profile": {
+        "rings": 0,
+        "champ_years": [],
+        "runner_up_years": [2020, 2021],
+        "tagline": "2x Finalist Chasing Jabroni #1",
+        "summary": "Back-to-back finalist (2020, 2021) including the heartbreaking 0.08-pt Super Bowl loss to Dino in the 2020 Jabroni clash."
+      }
+    },
+    {
+      "code": "Samran",
+      "owner": "Samran Mirza",
+      "team_name": "De'von Intervention",
+      "division": "East",
+      "discord_ids": ["650944454987087912"],
+      "discord_usernames": ["smirza107986", "smirza10", "samran", "mirza"],
+      "team_keywords": ["de'von intervention", "samran mirza"],
+      "mention_triggers": ["samran mirza", "samran", "72 dolphins"],
+      "pronunciation": "Pronounced 'Sum-rahn'.",
+      "profile": {
+        "rings": 0,
+        "champ_years": [],
+        "runner_up_years": [2018, 2023],
+        "tagline": "2x Finalist Chasing Jabroni #1",
+        "summary": "Twice reached the mountaintop only to fall to Lukose; chasing his first career Jabroni."
+      }
+    },
+    {
+      "code": "Dino",
+      "owner": "Dino Davros",
+      "team_name": "Taliban Gang Mujahideen",
+      "division": "East",
+      "discord_ids": ["804923026927124501"],
+      "discord_usernames": ["venicado", "dino", "davros"],
+      "team_keywords": ["taliban", "mujahideen", "dino davros"],
+      "mention_triggers": ["dino davros", " dino "],
+      "pronunciation": "Pronounced 'Dee-no'.",
+      "profile": {
+        "rings": 2,
+        "champ_years": [2014, 2020],
+        "runner_up_years": [],
+        "tagline": "2-Time Champion",
+        "summary": "2-time champion (2014, 2020), famous for the 0.08-point miracle win in the 2020 Super Bowl."
+      }
+    },
+    {
+      "code": "AMO",
+      "owner": "Adam Olen",
+      "team_name": "Green and Golden",
+      "division": "West",
+      "discord_ids": ["768661044922417185"],
+      "discord_usernames": ["ao3312", "adam", "olen", "amo"],
+      "team_keywords": ["cisse", "green and golden", "adam olen"],
+      "mention_triggers": ["adam olen", "ryan olen", " olen ", " adam ", " amo "],
+      "pronunciation": "Often called by his initials 'AMO'.",
+      "profile": {
+        "rings": 1,
+        "champ_years": [2017],
+        "runner_up_years": [],
+        "tagline": "2017 Jabroni Champion",
+        "summary": "Pulled off the narrow 1-point Super Bowl victory in 2017 to hoist his lone Jabroni Trophy."
+      }
+    },
+    {
+      "code": "Shooter",
+      "owner": "Alex Kite",
+      "team_name": "Send Da Trade",
+      "division": "West",
+      "discord_ids": [],
+      "discord_usernames": ["alex", "kite", "shooter"],
+      "team_keywords": ["future gym teachers", "send da trade", "alex kite"],
+      "mention_triggers": ["alex kite", " alex ", "shooter"],
+      "pronunciation": "Often called by his nickname 'Shooter'.",
+      "profile": {
+        "rings": 0,
+        "champ_years": [],
+        "runner_up_years": [],
+        "tagline": "West Division Contender",
+        "summary": "High-variance powerhouse seeking its first franchise Super Bowl appearance."
+      }
+    },
+    {
+      "code": "Sydney",
+      "owner": "Sydney Miller",
+      "team_name": "30p Chance I'm Already Winning",
+      "division": "West",
+      "discord_ids": [],
+      "discord_usernames": ["sydney", "miller"],
+      "team_keywords": ["queen of fantasy", "30p chance", "sydney miller"],
+      "mention_triggers": ["sydney miller", "sydney"],
+      "pronunciation": "",
+      "profile": {
+        "rings": 1,
+        "champ_years": [2024],
+        "runner_up_years": [],
+        "tagline": "2024 Jabroni Champion",
+        "summary": "Hoisted the 2024 Jabroni Trophy. She is the only female owner in the league, and is married to the Commissioner, Nick Christus."
+      }
+    },
+    {
+      "code": "Thor",
+      "owner": "Shawn Ullenbrauck",
+      "team_name": "Pat N' Pending",
+      "division": "West",
+      "discord_ids": [],
+      "discord_usernames": ["thor", "ullenbrauck"],
+      "team_keywords": ["omarion", "wayward", "pat n", "shawn ullenbrauck"],
+      "mention_triggers": ["shawn ullenbrauck", " thor ", "shawn u"],
+      "pronunciation": "Commonly called by his league nickname 'Thor' or 'Shawn U'.",
+      "profile": {
+        "rings": 1,
+        "champ_years": [2013],
+        "runner_up_years": [],
+        "tagline": "2013 Jabroni Champion",
+        "summary": "Won the 2013 Super Bowl in a tight 4-point clash."
+      }
+    }
+  ],
+  "manager_synonyms": {
+    "thomas ehrlich": "Tommy Ehrlich",
+    "tom ehrlich": "Tommy Ehrlich",
+    "tommy ehrlich": "Tommy Ehrlich",
+    "dan kruszewski": "Daniel Kruszewski",
+    "daniel kruszewski": "Daniel Kruszewski",
+    "ali bhujwala": "Daniel Kruszewski",
+    "sydney kite": "Sydney Miller",
+    "sydney miller": "Sydney Miller",
+    "sydney christus": "Sydney Miller",
+    "emelie lovasko": "Emelie Lovasko",
+    "shawn ullenbrauck": "Shawn Ullenbrauck",
+    "shawn lukose": "Shawn Lukose",
+    "nick christus": "Nick Christus",
+    "blake whitehouse": "Blake Whitehouse",
+    "nael ahmed": "Nael Ahmed",
+    "saagar gupta": "Saagar Gupta",
+    "ayush gupta": "Saagar Gupta",
+    "abe thomas": "Abe Thomas",
+    "nitesh patel": "Nitesh Patel",
+    "edgar": "Nitesh Patel",
+    "rej hoxha": "rej hoxha",
+    "samran mirza": "Samran Mirza",
+    "gabriel zbaala": "Gabriel Zabala",
+    "dino davros": "Dino Davros",
+    "adam olen": "Adam Olen",
+    "ryan olen": "Ryan Olen",
+    "alex kite": "Alex Kite",
+    "evan hagedorn": "Alex Kite",
+    "matt rosato": "Austin Russell",
+    "bubba franks": "Austin Russell",
+    "austin russell": "Austin Russell",
+    "alexandra christus": "Alex Christus",
+    "georgia batman": "Georgia Christus",
+    "georgia christus": "Georgia Christus"
+  },
+  "championships": [
+    {"year": 2008, "champ": "Saagar Gupta", "runner_up": "Alex Shimomura", "score": "98.00 - 71.00", "margin": 27.00},
+    {"year": 2009, "champ": "Shawn Lukose", "runner_up": "Maria Christus", "score": "97.00 - 94.00", "margin": 3.00},
+    {"year": 2010, "champ": "Daniel Kruszewski", "runner_up": "Shawn Lukose", "score": "90.00 - 79.00", "margin": 11.00},
+    {"year": 2011, "champ": "Abe Thomas", "runner_up": "Blake Whitehouse", "score": "108.00 - 52.00", "margin": 56.00},
+    {"year": 2012, "champ": "Nick Christus", "runner_up": "Shawn Lukose", "score": "86.00 - 82.00", "margin": 4.00},
+    {"year": 2013, "champ": "Shawn Ullenbrauck", "runner_up": "Tommy Ehrlich", "score": "81.00 - 77.00", "margin": 4.00},
+    {"year": 2014, "champ": "Dino Davros", "runner_up": "Abe Thomas", "score": "141.00 - 86.00", "margin": 55.00},
+    {"year": 2015, "champ": "Nick Christus", "runner_up": "Tommy Ehrlich", "score": "66.00 - 48.00", "margin": 18.00},
+    {"year": 2016, "champ": "Nick Christus", "runner_up": "Blake Whitehouse", "score": "99.00 - 95.00", "margin": 4.00},
+    {"year": 2017, "champ": "Adam Olen", "runner_up": "Shawn Lukose", "score": "77.00 - 76.00", "margin": 1.00},
+    {"year": 2018, "champ": "Shawn Lukose", "runner_up": "Samran Mirza", "score": "114.00 - 88.00", "margin": 26.00},
+    {"year": 2019, "champ": "Mattheos Houlis", "runner_up": "Ryan Olen", "score": "96.16 - 87.24", "margin": 8.92},
+    {"year": 2020, "champ": "Dino Davros", "runner_up": "rej hoxha", "score": "92.28 - 92.20", "margin": 0.08},
+    {"year": 2021, "champ": "Shawn Lukose", "runner_up": "rej hoxha", "score": "133.38 - 80.60", "margin": 52.78},
+    {"year": 2022, "champ": "Abe Thomas", "runner_up": "Daniel Kruszewski", "score": "108.66 - 52.58", "margin": 56.08},
+    {"year": 2023, "champ": "Shawn Lukose", "runner_up": "Samran Mirza", "score": "102.56 - 82.72", "margin": 19.84},
+    {"year": 2024, "champ": "Sydney Miller", "runner_up": "Ryan Olen", "score": "119.88 - 100.88", "margin": 19.00},
+    {"year": 2025, "champ": "Abe Thomas", "runner_up": "Daniel Kruszewski", "score": "107.08 - 101.16", "margin": 5.92}
+  ]
+}

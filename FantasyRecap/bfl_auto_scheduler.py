@@ -34,15 +34,19 @@ import sys
 import json
 import time
 import argparse
+import traceback
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-import requests
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from FantasyRecap.core.espn_client import ESPNClientError, fetch_nfl_scoreboard
+from FantasyRecap.core.ops import ProcessLock, notify_ops
+
 STATE_DIR = SCRIPT_DIR / "live_state"
 STATE_DIR.mkdir(exist_ok=True)
 LOCK_FILE = STATE_DIR / "bfl_auto_scheduler.lock"
@@ -53,17 +57,10 @@ CRON_MARKER = "# BFL_AUTO_SCHEDULER_CRON"
 
 def fetch_current_nfl_slate(override_season: int = None, override_week: int = None) -> dict:
     """
-    Queries ESPN's NFL Scoreboard API to determine the active NFL season, week,
-    and the exact status/kickoff times of every NFL game in the week.
+    Queries ESPN's NFL Scoreboard API (with retry/backoff) to determine the active NFL
+    season, week, and the exact status/kickoff times of every NFL game in the week.
     """
-    base_url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-    params = {}
-    if override_season and override_week:
-        params = {"dates": override_season, "seasontype": 2, "week": override_week}
-
-    resp = requests.get(base_url, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
+    data = fetch_nfl_scoreboard(season=override_season, week=override_week, season_type=2, timeout=10.0)
 
     season_yr = override_season or int(data.get("season", {}).get("year", 2026))
     season_type = int(data.get("season", {}).get("type", 2))
@@ -148,33 +145,7 @@ def save_scheduler_state(season: int, week: int, st: dict):
 
 
 def is_lock_active() -> bool:
-    if not LOCK_FILE.exists():
-        return False
-    try:
-        pid = int(LOCK_FILE.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        try:
-            LOCK_FILE.unlink()
-        except Exception:
-            pass
-        return False
-
-
-def acquire_lock() -> bool:
-    if is_lock_active():
-        return False
-    LOCK_FILE.write_text(str(os.getpid()))
-    return True
-
-
-def release_lock():
-    try:
-        if LOCK_FILE.exists() and LOCK_FILE.read_text().strip() == str(os.getpid()):
-            LOCK_FILE.unlink()
-    except Exception:
-        pass
+    return ProcessLock.is_locked(LOCK_FILE)
 
 
 def run_py_script(args_list: list, label: str) -> bool:
@@ -192,6 +163,12 @@ def run_py_script(args_list: list, label: str) -> bool:
         return True
     else:
         print(f"❌ Failed ({res.returncode}): {label}")
+        tail = (res.stdout or "")[-1200:]
+        notify_ops(
+            f"❌ BFL Scheduler Milestone Failed: {label}",
+            f"Exit code `{res.returncode}` for `{' '.join(args_list)}`\n```\n{tail}\n```",
+            level="error",
+        )
         return False
 
 
@@ -434,14 +411,29 @@ def main():
         print_status(args.season, args.week)
         return
 
-    if not acquire_lock():
-        # Another instance is already running (e.g., currently polling live NFL games every 60s)
-        return
+    with ProcessLock(LOCK_FILE) as lock:
+        if not lock.acquired:
+            # Another instance is already running (e.g., currently polling live NFL games every 60s)
+            return
 
-    try:
-        check_and_run_orchestrator(args.season, args.week)
-    finally:
-        release_lock()
+        try:
+            check_and_run_orchestrator(args.season, args.week)
+        except ESPNClientError as exc:
+            print(f"⚠️ Transient ESPN API error in orchestrator: {exc}")
+            notify_ops(
+                "⚠️ BFL Auto-Scheduler ESPN API Error",
+                f"Orchestrator run skipped due to ESPN API error: `{exc}`",
+                level="warning",
+            )
+        except Exception as exc:
+            tb = traceback.format_exc()[-1500:]
+            print(f"❌ Unhandled error in BFL Auto-Scheduler: {exc}\n{tb}")
+            notify_ops(
+                "🚨 BFL Auto-Scheduler Unhandled Crash",
+                f"Exception: `{exc}`\n```\n{tb}\n```",
+                level="error",
+            )
+            raise
 
 
 if __name__ == "__main__":
