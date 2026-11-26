@@ -282,19 +282,33 @@ def generate_dialogue_script(
     sections = extract_scoreboard_sections(payload_md)
     segments: List[Tuple[str, str]] = []
 
-    def _get_or_write_segment(seg_name: str, label: str, prompt: str) -> str:
+    def _get_or_write_segment(seg_name: str, label: str, prompt: str, min_words: int = 120) -> str:
         cache_file = (work_dir / f"{seg_name}.txt") if (work_dir and length_mode != "sample") else None
         if cache_file and not fresh and cache_file.exists():
             txt = cache_file.read_text(encoding="utf-8").strip()
-            if txt:
+            if txt and len(txt.split()) >= min_words:
                 print(f"♻️  Using cached script segment {label} ({len(txt.split())} words)")
                 return txt
-        print(f"✍️  {label}...")
-        raw = _call_gemini(prompt, api_key, response_mime="text/plain", temperature=0.8, timeout=40, max_rounds=3)
-        cleaned = _sanitize_script(raw)
-        if cache_file and cleaned:
-            cache_file.write_text(cleaned + "\n", encoding="utf-8")
-        return cleaned
+
+        best_cleaned = ""
+        for attempt in range(1, 4):
+            suffix = "" if attempt == 1 else f" (retry {attempt}/3 — previous draft truncated)"
+            print(f"✍️  {label}{suffix}...")
+            raw = _call_gemini(prompt, api_key, response_mime="text/plain", temperature=0.8, timeout=45, max_rounds=3)
+            cleaned = _sanitize_script(raw)
+            wc = len(cleaned.split())
+            if wc > len(best_cleaned.split()):
+                best_cleaned = cleaned
+            if wc >= min_words and len(cleaned.splitlines()) >= 4:
+                if cache_file:
+                    cache_file.write_text(cleaned + "\n", encoding="utf-8")
+                return cleaned
+            print(f"   ⚠️ Segment too short/truncated ({wc} words < {min_words} min); retrying...")
+            time.sleep(2.0)
+
+        if cache_file and best_cleaned:
+            cache_file.write_text(best_cleaned + "\n", encoding="utf-8")
+        return best_cleaned
 
     base_rules = f"""You are the head writer for "Tuesday Morning Hangover", the Beasts Football League (BFL) weekly fantasy football podcast (Season {season}, Week {week}).
 Write ONLY spoken dialogue alternating strictly between two hosts labeled `Chris:` and `Dave:`.
@@ -369,12 +383,13 @@ TASK (SAMPLE PART 2 OF 2 — HEADLINE MATCHUP SHOWCASE, ~340–400 words, 18–2
     trade_count = sections["act1"].count("#### 🔄 Trade")
 
     if length_mode == "deep":
-        # DEEP-DIVE 30-40 MINUTE MODE: 10 rich segments (adaptive Act 1 so 1-trade weeks never stall!)
-        total_segs = len(matchups) + 2
+        # DEEP-DIVE 32-40 MINUTE MODE: 11 rich segments
+        # (Act 1 Intro/Trades + 1 deep segment per matchup + Act 3A Standings/Divisions + Act 3B Next-Week Preview & Picks)
+        total_segs = len(matchups) + 3
         if trade_count <= 1:
-            act1_words = "180–240 words (10–14 snappy turns — keep it TIGHT and punchy! Once you finish grading the trade, IMMEDIATELY end the segment so we dive into Matchup 1—ZERO stalling or generic hype filler!)"
+            act1_words = "200–270 words (12–16 snappy turns — keep it TIGHT and punchy! Once you finish breaking down the trade and roster context, IMMEDIATELY end the segment so we dive into Matchup 1—ZERO generic filler!)"
         else:
-            act1_words = "340–440 words (18–24 turns — debate each trade and give letter grades, then hand off immediately with ZERO generic filler!)"
+            act1_words = "380–480 words (20–26 turns — debate each trade, roster need, and give letter grades, then hand off immediately with ZERO generic filler!)"
 
         p1 = f"""{base_rules}
 
@@ -386,47 +401,92 @@ TASK (SEGMENT 1 OF {total_segs} — COLD OPEN & TRADE DESK, {act1_words}):
 --- ACT 1 ---
 {sections['act1'][:4500]}
 """
-        segments.append(("seg01_intro_trades", _get_or_write_segment("seg01_intro_trades", f"[1/{total_segs}] Writing Tight Cold Open & Trade Desk ({trade_count} trade(s) detected)", p1)))
+        segments.append(("seg01_intro_trades", _get_or_write_segment("seg01_intro_trades", f"[1/{total_segs}] Writing Tight Cold Open & Trade Desk ({trade_count} trade(s) detected)", p1, min_words=110)))
         prev_label = "the Cold Open & Trade Desk"
 
         for idx, m_block in enumerate(matchups, 1):
             seg_num = idx + 1
-            trimmed_m = _trim_matchup_for_script(m_block, max_chars=9500)
+            trimmed_m = _trim_matchup_for_script(m_block, max_chars=10500)
             m_title = trimmed_m.splitlines()[0].replace("### 🏟️", "").strip() if trimmed_m else f"Matchup {idx}"
             prompt_m = f"""{base_rules}
 
-TASK (SEGMENT {seg_num} OF {total_segs} — DEDICATED MATCHUP DEEP-DIVE #{idx} OF {len(matchups)}, ~650–740 words, 32–40 dynamic turns):
-- Give THIS single matchup a rich, unhurried 3.5–4 minute sports-talk breakdown!{_continuity_hint(prev_label)}
+TASK (SEGMENT {seg_num} OF {total_segs} — DEDICATED MATCHUP DEEP-DIVE #{idx} OF {len(matchups)}, TARGET 820–950 WORDS, 38–46 DYNAMIC TURNS):
+- Give THIS single matchup a rich, unhurried 4–4.5 minute sports-talk breakdown!{_continuity_hint(prev_label)}
 - Vary your entry point: open directly with the wildest hook (a Live Game Desk shockwave, a hilarious Discord reverse-jinx, a costly start/sit blunder, an injury break, or an 18-year rivalry twist)—NEVER say "Matchup number {idx}".
 - Set up the stakes using the records both managers had **entering Week {week}** before revealing their updated post-game records!
-- Weave in ALL the juicy layers organically through back-and-forth banter:
-  * Exact Live Game Desk swings & play catalysts
-  * The funniest real timestamped Discord quotes & third-party chirps
-  * Top performers' Draft Pick vs. Reality steals/busts & 3-game NFL usage trends
-  * Lineup blunders (natural ribbing!) OR in-game injury bad luck + Moving Forward roster depth fallout
-  * All-time H2H rivalry context & updated Monte Carlo playoff odds!
+- Hit ALL THREE analytical layers organically (not as a checklist, just great banter with occasional 2–3 sentence soapbox rants!):
+  1. **Game Script & Live Drama:** Exact Live Game Desk swings, play catalysts, and the funniest real timestamped Discord quotes & third-party chirps.
+  2. **Roster & Player Deep-Dive:** Break down BOTH teams' top performers—cite Draft Pick vs. Reality steals/busts, 3-game NFL usage trends, start/sit decisions (natural ribbing!) OR in-game injury bad luck, AND Looking Ahead roster depth / injury fallout!
+  3. **Rivalry & Stretch-Run Verdict:** All-time H2H rivalry context, updated Monte Carlo playoff/division/bye odds, and whether you're buying or selling both rosters down the stretch!
 - End cleanly on the final takeaway for THIS game (do NOT add a generic "let's keep this train rolling" or "let's flip the page" sign-off!).
 
 --- MATCHUP SOURCE ---
 {trimmed_m}
 """
             seg_key = f"seg{seg_num:02d}_matchup_{idx:02d}"
-            segments.append((seg_key, _get_or_write_segment(seg_key, f"[{seg_num}/{total_segs}] Writing Dedicated Matchup Deep-Dive #{idx}/{len(matchups)}", prompt_m)))
+            seg_txt = _get_or_write_segment(seg_key, f"[{seg_num}/{total_segs}] Writing Dedicated Matchup Deep-Dive #{idx}/{len(matchups)}", prompt_m, min_words=280)
+
+            # Flash-Lite sometimes wraps up early (~420-520 words); if under 620 words, do one crisp
+            # non-repetitive continuation pass covering untouched roster/trend/outlook layers!
+            if len(seg_txt.split()) < 620:
+                last_lines = "\n".join(seg_txt.splitlines()[-4:])
+                next_spk = "Dave" if seg_txt.splitlines()[-1].startswith("Chris:") else "Chris"
+                cont_prompt = f"""{base_rules}
+
+TASK (CONTINUATION — ADD ~320–400 WORDS / 14–18 TURNS TO THIS SAME MATCHUP):
+- You are continuing Chris & Dave's conversation on THIS EXACT matchup right after:
+{last_lines}
+- Start immediately with `{next_spk}:` — do NOT re-introduce the game or repeat points already covered!
+- Dig deeper into the rich details from the source below that haven't been unpacked yet: specific Draft Pick vs. Reality steals/busts, 3-game NFL player usage trends, Looking Ahead injury/depth vulnerabilities, or all-time H2H rivalry & stretch-run implications.
+- End cleanly on the final verdict for THIS matchup.
+
+--- MATCHUP SOURCE ---
+{trimmed_m}
+"""
+                cont_key = f"{seg_key}_cont"
+                cont_txt = _get_or_write_segment(cont_key, f"[{seg_num}/{total_segs}] Expanding Matchup #{idx} Depth (+~350w)", cont_prompt, min_words=140)
+                if cont_txt:
+                    seg_txt = seg_txt + "\n" + cont_txt
+                    cache_file = (work_dir / f"{seg_key}.txt") if work_dir else None
+                    if cache_file:
+                        cache_file.write_text(seg_txt + "\n", encoding="utf-8")
+
+            segments.append((seg_key, seg_txt))
             prev_label = m_title
 
-        p_end = f"""{base_rules}
+        # Split Act 3 into TWO rich closing segments so Standings & Next Week each breathe (~3.5-4 min each!)
+        act3_text = sections["act3"]
+        next_wk_split = re.split(r"(?=## 🔮 NEXT WEEK)", act3_text, maxsplit=1)
+        act3_standings_only = next_wk_split[0][:14000]
+        act3_next_week_only = next_wk_split[1][:8000] if len(next_wk_split) > 1 else act3_text[-8000:]
 
-TASK (FINAL SEGMENT {total_segs} OF {total_segs} — STANDINGS, ALL 4 DIVISION RACES, PLAYOFF PICTURE & WEEK {week + 1} PREVIEW, ~720–820 words, 34–42 turns):
-- Now that all 8 games are in the books, take a full 4–4.5 minutes to zoom out across the entire league!{_continuity_hint(prev_label)}
-- Unpack ALL FOUR Division Races (North, South, East, West), the #1 Seed First-Round Bye battle, the 7-team Wild Card cutline, and the biggest Monte Carlo playoff risers/fallers.
-- Preview the highest-leverage Week {week + 1} matchups (highlight the exact Win vs. Loss playoff leverage swings!) and make bold picks.
-- Wrap with a memorable, funny sign-off ("Good luck on the waiver wire, BFL...").
+        seg_standings_num = total_segs - 1
+        p_standings = f"""{base_rules}
 
---- ACT 3 & NEXT WEEK ---
-{sections['act3'][:18000]}
+TASK (SEGMENT {seg_standings_num} OF {total_segs} — POST-WEEK {week} STANDINGS, ALL 4 DIVISION RACES & PLAYOFF PICTURE, TARGET 720–850 WORDS, 32–40 TURNS):
+- Now that all 8 games are in the books, zoom out across the entire league!{_continuity_hint(prev_label)}
+- Unpack ALL FOUR Division Races (North, South, East, West) thoroughly—who leads, who holds tiebreakers, and which divisions could send multiple Wild Cards.
+- Break down the #1 Seed First-Round Bye race, the 7-team Wild Card cutline (#5–#7 vs. First Team Out #8–#11), surging/freefalling streaks, and the league's biggest Lucky vs. Unlucky scoring profiles (PF vs. PA).
+- End cleanly setting up the Week {week + 1} preview ("Now let's look ahead to Week {week + 1} and the biggest games on the slate.").
+
+--- ACT 3A (STANDINGS, BRACKET & DIVISION RACES) ---
+{act3_standings_only}
 """
-        end_key = f"seg{total_segs:02d}_standings_outro"
-        segments.append((end_key, _get_or_write_segment(end_key, f"[{total_segs}/{total_segs}] Writing Extended Standings, 4 Division Races & Week {week + 1} Preview", p_end)))
+        st_key = f"seg{seg_standings_num:02d}_standings_outro"
+        segments.append((st_key, _get_or_write_segment(st_key, f"[{seg_standings_num}/{total_segs}] Writing All 4 Division Races & Playoff Picture", p_standings, min_words=260)))
+
+        p_preview = f"""{base_rules}
+
+TASK (FINAL SEGMENT {total_segs} OF {total_segs} — WEEK {week + 1} MATCHUP PREVIEW, LEVERAGE SWINGS & BOLD PICKS, TARGET 700–820 WORDS, 30–38 TURNS):
+- Jump STRAIGHT into previewing Week {week + 1} (NO re-intro!).
+- Spotlight the 4–5 highest-leverage Week {week + 1} matchups: cite the exact Win vs. Loss Monte Carlo playoff leverage swings, division/rivalry stakes, and all-time H2H context!
+- Have Chris and Dave debate and lock in bold picks (including an Upset of the Week pick!) before wrapping with a memorable, funny Tuesday Morning Hangover sign-off ("Good luck on the waiver wire, BFL...").
+
+--- ACT 3B (WEEK {week + 1} SCHEDULE & PLAYOFF LEVERAGE) ---
+{act3_next_week_only}
+"""
+        end_key = f"seg{total_segs:02d}_week_preview_outro"
+        segments.append((end_key, _get_or_write_segment(end_key, f"[{total_segs}/{total_segs}] Writing Week {week + 1} Preview, Leverage Swings & Bold Picks", p_preview, min_words=240)))
         return segments
 
     # STANDARD 16-20 MINUTE MODE: 6 tightly-paced segments (~450-540 words each)
@@ -494,8 +554,8 @@ def _sanitize_script(raw_text: str) -> str:
             clean = re.sub(r"\[[^\]]{1,40}\]", "", clean)
             clean = re.sub(r"\s{2,}", " ", clean).strip()
             lines.append(apply_phonetics(clean))
-    # Guard against LLM output truncation mid-sentence: drop any final line lacking terminal punctuation
-    while len(lines) > 1 and not re.search(r"[.!?\"'”’]\s*$", lines[-1]):
+    # Guard against LLM output truncation mid-sentence: drop any trailing line lacking terminal punctuation
+    while lines and not re.search(r"[.!?\"'”’]\s*$", lines[-1]):
         lines.pop()
     return "\n".join(lines)
 
