@@ -11,12 +11,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from FantasyRecap.bfl_history_db import DB_PATH, _parse_draft_picks, _parse_team_seasons, init_db, validate_readonly_sql
 from FantasyRecap.core.ops import ProcessLock
 from FantasyRecap.gemini_podcast_generator import (
+    _clean_pcm_chunk,
     _sanitize_script,
     apply_phonetics,
+    assemble_packaged_episode,
+    format_spoken_records,
     pcm_chunks_to_wav,
     split_script_into_tts_chunks,
 )
+from FantasyRecap.generate_notebook_payload import analyze_trade_strategic_motives
 from FantasyRecap.league_history_intelligence import _compile_h2h_from_sqlite
+from FantasyRecap.podcast_packaging import get_packaging_assets
 from FantasyRecap.podcast_rss_builder import add_episode_to_rss, upload_file_to_gcs
 
 
@@ -212,11 +217,19 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
     def test_gemini_podcast_phonetics_chunking_and_wav_stitching(self):
         import wave
 
-        raw = "**Chris:** Let us look at Saagar and rej hoxha chasing the Jabroni Trophy! [laughs]\n**Dave:** I am telling you, Lukose and Kruszewski are sweating in Mykonos!"
+        raw = (
+            "**Chris:** Let us look at Saagar, Dino, AMO, and rej hoxha chasing the Jabroni Trophy! [laughs]\n"
+            "**Dave:** I am telling you, Lukose and Kruszewski traded Perine and Tyler Shough for 9. points in Mykonos!"
+        )
         cleaned = _sanitize_script(raw)
         self.assertIn("Let's", cleaned)
         self.assertIn("I'm", cleaned)
-        self.assertIn("Sah-gur", cleaned)
+        self.assertIn("Sah-gar", cleaned)
+        self.assertIn("Dee-no", cleaned)
+        self.assertIn("AMO", cleaned)  # AMO ("Ammo") stays untouched!
+        self.assertIn("Pee-rine", cleaned)
+        self.assertIn("Shuck", cleaned)
+        self.assertIn("9 points", cleaned)
         self.assertIn("Ray Hozha", cleaned)
         self.assertIn("Jah-bronee", cleaned)
         self.assertIn("Luke-ose", cleaned)
@@ -242,6 +255,67 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
                 self.assertEqual(wf.getframerate(), 24000)
                 # 2400 + 2400 (pause) + 2400 = 7200 frames (0.3s)
                 self.assertEqual(wf.getnframes(), 7200)
+
+    def test_format_spoken_records_converts_records_without_touching_scores_or_hyphens(self):
+        sample = (
+            "Nick entered at 4-6 and moves to 5-6, while Daniel sits at 6-5 with a 6-5 record. "
+            "Ray leads the all-time series 12-10, and Alex (5-5) won a 3-for-1 trade after Herbert's 27-24 loss on 11-23 with a B-plus grade."
+        )
+        out = format_spoken_records(sample)
+        self.assertIn("entered at 4 and 6", out)
+        self.assertIn("moves to 5 and 6", out)
+        self.assertIn("sits at 6 and 5", out)
+        self.assertIn("a 6 and 5 record", out)
+        self.assertIn("all-time series 12 and 10", out)
+        self.assertIn("(5 and 5)", out)
+        # Must NOT corrupt non-records
+        self.assertIn("3-for-1", out)
+        self.assertIn("27-24 loss", out)
+        self.assertIn("11-23", out)
+        self.assertIn("B-plus", out)
+
+    def test_trade_analysis_uses_entering_week_records(self):
+        tr = {
+            "owner_a": "Nick Christus",
+            "owner_b": "Daniel Kruszewski",
+            "a_sends": [{"name": "Samaje Perine", "pos": "RB", "injury": "ACTIVE"}],
+            "b_sends": [{"name": "Brenton Strange", "pos": "TE", "injury": "ACTIVE"}],
+        }
+        teams = {1: {"owner": "Nick Christus"}, 2: {"owner": "Daniel Kruszewski"}}
+        entering = {
+            1: {"overall_w": 4, "overall_l": 6, "pf_rank": 9},
+            2: {"overall_w": 6, "overall_l": 4, "pf_rank": 6},
+        }
+        an = analyze_trade_strategic_motives(tr, teams, entering, entering_week=11)
+        self.assertIn("entering Week 11 at 4-6", an["owner_a_why"])
+        self.assertIn("entering Week 11 at 6-4", an["owner_b_why"])
+
+    def test_packaged_episode_assembly_produces_valid_stereo_mp3(self):
+        import numpy as np
+
+        assets = get_packaging_assets()
+        for k in ("intro", "bumper", "outro"):
+            self.assertTrue(assets[k].exists(), f"Missing packaging asset {k}")
+
+        sr = 24000
+        t = np.arange(sr, dtype=np.float32) / sr
+        tone = (np.sin(2 * np.pi * 220.0 * t) * 4000.0).astype(np.int16).tobytes()
+        cleaned = _clean_pcm_chunk(tone, sample_rate=sr)
+        self.assertLess(len(cleaned), len(tone))  # 12ms trailing pop trimmed on >0.5s chunk
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mp3_out = Path(tmp) / "packaged.mp3"
+            out_path, dur_sec = assemble_packaged_episode(
+                [(tone, sr), (tone, sr), (tone, sr)],
+                mp3_out,
+                bumper_after_indices=[0, 1],
+                enable_packaging=True,
+                pause_ms=200,
+            )
+            self.assertTrue(out_path.exists())
+            self.assertGreater(out_path.stat().st_size, 10000)
+            # 2.4s intro lead + 3s speech + 2 bumpers (~2.5s) + ~3.4s outro tail > 9s
+            self.assertGreater(dur_sec, 9.0)
 
     def test_gcs_rest_uploader_sends_auth_and_cache_headers(self):
         from unittest.mock import MagicMock, patch

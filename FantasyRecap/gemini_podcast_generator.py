@@ -43,7 +43,8 @@ import tempfile
 import time
 import wave
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+import numpy as np
 import requests
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -56,16 +57,19 @@ load_project_env()
 
 from FantasyRecap.bfl_history_db import _call_gemini
 from FantasyRecap.config import CURRENT_YEAR
+from FantasyRecap.podcast_packaging import get_packaging_assets
 from FantasyRecap.podcast_rss_builder import add_episode_to_rss
 
 OUTPUT_DIR = SCRIPT_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# Phonetic replacements applied ONLY to the spoken TTS script so hosts nail BFL names every time
+# Phonetic replacements applied ONLY to the spoken TTS script so hosts nail BFL names every time.
+# Note: "AMO" is intentionally left untouched because "Ammo" is the league's preferred pronunciation.
 PHONETIC_REPLACEMENTS = [
     (r"\brej hoxha\b", "Ray Hozha"),
     (r"\brej\b", "Ray"),
-    (r"\bSaagar\b", "Sah-gur"),
+    (r"\bSaagar\b", "Sah-gar"),
+    (r"\bDino\b", "Dee-no"),
     (r"\bLukose\b", "Luke-ose"),
     (r"\bMykonos\b", "Mee-ko-nos"),
     (r"\bNael\b", "Nile"),
@@ -73,6 +77,8 @@ PHONETIC_REPLACEMENTS = [
     (r"\bKruszewski\b", "Kroo-sheff-skee"),
     (r"\bJabroni\b", "Jah-bronee"),
     (r"\bSkattebo\b", "Skat-uh-bo"),
+    (r"\bPerine\b", "Pee-rine"),
+    (r"\bShough\b", "Shuck"),
 ]
 
 # Deterministic spoken-English contractions so TTS never sounds stiff ("Let us", "I am", "That is")
@@ -122,9 +128,80 @@ STYLE_DIRECTIVE = (
 )
 
 
-def apply_phonetics(script_text: str) -> str:
-    """Applies BFL-specific pronunciation spellings and natural contractions for clean TTS delivery."""
+def format_spoken_records(script_text: str) -> str:
+    """
+    Rewrites hyphenated Win-Loss & H2H series records (`6-5`, `10-1`, `12-10`) into
+    natural spoken English (`6 and 5`, `10 and 1`, `12 and 10`) so Gemini TTS never
+    reads a team record as "six five". Carefully ignores NFL game scores (`27-24`),
+    dates (`11-23`), hyphenated words (`3-for-1`, `four-to-five`, `B-plus`), and
+    range phrases (`Weeks 1-11`).
+    """
     out = script_text
+
+    def _is_valid_record(w_s: str, l_s: str, *, allow_all_time: bool = False) -> bool:
+        w, l = int(w_s), int(l_s)
+        if allow_all_time:
+            return 0 <= w <= 35 and 0 <= l <= 35 and (w + l) >= 1
+        # Regular season + playoffs in BFL (0..17 games); excludes NFL scores like 27-24 or 34-7
+        return 0 <= w <= 17 and 0 <= l <= 17 and 1 <= (w + l) <= 17
+
+    # 1. Explicit W-L / H2H series cue BEFORE the hyphenated pair (e.g. "sitting at 6-5", "drops to 2-9", "leads 12-10")
+    pre_cue_re = re.compile(
+        r"\b("
+        r"at|to|now|is|was|are|were|being|sitting at|sits at|entered at|entering at|entered|"
+        r"came in at|coming in at|came in|went in at|drops to|dropped to|falls to|fell to|"
+        r"moves to|moved to|improves to|improved to|jumps to|climbs to|slips to|slipped to|"
+        r"tumbles to|slides to|stands at|tied at|deadlocked at|stuck at|record of|record at|"
+        r"all-time series|series|all-time|leads|trails|split|splits|splitting|a|an|that|their|his|her"
+        r")\s+(\d{1,2})-(\d{1,2})\b(?!\s*(?:loss|win|victory|defeat|blowout|thriller|ballgame|game|points?|pts|yard|yd|for|to|year|month|day|week))",
+        flags=re.IGNORECASE,
+    )
+
+    def _repl_pre(m: re.Match) -> str:
+        prefix, w_s, l_s = m.group(1), m.group(2), m.group(3)
+        allow_h2h = any(k in prefix.lower() for k in ("series", "all-time", "leads", "trails", "split"))
+        if _is_valid_record(w_s, l_s, allow_all_time=allow_h2h):
+            return f"{prefix} {w_s} and {l_s}"
+        return m.group(0)
+
+    out = pre_cue_re.sub(_repl_pre, out)
+
+    # 2. Explicit W-L / series cue AFTER the hyphenated pair (e.g. "6-5 record", "5-6 team", "12-10 all-time")
+    post_cue_re = re.compile(
+        r"\b(\d{1,2})-(\d{1,2})(\s+(?:record|overall|on the year|on the season|in the|entering|heading into|"
+        r"team|squad|club|start|mark|all-time|advantage|lead|split|h2h|head-to-head))\b",
+        flags=re.IGNORECASE,
+    )
+
+    def _repl_post(m: re.Match) -> str:
+        w_s, l_s, suffix = m.group(1), m.group(2), m.group(3)
+        allow_h2h = any(k in suffix.lower() for k in ("all-time", "advantage", "lead", "split", "h2h", "head-to-head"))
+        if _is_valid_record(w_s, l_s, allow_all_time=allow_h2h):
+            return f"{w_s} and {l_s}{suffix}"
+        return m.group(0)
+
+    out = post_cue_re.sub(_repl_post, out)
+
+    # 3. Parenthetical season record like "(6-5)" or "(10-1)"
+    paren_re = re.compile(r"\((\d{1,2})-(\d{1,2})\)")
+
+    def _repl_paren(m: re.Match) -> str:
+        w_s, l_s = m.group(1), m.group(2)
+        if _is_valid_record(w_s, l_s, allow_all_time=False):
+            return f"({w_s} and {l_s})"
+        return m.group(0)
+
+    out = paren_re.sub(_repl_paren, out)
+    return out
+
+
+def apply_phonetics(script_text: str) -> str:
+    """Applies spoken W-L records, BFL pronunciation spellings, and natural contractions for clean TTS delivery."""
+    out = script_text
+    # Clean stray punctuation / duplicate unit typos like "9. points" -> "9 points" or "point points" -> "points"
+    out = re.sub(r"\b(\d+)\.\s+(points?)\b", r"\1 \2", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bpoint\s+points\b", "points", out, flags=re.IGNORECASE)
+    out = format_spoken_records(out)
     for pattern, repl in CONTRACTION_REPLACEMENTS:
         out = re.sub(pattern, repl, out)
     for pattern, repl in PHONETIC_REPLACEMENTS:
@@ -188,6 +265,8 @@ def generate_dialogue_script(
     *,
     api_key: str,
     length_mode: str = "sample",
+    work_dir: Optional[Path] = None,
+    fresh: bool = False,
 ) -> List[Tuple[str, str]]:
     """
     Uses Gemini Flash to write a punchy `Chris:` / `Dave:` dialogue script.
@@ -195,18 +274,32 @@ def generate_dialogue_script(
       - 'sample'   : ~2–3 min highlight clip (1 segment)
       - 'standard' : ~16–20 min episode (6 segments: intro + 4 matchup pairs + standings)
       - 'deep'     : ~30–40 min deep-dive episode (10 segments: intro + 1 dedicated segment per matchup + extended standings/preview)
-    Returns a list of `(segment_name, dialogue_text)` tuples ready for TTS rendering.
+    Checkpoints each generated segment to `work_dir` so transient 503s never lose progress.
     """
     sections = extract_scoreboard_sections(payload_md)
     segments: List[Tuple[str, str]] = []
+
+    def _get_or_write_segment(seg_name: str, label: str, prompt: str) -> str:
+        cache_file = (work_dir / f"{seg_name}.txt") if (work_dir and length_mode != "sample") else None
+        if cache_file and not fresh and cache_file.exists():
+            txt = cache_file.read_text(encoding="utf-8").strip()
+            if txt:
+                print(f"♻️  Using cached script segment {label} ({len(txt.split())} words)")
+                return txt
+        print(f"✍️  {label}...")
+        raw = _call_gemini(prompt, api_key, response_mime="text/plain", temperature=0.8, timeout=40, max_rounds=3)
+        cleaned = _sanitize_script(raw)
+        if cache_file and cleaned:
+            cache_file.write_text(cleaned + "\n", encoding="utf-8")
+        return cleaned
 
     base_rules = f"""You are the head writer for "Tuesday Morning Hangover", the Beasts Football League (BFL) weekly fantasy football podcast (Season {season}, Week {week}).
 Write ONLY spoken dialogue alternating strictly between two hosts labeled `Chris:` and `Dave:`.
 
 CRITICAL WRITING RULES FOR LIFELIKE SPORTS-RADIO BANTER:
-1. REAL PING-PONG CHEMISTRY (NOT CHRONOLOGICAL RECITATION):
+1. REAL PING-PONG CHEMISTRY & NATURAL RHYTHM (NOT CHRONOLOGICAL RECITATION):
    - Write like two sharp buddies actually riffing—NOT taking turns reading box scores!
-   - Mix **short 4–12 word reactions, questions, pushback, and disbelief** ("Wait—he actually posted that in Discord?!", "That's an all-time self-own.", "Hold on, don't gloss over that!") between punchy 1–3 sentence takes.
+   - Mix **short 4–12 word reactions, questions, pushback, and disbelief** ("Wait—he actually posted that in Discord?!", "That's an all-time self-own.", "Hold on, don't gloss over that!") with punchy 1–2 sentence takes AND an occasional passionate 2–3 sentence **soapbox rant** when a storyline truly deserves it so the pacing breathes naturally.
    - Vary your conversational starters—do NOT overuse `"Bro"` (use it at most once per segment, if at all).
    - NEVER say "Matchup 7 of 8 featured..." or read boring lists of minor waiver cuts—lead straight with the drama!
 2. NATURAL CONTRACTIONS & SPOKEN ENGLISH ONLY:
@@ -214,14 +307,18 @@ CRITICAL WRITING RULES FOR LIFELIKE SPORTS-RADIO BANTER:
    - NEVER write stiff formal phrases like `I am`, `let us`, `we are`, `we have got`, `it is`, `that is`.
    - NEVER write literal `"Haha"`, `"Hehe"`, or `"Lol"` (TTS reads "ha-ha" awkwardly)—use real spoken reactions like `"Oh man, hold on—"`, `"Wait a second—"`, `"No chance!"`.
 3. USE LEAGUE NICKNAMES & FIRST NAMES LIKE INSIDERS:
-   - Use **Thor** (for Shawn Ullenbrauck), **Lukose** (for Shawn Lukose), **AMO** (for Adam Olen), **Shooter** (for Alex Kite), **Dan** or **DTM** (for Daniel Kruszewski), **Rej** (spoken as Ray), **Saagar** (spoken as Sah-gur).
+   - Use **Thor** (for Shawn Ullenbrauck), **Lukose** (for Shawn Lukose), **AMO** (for Adam Olen, pronounced Ammo), **Shooter** (for Alex Kite), **Dan** or **DTM** (for Daniel Kruszewski), **Rej** (spoken as Ray), **Saagar** (spoken as Sah-gar), **Dino** (spoken as Dee-no).
    - After introducing someone once, use their first name or nickname (`Nick`, `Dino`, `Blake`, `Lukose`, `Thor`, `Nael`, `Samran`) instead of repeating their full first+last name every turn!
-4. CLEAN DIGITS & ZERO FORMATTING:
-   - Write all scores, records, and percentages as clean digits (`111.5`, `88.2%`, `4-6`, `Week 10`)—NEVER spell numbers out in words!
+4. CLEAN DIGITS, SPOKEN RECORDS & ZERO FORMATTING:
+   - Write scores and percentages as clean digits (`111.5`, `88.2%`, `Week {week}`)—NEVER spell scores out in words!
+   - **ALWAYS write Win-Loss records and all-time H2H series records with the word `"and"` (`6 and 5`, `4 and 6`, `10 and 1`, `12 and 10`)—NEVER hyphenated (`6-5`)**, so the hosts always say "six and five" instead of "six five"!
    - Output ONLY `Chris: ...` and `Dave: ...` lines. Zero markdown (`**bold**`, `*italics*`), zero emojis, zero bracketed stage directions.
-5. 100% FACTUAL ACCURACY & CALIBRATED DRAMA:
+5. ZERO RECORD SPOILERS & ENTERING-THE-WEEK FRAMING:
+   - **NEVER spoil post-week records early!** When discussing trades in Act 1, ONLY refer to each manager's **entering-Week-{week}** record (before this week's game was played).
+   - When introducing any matchup in Act 2, frame both teams with the records they held **entering Week {week}** (e.g., "Alex came in at 5 and 5"), and ONLY state their updated post-week record ("moves to 6 and 5") AFTER revealing how the game played out!
+6. 100% FACTUAL ACCURACY & CALIBRATED DRAMA:
    - Stick strictly to verified scores, playoff odds, Discord quotes, and players in the source below—never invent stats or injuries, never say "Data Sheet", and frame mid-game Discord trash talk against how the game actually ended.
-   - Match your dramatic framing to each team's ACTUAL playoff odds (e.g., don't say a loss "obliterated" a 6-4 team's playoff hopes if they still sit at 88% playoff odds—call it a missed chance at the #1 Bye or division lead!).
+   - Match your dramatic framing to each team's ACTUAL playoff odds (e.g., don't say a loss "obliterated" a 6 and 4 team's playoff hopes if they still sit at 88% playoff odds—call it a missed chance at the #1 Bye or division lead!).
 """
 
     if length_mode == "sample":
@@ -241,7 +338,7 @@ TASK: Write a killer ~420–490 word (~2.5 minute) SAMPLE HIGHLIGHT SEGMENT (aim
 {headline}
 """
         print("✍️  Writing 2–3 minute sample highlight script (Chris & Dave)...")
-        raw_script = _call_gemini(prompt, api_key, response_mime="text/plain", thinking_budget=256, temperature=0.8)
+        raw_script = _call_gemini(prompt, api_key, response_mime="text/plain", temperature=0.8)
         segments.append(("sample_highlight", _sanitize_script(raw_script)))
         return segments
 
@@ -268,15 +365,14 @@ TASK: Write a killer ~420–490 word (~2.5 minute) SAMPLE HIGHLIGHT SEGMENT (aim
         p1 = f"""{base_rules}
 
 TASK (SEGMENT 1 OF {total_segs} — COLD OPEN & TRADE DESK, {act1_words}):
-- Energetic SportsCenter-style cold open welcoming BFL listeners to Week {week} of the Tuesday Morning Hangover (NO game score spoilers yet!).
-- Debate this week's trade(s): break down BOTH sides' roster strategy and give quick letter grades. Skip minor waiver cuts unless hilarious.
+- Energetic SportsCenter-style cold open welcoming BFL listeners to Week {week} of the Tuesday Morning Hangover (NO game score or post-week record spoilers yet!).
+- Debate this week's trade(s): break down BOTH sides' roster strategy using ONLY their **entering-Week-{week}** records (NEVER mention their post-Week-{week} records here!), and give quick letter grades. Skip minor waiver cuts unless hilarious.
 - End crisply on a single short handoff line ("Alright, let's crack open our first game.") — do NOT pad extra filler lines!
 
 --- ACT 1 ---
 {sections['act1'][:4500]}
 """
-        print(f"✍️  [1/{total_segs}] Writing Tight Cold Open & Trade Desk ({trade_count} trade(s) detected)...")
-        segments.append(("seg01_intro_trades", _sanitize_script(_call_gemini(p1, api_key, thinking_budget=256, temperature=0.8))))
+        segments.append(("seg01_intro_trades", _get_or_write_segment("seg01_intro_trades", f"[1/{total_segs}] Writing Tight Cold Open & Trade Desk ({trade_count} trade(s) detected)", p1)))
         prev_label = "the Cold Open & Trade Desk"
 
         for idx, m_block in enumerate(matchups, 1):
@@ -287,7 +383,8 @@ TASK (SEGMENT 1 OF {total_segs} — COLD OPEN & TRADE DESK, {act1_words}):
 
 TASK (SEGMENT {seg_num} OF {total_segs} — DEDICATED MATCHUP DEEP-DIVE #{idx} OF {len(matchups)}, ~650–740 words, 32–40 dynamic turns):
 - Give THIS single matchup a rich, unhurried 3.5–4 minute sports-talk breakdown!{_continuity_hint(prev_label)}
-- Vary your entry point: open directly with the wildest hook (a Live Game Desk shockwave, a hilarious Discord reverse-jinx, a costly start/sit blunder, an injury break, or a 18-year rivalry twist)—NEVER say "Matchup number {idx}".
+- Vary your entry point: open directly with the wildest hook (a Live Game Desk shockwave, a hilarious Discord reverse-jinx, a costly start/sit blunder, an injury break, or an 18-year rivalry twist)—NEVER say "Matchup number {idx}".
+- Set up the stakes using the records both managers had **entering Week {week}** before revealing their updated post-game records!
 - Weave in ALL the juicy layers organically through back-and-forth banter:
   * Exact Live Game Desk swings & play catalysts
   * The funniest real timestamped Discord quotes & third-party chirps
@@ -299,8 +396,8 @@ TASK (SEGMENT {seg_num} OF {total_segs} — DEDICATED MATCHUP DEEP-DIVE #{idx} O
 --- MATCHUP SOURCE ---
 {trimmed_m}
 """
-            print(f"✍️  [{seg_num}/{total_segs}] Writing Dedicated Matchup Deep-Dive #{idx}/{len(matchups)}...")
-            segments.append((f"seg{seg_num:02d}_matchup_{idx:02d}", _sanitize_script(_call_gemini(prompt_m, api_key, thinking_budget=256, temperature=0.8))))
+            seg_key = f"seg{seg_num:02d}_matchup_{idx:02d}"
+            segments.append((seg_key, _get_or_write_segment(seg_key, f"[{seg_num}/{total_segs}] Writing Dedicated Matchup Deep-Dive #{idx}/{len(matchups)}", prompt_m)))
             prev_label = m_title
 
         p_end = f"""{base_rules}
@@ -314,8 +411,8 @@ TASK (FINAL SEGMENT {total_segs} OF {total_segs} — STANDINGS, ALL 4 DIVISION R
 --- ACT 3 & NEXT WEEK ---
 {sections['act3'][:18000]}
 """
-        print(f"✍️  [{total_segs}/{total_segs}] Writing Extended Standings, 4 Division Races & Week {week + 1} Preview...")
-        segments.append((f"seg{total_segs:02d}_standings_outro", _sanitize_script(_call_gemini(p_end, api_key, thinking_budget=256, temperature=0.8))))
+        end_key = f"seg{total_segs:02d}_standings_outro"
+        segments.append((end_key, _get_or_write_segment(end_key, f"[{total_segs}/{total_segs}] Writing Extended Standings, 4 Division Races & Week {week + 1} Preview", p_end)))
         return segments
 
     # STANDARD 16-20 MINUTE MODE: 6 tightly-paced segments (~450-540 words each)
@@ -325,15 +422,15 @@ TASK (FINAL SEGMENT {total_segs} OF {total_segs} — STANDINGS, ALL 4 DIVISION R
     p1 = f"""{base_rules}
 
 TASK (SEGMENT 1 OF {total_segs} — COLD OPEN & TRADES, ~180–260 words, 10–14 rapid turns):
-- Clean, energetic broadcast open welcoming listeners to Week {week} of the Tuesday Morning Hangover (NO game score spoilers yet!).
-- Debate this week's trades and grade who won/lost the deal (skip minor cuts unless hilarious; ZERO generic filler!).
+- Clean, energetic broadcast open welcoming listeners to Week {week} of the Tuesday Morning Hangover (NO game score or post-week record spoilers yet!).
+- Debate this week's trades using ONLY each team's **entering-Week-{week}** record and grade who won/lost the deal (skip minor cuts unless hilarious; ZERO generic filler!).
 - End on one crisp handoff line into the first matchup.
 
 --- ACT 1 ---
 {sections['act1'][:4000]}
 """
     print(f"✍️  [1/{total_segs}] Writing Cold Open & Trades...")
-    segments.append(("seg01_intro_trades", _sanitize_script(_call_gemini(p1, api_key, thinking_budget=256, temperature=0.8))))
+    segments.append(("seg01_intro_trades", _sanitize_script(_call_gemini(p1, api_key, response_mime="text/plain", temperature=0.8))))
     prev_label = "the Cold Open & Trade Desk"
 
     for idx, pair in enumerate(pairs, 1):
@@ -343,14 +440,14 @@ TASK (SEGMENT 1 OF {total_segs} — COLD OPEN & TRADES, ~180–260 words, 10–1
 
 TASK (SEGMENT {seg_num} OF {total_segs} — MATCHUPS BREAKDOWN, ~460–540 words, 24–30 rapid turns):
 - You're mid-show (NO "welcome back" intro—jump straight into the first matchup!).{_continuity_hint(prev_label)}
-- Cover BOTH matchups organically—vary your entry point (lead with a wild Live Desk shockwave, a hilarious Discord reverse-jinx, an injury break, or a brutal start/sit blunder).
+- Cover BOTH matchups organically—set up each game using the teams' **entering-Week-{week}** records before revealing updated records, and vary your entry point (lead with a wild Live Desk shockwave, a hilarious Discord reverse-jinx, an injury break, or a brutal start/sit blunder).
 - Weave in real Discord quotes, draft steals/busts, and playoff odds through real back-and-forth banter. End cleanly on the final takeaway (no cliché transitions!).
 
 --- MATCHUPS ---
 {trimmed_pair}
 """
         print(f"✍️  [{seg_num}/{total_segs}] Writing Matchup Pair #{idx}...")
-        segments.append((f"seg{seg_num:02d}_matchups_{idx}", _sanitize_script(_call_gemini(prompt_m, api_key, thinking_budget=256, temperature=0.8))))
+        segments.append((f"seg{seg_num:02d}_matchups_{idx}", _sanitize_script(_call_gemini(prompt_m, api_key, response_mime="text/plain", temperature=0.8))))
         prev_label = f"Matchup Pair #{idx}"
 
     p_end = f"""{base_rules}
@@ -363,7 +460,7 @@ TASK (FINAL SEGMENT {total_segs} OF {total_segs} — STANDINGS, PLAYOFF PICTURE 
 {sections['act3'][:16000]}
 """
     print(f"✍️  [{total_segs}/{total_segs}] Writing Standings, Playoff Picture & Week {week + 1} Preview...")
-    segments.append((f"seg{total_segs:02d}_standings_outro", _sanitize_script(_call_gemini(p_end, api_key, thinking_budget=256, temperature=0.8))))
+    segments.append((f"seg{total_segs:02d}_standings_outro", _sanitize_script(_call_gemini(p_end, api_key, response_mime="text/plain", temperature=0.8))))
 
     return segments
 
@@ -421,31 +518,43 @@ def split_script_into_tts_chunks(script_text: str, max_words: int = 620) -> List
     return chunks
 
 
-def synthesize_multispeaker_pcm(
-    dialogue_text: str,
-    *,
-    api_key: str,
-    chris_voice: str = DEFAULT_CHRIS_VOICE,
-    dave_voice: str = DEFAULT_DAVE_VOICE,
-    tts_models: Optional[List[str]] = None,
-) -> Tuple[bytes, int]:
+def _build_tts_payload(model: str, dialogue_text: str, chris_voice: str, dave_voice: str) -> dict:
     """
-    Calls Gemini Native Multi-Speaker TTS REST API (`generateContent` with `responseModalities: ["AUDIO"]`)
-    and returns `(raw_pcm_bytes, sample_rate_hz)`.
+    Builds the exact REST payload for either:
+      - `gemini-3.8-flash*-tts` (structured per-turn `speechMetadata.speaker` parts), OR
+      - `gemini-2.5-flash-preview-tts` / `gemini-3.1-flash-tts-preview` (classic transcript + `prebuiltVoiceConfig`).
     """
-    env_tts = os.getenv("GEMINI_TTS_MODELS", "").strip()
-    if tts_models:
-        models = tts_models
-    elif env_tts:
-        models = [m.strip() for m in env_tts.split(",") if m.strip()]
-    else:
-        models = [
-            "gemini-2.5-flash-preview-tts",
-            "gemini-2.5-pro-preview-tts",
-        ]
+    if "3.8-flash" in model:
+        parts = []
+        for ln in dialogue_text.splitlines():
+            clean = ln.strip()
+            if clean.startswith("Chris:"):
+                parts.append({
+                    "text": clean[len("Chris:"):].strip(),
+                    "speechMetadata": {"speaker": "Chris", "style": "lively, warm sports-talk podcast host"},
+                })
+            elif clean.startswith("Dave:"):
+                parts.append({
+                    "text": clean[len("Dave:"):].strip(),
+                    "speechMetadata": {"speaker": "Dave", "style": "sharp, punchy, playful sports-talk co-host"},
+                })
+        return {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "multiSpeakerVoiceConfig": {
+                        "speakerVoiceConfigs": [
+                            {"speaker": "Chris", "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": chris_voice}}},
+                            {"speaker": "Dave", "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": dave_voice}}},
+                        ]
+                    }
+                },
+            },
+        }
 
     prompt_text = f"{STYLE_DIRECTIVE}\n\n{dialogue_text}"
-    payload = {
+    return {
         "contents": [{"parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
@@ -466,10 +575,40 @@ def synthesize_multispeaker_pcm(
         },
     }
 
+
+def synthesize_multispeaker_pcm(
+    dialogue_text: str,
+    *,
+    api_key: str,
+    chris_voice: str = DEFAULT_CHRIS_VOICE,
+    dave_voice: str = DEFAULT_DAVE_VOICE,
+    tts_models: Optional[List[str]] = None,
+) -> Tuple[bytes, int]:
+    """
+    Calls Gemini Native Multi-Speaker TTS REST API (`generateContent` with `responseModalities: ["AUDIO"]`)
+    and returns `(raw_pcm_bytes, sample_rate_hz)`.
+    """
+    env_tts = os.getenv("GEMINI_TTS_MODELS", "").strip()
+    if tts_models:
+        models = tts_models
+    elif env_tts:
+        models = [m.strip() for m in env_tts.split(",") if m.strip()]
+    else:
+        # Verified live free-tier multi-speaker TTS models (separate RPD pools!).
+        # `gemini-3.8-flash-tts` is primary: ~14 dB cleaner noise floor (-50 dB vs -35 dB)
+        # and eliminates the "old record player" cold-start warble seen on 2.5-flash-preview-tts.
+        models = [
+            "gemini-3.8-flash-tts",
+            "gemini-3.8-flash-lite-tts",
+            "gemini-2.5-flash-preview-tts",
+            "gemini-3.1-flash-tts-preview",
+        ]
+
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     errs = []
     for model in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = _build_tts_payload(model, dialogue_text, chris_voice, dave_voice)
         for attempt in range(3):
             try:
                 resp = requests.post(url, headers=headers, json=payload, timeout=120)
@@ -502,6 +641,47 @@ def synthesize_multispeaker_pcm(
     raise RuntimeError("Gemini Native TTS failed: " + " | ".join(errs))
 
 
+def _clean_pcm_chunk(
+    pcm_bytes: bytes,
+    sample_rate: int = 24000,
+    fade_in_ms: int = 15,
+    fade_out_ms: int = 35,
+    trim_tail_ms: int = 20,
+) -> bytes:
+    """
+    Conditions a raw 16-bit mono PCM TTS chunk:
+    - Trims any 12ms trailing end-of-stream pop/click (seen on some 3.8-tts buffers)
+    - Removes DC offset
+    - Applies smooth cosine fade-in / fade-out so chunk edges never click
+    """
+    if len(pcm_bytes) < 4:
+        return pcm_bytes
+    usable = (len(pcm_bytes) // 2) * 2
+    arr = np.frombuffer(pcm_bytes[:usable], dtype=np.int16).astype(np.float32)
+    if len(arr) == 0:
+        return pcm_bytes
+
+    # Only trim trailing codec click if the clip is > 0.5s
+    trim_n = int(sample_rate * (trim_tail_ms / 1000.0))
+    if len(arr) > int(sample_rate * 0.5) and trim_n > 0:
+        arr = arr[:-trim_n]
+
+    # Remove DC offset
+    arr = arr - float(np.mean(arr))
+
+    # Smooth half-cosine edge fades
+    fi = min(int(sample_rate * (fade_in_ms / 1000.0)), len(arr) // 4)
+    fo = min(int(sample_rate * (fade_out_ms / 1000.0)), len(arr) // 4)
+    if fi > 1:
+        t_in = np.linspace(0.0, np.pi / 2.0, fi, dtype=np.float32)
+        arr[:fi] *= np.sin(t_in) ** 2
+    if fo > 1:
+        t_out = np.linspace(0.0, np.pi / 2.0, fo, dtype=np.float32)
+        arr[-fo:] *= np.cos(t_out) ** 2
+
+    return np.clip(arr, -32768.0, 32767.0).astype(np.int16).tobytes()
+
+
 def pcm_chunks_to_wav(pcm_chunks: List[Tuple[bytes, int]], wav_path: Path, pause_ms: int = 450) -> Path:
     """Concatenates raw 16-bit mono PCM chunks with clean broadcast pauses into a WAV file."""
     if not pcm_chunks:
@@ -515,33 +695,247 @@ def pcm_chunks_to_wav(pcm_chunks: List[Tuple[bytes, int]], wav_path: Path, pause
         wf.setsampwidth(2)  # 16-bit signed linear PCM
         wf.setframerate(sample_rate)
         for idx, (pcm_bytes, _) in enumerate(pcm_chunks):
-            wf.writeframes(pcm_bytes)
+            wf.writeframes(_clean_pcm_chunk(pcm_bytes, sample_rate=sample_rate))
             if idx < len(pcm_chunks) - 1:
                 wf.writeframes(silence_bytes)
     return wav_path
 
 
+def _two_pass_linear_normalize_wav(
+    in_wav: Path,
+    out_wav: Path,
+    *,
+    target_i: float = -16.0,
+    target_tp: float = -1.5,
+    target_lra: float = 11.0,
+    sample_rate: int = 44100,
+    channels: int = 2,
+    denoise: bool = False,
+) -> Path:
+    """
+    Applies broadcast-grade TWO-PASS LINEAR `loudnorm` via FFmpeg (`linear=true`).
+    Unlike single-pass dynamic `loudnorm` (which pumps gain on breaths/hiss and can
+    cause vinyl-like warble), two-pass linear normalization measures the exact LUFS
+    first and applies one clean constant gain + true-peak ceiling.
+    """
+    pre_chain = "highpass=f=65" + (",afftdn=nf=-28" if denoise else "")
+    pass1_cmd = [
+        "ffmpeg", "-y", "-i", str(in_wav),
+        "-af", f"{pre_chain},loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json",
+        "-f", "null", "-",
+    ]
+    p1 = subprocess.run(pass1_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    measured = None
+    if p1.returncode == 0:
+        m = re.search(r"\{\s*\"input_i\".*?\}", p1.stderr, flags=re.S)
+        if m:
+            try:
+                measured = json.loads(m.group(0))
+            except Exception:
+                measured = None
+
+    if measured and measured.get("input_i") not in (None, "-inf"):
+        ln_filter = (
+            f"{pre_chain},"
+            f"loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}"
+            f":measured_I={measured['input_i']}"
+            f":measured_LRA={measured['input_lra']}"
+            f":measured_TP={measured['input_tp']}"
+            f":measured_thresh={measured['input_thresh']}"
+            f":offset={measured.get('target_offset', '0.0')}"
+            f":linear=true"
+        )
+    else:
+        ln_filter = pre_chain
+
+    pass2_cmd = [
+        "ffmpeg", "-y", "-i", str(in_wav),
+        "-af", ln_filter,
+        "-ar", str(sample_rate),
+        "-ac", str(channels),
+        "-c:a", "pcm_s16le",
+        str(out_wav),
+    ]
+    p2 = subprocess.run(pass2_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if p2.returncode != 0:
+        # Clean fallback without loudnorm if needed
+        fallback = [
+            "ffmpeg", "-y", "-i", str(in_wav),
+            "-ar", str(sample_rate), "-ac", str(channels), "-c:a", "pcm_s16le", str(out_wav),
+        ]
+        p3 = subprocess.run(fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if p3.returncode != 0:
+            raise RuntimeError(f"ffmpeg normalization failed: {p3.stderr[:400]}")
+    return out_wav
+
+
+def _load_audio_as_stereo_f32(audio_path: Path, sample_rate: int = 44100) -> np.ndarray:
+    """Loads any `.wav`/`.mp3`/`.m4a` asset as float32 stereo PCM `shape=(N, 2)` via FFmpeg."""
+    cmd = [
+        "ffmpeg", "-y", "-i", str(audio_path),
+        "-ar", str(sample_rate), "-ac", "2",
+        "-f", "s16le", "-acodec", "pcm_s16le", "pipe:1",
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0 or not res.stdout:
+        raise RuntimeError(f"Failed to decode audio asset {audio_path}: {res.stderr.decode('utf-8', 'ignore')[:250]}")
+    usable = (len(res.stdout) // 4) * 4
+    arr = np.frombuffer(res.stdout[:usable], dtype=np.int16).astype(np.float32) / 32768.0
+    return arr.reshape(-1, 2)
+
+
+def assemble_packaged_episode(
+    pcm_chunks: List[Tuple[bytes, int]],
+    mp3_path: Path,
+    *,
+    bumper_after_indices: Optional[List[int]] = None,
+    enable_packaging: bool = True,
+    pause_ms: int = 600,
+    bitrate: str = "128k",
+) -> Tuple[Path, float]:
+    """
+    Studio mastering + show packaging pipeline:
+      1. Edge-conditions every PCM chunk (DC strip + trailing pop trim + smooth cosine fades)
+      2. Runs TWO-PASS LINEAR `loudnorm` (-16 LUFS, -1.5 dBTP) per chunk at 44.1kHz stereo
+         so every segment has identical studio volume with ZERO dynamic pumping or warble
+      3. Mixes broadcast show packaging (`intro_theme` fading cleanly under Chris's open,
+         crisp `act_bumper` stingers between acts, and resolving `outro_theme`)
+      4. Encodes final 44.1kHz stereo 128 kbps MP3
+    Returns `(mp3_path, final_duration_sec)`.
+    """
+    if not pcm_chunks:
+        raise ValueError("No PCM audio chunks provided.")
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found on PATH; cannot master MP3.")
+
+    sr_out = 44100
+    bumper_set = set(bumper_after_indices or [])
+    mp3_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        norm_chunks: List[np.ndarray] = []
+
+        for idx, (pcm_bytes, sr_in) in enumerate(pcm_chunks):
+            cleaned = _clean_pcm_chunk(pcm_bytes, sample_rate=sr_in)
+            raw_wav = tmp / f"raw_{idx:02d}.wav"
+            norm_wav = tmp / f"norm_{idx:02d}.wav"
+            with wave.open(str(raw_wav), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr_in)
+                wf.writeframes(cleaned)
+
+            # Check chunk noise floor: if older 2.5-tts chunk has elevated hiss (> -41 dB floor),
+            # engage gentle spectral denoise (`afftdn=nf=-28`) during linear normalization.
+            a_chk = np.frombuffer(cleaned, dtype=np.int16).astype(np.float32) / 32768.0
+            denoise_needed = False
+            if len(a_chk) >= sr_in:
+                n_fr = (len(a_chk) // (sr_in // 20)) * (sr_in // 20)
+                frms = np.sqrt(np.mean(a_chk[:n_fr].reshape(-1, sr_in // 20) ** 2, axis=1))
+                floor_db = 20.0 * np.log10(float(np.percentile(frms, 10)) + 1e-9)
+                denoise_needed = floor_db > -41.0
+
+            _two_pass_linear_normalize_wav(
+                raw_wav, norm_wav, sample_rate=sr_out, channels=2, denoise=denoise_needed
+            )
+            norm_chunks.append(_load_audio_as_stereo_f32(norm_wav, sample_rate=sr_out))
+
+        pieces: List[np.ndarray] = []
+        pause_arr = np.zeros((int(sr_out * (pause_ms / 1000.0)), 2), dtype=np.float32)
+
+        if enable_packaging:
+            assets = get_packaging_assets()
+            intro_arr = _load_audio_as_stereo_f32(assets["intro"], sample_rate=sr_out) * 0.62
+            bumper_arr = _load_audio_as_stereo_f32(assets["bumper"], sample_rate=sr_out) * 0.52
+            outro_arr = _load_audio_as_stereo_f32(assets["outro"], sample_rate=sr_out) * 0.58
+
+            # Intro theme plays 2.4s solo, then ducks gently under the start of Chunk 1!
+            voice_start = min(int(2.4 * sr_out), len(intro_arr))
+            first = norm_chunks[0]
+            first_mix_len = max(len(intro_arr), voice_start + len(first))
+            first_mix = np.zeros((first_mix_len, 2), dtype=np.float32)
+            # Duck intro tail smoothly once Chris begins speaking
+            duck = np.ones(len(intro_arr), dtype=np.float32)
+            if voice_start < len(intro_arr):
+                duck_len = len(intro_arr) - voice_start
+                duck[voice_start:] = np.linspace(0.60, 0.0, duck_len, dtype=np.float32) ** 1.4
+            first_mix[: len(intro_arr)] += intro_arr * duck[:, None]
+            first_mix[voice_start : voice_start + len(first)] += first
+            pieces.append(first_mix)
+
+            pre_b = np.zeros((int(0.35 * sr_out), 2), dtype=np.float32)
+            post_b = np.zeros((int(0.25 * sr_out), 2), dtype=np.float32)
+            for idx in range(1, len(norm_chunks)):
+                if (idx - 1) in bumper_set:
+                    pieces.extend([pre_b, bumper_arr, post_b, norm_chunks[idx]])
+                else:
+                    pieces.extend([pause_arr, norm_chunks[idx]])
+
+            # Mix outro theme gently rising over the final 0.75s of speech and resolving smoothly
+            body = np.concatenate(pieces, axis=0)
+            overlap = min(int(0.75 * sr_out), len(body), len(outro_arr) // 3)
+            out_len = len(body) - overlap + len(outro_arr)
+            final_mix = np.zeros((out_len, 2), dtype=np.float32)
+            final_mix[: len(body)] += body
+            final_mix[len(body) - overlap : len(body) - overlap + len(outro_arr)] += outro_arr
+        else:
+            for idx, ch in enumerate(norm_chunks):
+                pieces.append(ch)
+                if idx < len(norm_chunks) - 1:
+                    pieces.append(pause_arr)
+            final_mix = np.concatenate(pieces, axis=0)
+
+        # Gentle soft-clip safety ceiling (-1.0 dBFS) so overlaps never distort
+        peak = float(np.max(np.abs(final_mix))) + 1e-9
+        if peak > 0.89:
+            final_mix = final_mix * (0.89 / peak)
+
+        master_wav = tmp / "master_44k_stereo.wav"
+        pcm16 = np.clip(final_mix * 32767.0, -32768.0, 32767.0).astype(np.int16)
+        with wave.open(str(master_wav), "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(sr_out)
+            wf.writeframes(pcm16.tobytes())
+
+        enc_cmd = [
+            "ffmpeg", "-y",
+            "-i", str(master_wav),
+            "-ar", str(sr_out),
+            "-ac", "2",
+            "-c:a", "libmp3lame",
+            "-b:a", bitrate,
+            str(mp3_path),
+        ]
+        res = subprocess.run(enc_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"ffmpeg MP3 encoding failed: {res.stderr[:400]}")
+
+        return mp3_path, len(final_mix) / float(sr_out)
+
+
 def master_wav_to_mp3(wav_path: Path, mp3_path: Path, bitrate: str = "128k") -> Path:
-    """Applies podcast loudness normalization (`loudnorm`) and encodes a broadcast MP3 via FFmpeg."""
+    """Applies two-pass linear podcast loudness normalization and encodes a broadcast MP3 via FFmpeg."""
     mp3_path.parent.mkdir(parents=True, exist_ok=True)
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg not found on PATH; cannot encode MP3.")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", str(wav_path),
-        "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-        "-c:a", "libmp3lame",
-        "-b:a", bitrate,
-        str(mp3_path),
-    ]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if res.returncode != 0:
-        # Retry without loudnorm if an older ffmpeg build lacks the filter
-        cmd_plain = ["ffmpeg", "-y", "-i", str(wav_path), "-c:a", "libmp3lame", "-b:a", bitrate, str(mp3_path)]
-        res2 = subprocess.run(cmd_plain, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res2.returncode != 0:
-            raise RuntimeError(f"ffmpeg encoding failed: {res2.stderr[:400]}")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        norm_wav = Path(tmpdir) / "norm.wav"
+        _two_pass_linear_normalize_wav(wav_path, norm_wav, sample_rate=44100, channels=2)
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(norm_wav),
+            "-ar", "44100",
+            "-ac", "2",
+            "-c:a", "libmp3lame",
+            "-b:a", bitrate,
+            str(mp3_path),
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"ffmpeg encoding failed: {res.stderr[:400]}")
     return mp3_path
 
 
@@ -553,93 +947,155 @@ def run_generator(
     from_script: str = "",
     chris_voice: str = DEFAULT_CHRIS_VOICE,
     dave_voice: str = DEFAULT_DAVE_VOICE,
+    tts_model: str = "",
     update_rss: bool = False,
     rss_base_url: str = "",
     publish_discord: bool = False,
     fresh: bool = False,
+    enable_packaging: bool = True,
+    remaster_only: bool = False,
 ) -> dict:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
+    if not remaster_only and not api_key:
         raise RuntimeError("GEMINI_API_KEY not found in .env.")
 
     tag = length_mode
     script_out = OUTPUT_DIR / f"gemini_script_week_{week}_{season}_{tag}.txt"
     mp3_out = OUTPUT_DIR / f"bfl_gemini_podcast_week_{week}_{season}_{tag}.mp3"
     work_dir = OUTPUT_DIR / "podcast_work" / f"week_{week}_{season}_{tag}"
-    if fresh and work_dir.exists():
+    if fresh and not remaster_only and work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # For 30-40 min `deep` episodes, allow up to 850 words per single-segment TTS pass
-    # so each of the 10 segments renders in ONE continuous pass (10 TTS calls total, zero mid-matchup seam!)
-    chunk_word_cap = 850 if length_mode == "deep" else 650
+    # Keep every TTS request <= 650 words so Google's non-streaming TTS gateway never
+    # drops long connections with RemoteDisconnected (previously seen on 750-800+ word chunks).
+    chunk_word_cap = 650
+    bumper_after_indices: List[int] = []
 
-    if from_script:
-        script_text = Path(from_script).read_text(encoding="utf-8")
-        tts_chunks = split_script_into_tts_chunks(script_text, max_words=chunk_word_cap)
-        print(f"📄 Loaded existing script ({len(tts_chunks)} TTS chunk(s)): {from_script}")
+    if remaster_only:
+        cached_pcms = sorted(work_dir.glob(f"chunk_*_{chris_voice}_{dave_voice}.pcm"))
+        if not cached_pcms:
+            raise FileNotFoundError(f"No cached PCM chunks found in {work_dir} for --remaster.")
+        pcm_results = [(p.read_bytes(), 24000) for p in cached_pcms]
+        # Place act bumpers after Act 1 (chunk 0) and before Act 3 (last chunk) when >= 3 chunks
+        if len(pcm_results) >= 3:
+            bumper_after_indices = [0, len(pcm_results) - 2]
+        print(f"🎛️  Remastering {len(pcm_results)} cached PCM chunk(s) with 2-pass linear loudnorm & show packaging...")
     else:
-        payload_path = OUTPUT_DIR / f"notebook_payload_week_{week}_{season}.md"
-        if not payload_path.exists():
-            raise FileNotFoundError(
-                f"Weekly Scoreboard payload not found at {payload_path}. "
-                f"Run `python3 FantasyRecap/generate_notebook_payload.py --season {season} --week {week}` first."
-            )
-        cached_segments_file = work_dir / "segments.json"
-        if not fresh and length_mode != "sample" and cached_segments_file.exists():
-            segments = [tuple(x) for x in json.loads(cached_segments_file.read_text(encoding="utf-8"))]
-            print(f"♻️  Resuming from cached script segments ({len(segments)} segments): {cached_segments_file}")
+        if from_script:
+            script_text = Path(from_script).read_text(encoding="utf-8")
+            tts_chunks = split_script_into_tts_chunks(script_text, max_words=chunk_word_cap)
+            print(f"📄 Loaded existing script ({len(tts_chunks)} TTS chunk(s)): {from_script}")
         else:
-            payload_md = payload_path.read_text(encoding="utf-8")
-            segments = generate_dialogue_script(payload_md, season, week, api_key=api_key, length_mode=length_mode)
-            cached_segments_file.write_text(json.dumps(segments, indent=2), encoding="utf-8")
-            full_script = "\n\n".join(text for _, text in segments if text.strip())
-            script_out.write_text(full_script + "\n", encoding="utf-8")
-            total_w = sum(len(t.split()) for _, t in segments)
-            print(f"💾 Saved dialogue script ({total_w:,} words • ~{total_w / 195:.1f} min est): {script_out}")
+            payload_path = OUTPUT_DIR / f"notebook_payload_week_{week}_{season}.md"
+            if not payload_path.exists():
+                raise FileNotFoundError(
+                    f"Weekly Scoreboard payload not found at {payload_path}. "
+                    f"Run `python3 FantasyRecap/generate_notebook_payload.py --season {season} --week {week}` first."
+                )
+            cached_segments_file = work_dir / "segments.json"
+            if not fresh and length_mode != "sample" and cached_segments_file.exists():
+                segments = [tuple(x) for x in json.loads(cached_segments_file.read_text(encoding="utf-8"))]
+                print(f"♻️  Resuming from cached script segments ({len(segments)} segments): {cached_segments_file}")
+            else:
+                payload_md = payload_path.read_text(encoding="utf-8")
+                segments = generate_dialogue_script(
+                    payload_md,
+                    season,
+                    week,
+                    api_key=api_key,
+                    length_mode=length_mode,
+                    work_dir=work_dir,
+                    fresh=fresh,
+                )
+                cached_segments_file.write_text(json.dumps(segments, indent=2), encoding="utf-8")
+                full_script = "\n\n".join(text for _, text in segments if text.strip())
+                script_out.write_text(full_script + "\n", encoding="utf-8")
+                total_w = sum(len(t.split()) for _, t in segments)
+                print(f"💾 Saved dialogue script ({total_w:,} words • ~{total_w / 195:.1f} min est): {script_out}")
 
-        tts_chunks = []
-        for _, seg_text in segments:
-            tts_chunks.extend(split_script_into_tts_chunks(seg_text, max_words=chunk_word_cap))
+            tts_chunks = []
+            for seg_idx, (seg_name, seg_text) in enumerate(segments):
+                seg_chunks = split_script_into_tts_chunks(seg_text, max_words=chunk_word_cap)
+                if not seg_chunks:
+                    continue
+                # Insert a clean broadcast act bumper right before Act 3 (standings/outro)
+                if "standings_outro" in seg_name and tts_chunks:
+                    bumper_after_indices.append(len(tts_chunks) - 1)
+                tts_chunks.extend(seg_chunks)
+                # Insert a clean broadcast act bumper right after Act 1 (intro/trades)
+                if "intro_trades" in seg_name and seg_idx < len(segments) - 1:
+                    bumper_after_indices.append(len(tts_chunks) - 1)
 
-    if not tts_chunks:
-        raise RuntimeError("No valid `Chris:` / `Dave:` dialogue lines found to synthesize.")
+        if not tts_chunks:
+            raise RuntimeError("No valid `Chris:` / `Dave:` dialogue lines found to synthesize.")
 
-    pcm_results: List[Tuple[bytes, int]] = []
-    for idx, chunk in enumerate(tts_chunks, 1):
-        wc = len(chunk.split())
-        cache_pcm = work_dir / f"chunk_{idx:02d}_{chris_voice}_{dave_voice}.pcm"
-        if not fresh and length_mode != "sample" and cache_pcm.exists() and cache_pcm.stat().st_size > 1000:
-            pcm_bytes = cache_pcm.read_bytes()
-            sr = 24000
+        pcm_results: List[Tuple[bytes, int]] = []
+        for idx, chunk in enumerate(tts_chunks, 1):
+            wc = len(chunk.split())
+            cache_pcm = work_dir / f"chunk_{idx:02d}_{chris_voice}_{dave_voice}.pcm"
+            if not fresh and length_mode != "sample" and cache_pcm.exists() and cache_pcm.stat().st_size > 1000:
+                pcm_bytes = cache_pcm.read_bytes()
+                sr = 24000
+                secs = len(pcm_bytes) / (sr * 2)
+                print(f"♻️  Using cached TTS chunk {idx}/{len(tts_chunks)} ({secs:.1f}s)")
+                pcm_results.append((pcm_bytes, sr))
+                continue
+
+            print(f"🎙️  Rendering TTS chunk {idx}/{len(tts_chunks)} ({wc} words • Chris={chris_voice}, Dave={dave_voice})...")
+            t0 = time.time()
+            try:
+                pcm_bytes, sr = synthesize_multispeaker_pcm(
+                    chunk,
+                    api_key=api_key,
+                    chris_voice=chris_voice,
+                    dave_voice=dave_voice,
+                    tts_models=[tts_model] if tts_model else None,
+                )
+            except RuntimeError as exc:
+                # If an oversized chunk (>320 words) still triggers a gateway disconnect, split it in half cleanly
+                if wc > 320 and "RemoteDisconnected" in str(exc):
+                    halves = split_script_into_tts_chunks(chunk, max_words=max(200, (wc // 2) + 25))
+                    if len(halves) > 1:
+                        print(f"   ↪️ Gateway dropped {wc}-word chunk; splitting into {len(halves)} balanced sub-chunks...")
+                        sub_pcms = []
+                        sr = 24000
+                        for h_idx, sub in enumerate(halves, 1):
+                            print(f"      🎙️ Sub-chunk {h_idx}/{len(halves)} ({len(sub.split())} words)...")
+                            b_sub, sr = synthesize_multispeaker_pcm(
+                                sub,
+                                api_key=api_key,
+                                chris_voice=chris_voice,
+                                dave_voice=dave_voice,
+                                tts_models=[tts_model] if tts_model else None,
+                            )
+                            sub_pcms.append(_clean_pcm_chunk(b_sub, sample_rate=sr))
+                            if h_idx < len(halves):
+                                time.sleep(1.5)
+                        pcm_bytes = (b"\x00\x00" * int(sr * 0.25)).join(sub_pcms)
+                    else:
+                        raise
+                else:
+                    raise
+            cache_pcm.write_bytes(pcm_bytes)
             secs = len(pcm_bytes) / (sr * 2)
-            print(f"♻️  Using cached TTS chunk {idx}/{len(tts_chunks)} ({secs:.1f}s)")
+            print(f"   ✅ Rendered {secs:.1f}s of audio in {time.time() - t0:.1f}s")
             pcm_results.append((pcm_bytes, sr))
-            continue
 
-        print(f"🎙️  Rendering TTS chunk {idx}/{len(tts_chunks)} ({wc} words • Chris={chris_voice}, Dave={dave_voice})...")
-        t0 = time.time()
-        pcm_bytes, sr = synthesize_multispeaker_pcm(
-            chunk,
-            api_key=api_key,
-            chris_voice=chris_voice,
-            dave_voice=dave_voice,
-        )
-        cache_pcm.write_bytes(pcm_bytes)
-        secs = len(pcm_bytes) / (sr * 2)
-        print(f"   ✅ Rendered {secs:.1f}s of audio in {time.time() - t0:.1f}s")
-        pcm_results.append((pcm_bytes, sr))
+            # Polite pacing between TTS chunks on multi-chunk episodes to avoid bursting RPM limits
+            if idx < len(tts_chunks):
+                time.sleep(2.0)
 
-        # Polite pacing between TTS chunks on multi-chunk episodes to avoid bursting RPM limits
-        if idx < len(tts_chunks):
-            time.sleep(2.0)
+    print("🎛️  Mastering episode (2-pass linear loudnorm" + (" + intro/bumpers/outro packaging" if enable_packaging else "") + ")...")
+    _, total_audio_sec = assemble_packaged_episode(
+        pcm_results,
+        mp3_out,
+        bumper_after_indices=bumper_after_indices,
+        enable_packaging=enable_packaging,
+        pause_ms=650 if length_mode != "sample" else 450,
+        bitrate="128k",
+    )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        wav_tmp = Path(tmpdir) / "episode.wav"
-        pcm_chunks_to_wav(pcm_results, wav_tmp, pause_ms=650 if length_mode != "sample" else 450)
-        master_wav_to_mp3(wav_tmp, mp3_out, bitrate="128k")
-
-    total_audio_sec = sum(len(b) / (sr * 2) for b, sr in pcm_results)
     size_mb = round(mp3_out.stat().st_size / (1024 * 1024), 2)
     mins, secs = int(total_audio_sec // 60), int(total_audio_sec % 60)
     print(f"\n🎉 DONE! Mastered MP3: {mp3_out} ({mins}m {secs}s • {size_mb} MB @ 128 kbps)")
@@ -689,9 +1145,12 @@ def main():
     parser.add_argument("--from-script", type=str, default="", help="Skip script generation and render audio from an existing script file")
     parser.add_argument("--chris-voice", type=str, default=DEFAULT_CHRIS_VOICE, help=f"Gemini voice for Chris (default: {DEFAULT_CHRIS_VOICE})")
     parser.add_argument("--dave-voice", type=str, default=DEFAULT_DAVE_VOICE, help=f"Gemini voice for Dave (default: {DEFAULT_DAVE_VOICE})")
+    parser.add_argument("--tts-model", type=str, default="", help="Override TTS model (e.g. gemini-3.1-flash-tts-preview, gemini-3.8-flash-tts)")
     parser.add_argument("--rss", action="store_true", help="Also add episode to Private Podcast RSS (`output/rss/feed.xml`)")
     parser.add_argument("--rss-base-url", type=str, default="", help="Hosted HTTPS base URL for the RSS feed")
     parser.add_argument("--publish-discord", action="store_true", help="Also upload to Discord #press-room-podcast")
+    parser.add_argument("--no-packaging", action="store_true", help="Disable intro/outro music theme and act transition bumpers")
+    parser.add_argument("--remaster", action="store_true", help="Re-master existing cached PCM chunks without calling Gemini APIs")
     args = parser.parse_args()
 
     if args.length:
@@ -710,10 +1169,13 @@ def main():
         from_script=args.from_script,
         chris_voice=args.chris_voice,
         dave_voice=args.dave_voice,
+        tts_model=args.tts_model,
         update_rss=args.rss,
         rss_base_url=args.rss_base_url,
         publish_discord=args.publish_discord,
         fresh=args.fresh,
+        enable_packaging=not args.no_packaging,
+        remaster_only=args.remaster,
     )
 
 

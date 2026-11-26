@@ -666,7 +666,7 @@ def calculate_season_trajectories(raw_data: dict, current_week: int, teams: dict
 
     return records
 
-def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: dict = None) -> dict:
+def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: dict = None, entering_week: int = None) -> dict:
     """Generates deep strategic explanations for why each manager made the move."""
     a = tr['owner_a']
     b = tr['owner_b']
@@ -728,16 +728,17 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
     a_len = len(a_sends)
     b_len = len(b_sends)
     
-    # Lookup records & scoring profiles from trajectories if available
+    # Lookup ENTERING-THE-WEEK records & scoring profiles (never post-week spoilers!)
     a_rec_str, b_rec_str = "", ""
+    wk_prefix = f"entering Week {entering_week} at " if entering_week else "entering at "
     if teams and trajectories:
         for tid, t_info in teams.items():
             if t_info.get('owner') == a and tid in trajectories:
                 tr_a = trajectories[tid]
-                a_rec_str = f" ({tr_a['overall_w']}-{tr_a['overall_l']}, #{tr_a['pf_rank']} scoring)"
+                a_rec_str = f" ({wk_prefix}{tr_a['overall_w']}-{tr_a['overall_l']}, #{tr_a['pf_rank']} scoring)"
             elif t_info.get('owner') == b and tid in trajectories:
                 tr_b = trajectories[tid]
-                b_rec_str = f" ({tr_b['overall_w']}-{tr_b['overall_l']}, #{tr_b['pf_rank']} scoring)"
+                b_rec_str = f" ({wk_prefix}{tr_b['overall_w']}-{tr_b['overall_l']}, #{tr_b['pf_rank']} scoring)"
 
     a_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR', 'DOUBTFUL'] for p in a_sends)
     b_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR', 'DOUBTFUL'] for p in b_sends)
@@ -792,7 +793,7 @@ def format_in_depth_trade(tr: dict) -> str:
     out += f"- **Host Debate & Trade Grade:** {an.get('debate', 'Debate who won!')}\n\n"
     return out
 
-def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies: dict, teams: dict, trajectories: dict = None) -> list:
+def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies: dict, teams: dict, trajectories: dict = None, entering_week: int = None) -> list:
     """Pulls verified trades via multi-week roster reconciliation diffing with disk caching and strategic motive analysis."""
     cache_path = Path(__file__).resolve().parent / f"trade_history_{season}.json"
     cached_trades = []
@@ -872,9 +873,9 @@ def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies:
             except Exception:
                 pass
 
-    # Enrich each trade with strategic motives
+    # Enrich each trade with strategic motives (using ENTERING-THE-WEEK records to avoid spoiling this week!)
     for tr in cached_trades:
-        tr['analysis'] = analyze_trade_strategic_motives(tr, teams, trajectories)
+        tr['analysis'] = analyze_trade_strategic_motives(tr, teams, trajectories, entering_week=entering_week)
 
     return cached_trades
 
@@ -1908,8 +1909,22 @@ def generate_payload(season: int, week_num: int):
     detailed_chatter = harvest_detailed_discord_chatter(week_num=week_num)
     cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
 
+    # Compute BOTH entering-the-week records (for Act 1 trades & Act 2 pre-game setup with ZERO spoilers!)
+    # and post-week trajectories (for Act 2 outcomes & Act 3 standings/playoff picture).
+    if week_num > 1:
+        entering_trajectories = calculate_season_trajectories(raw_data, week_num - 1, teams)
+    else:
+        entering_trajectories = {
+            tid: {
+                'overall_w': 0, 'overall_l': 0, 'div_w': 0, 'div_l': 0,
+                'points_for': 0.0, 'points_against': 0.0, 'pf_rank': 1, 'pa_rank': 1,
+                'streak_str': 'N/A', 'streak_type': '', 'streak_cnt': 0,
+                'results': [], 'scores': [], 'status_tag': 'SEASON OPENER',
+            }
+            for tid in teams
+        }
     trajectories = calculate_season_trajectories(raw_data, week_num, teams)
-    trades = fetch_league_trades(raw_data, week_num, season, cookies, teams, trajectories)
+    trades = fetch_league_trades(raw_data, week_num, season, cookies, teams, entering_trajectories, entering_week=week_num)
     playoff_odds = simulate_league_playoff_odds_from_espn(raw_data, week_num, n_sims=5000) if week_num <= 14 else {}
     h2h_through_week, _ = compile_all_time_h2h(ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID, current_season=season, up_to_week=week_num + 1)
 
@@ -1995,7 +2010,7 @@ def generate_payload(season: int, week_num: int):
     
     payload += "7. **Pronunciations & League Nicknames:**\n"
     payload += "   - **The Jabroni Trophy:** Pronounced *'Jah-BRO-nee'* (the coveted league championship trophy).\n"
-    payload += "   - **Saagar Gupta:** Pronounced *'SAH-gur'* (also known as 'King Gupta').\n"
+    payload += "   - **Saagar Gupta:** Pronounced *'SAH-gar'* (also known as 'King Gupta').\n"
     payload += "   - **rej hoxha:** Pronounced *'Ray'* (first name Rej is spoken like Ray).\n"
     payload += "   - **Shawn Lukose:** Last name pronounced *'Luke-ose'* (4-time BFL GOAT).\n"
     payload += "   - **Shawn Ullenbrauck:** Commonly called by his league nickname **'Thor'** or 'Shawn U'.\n"
@@ -2003,7 +2018,7 @@ def generate_payload(season: int, week_num: int):
     payload += "   - **Samran Mirza:** Pronounced *'Sum-rahn'*.\n"
     payload += "   - **Dino Davros:** Pronounced *'Dee-no'*.\n"
     payload += "   - **Daniel Kruszewski:** Last name pronounced *'Cruise-sheff-skee'* (or 'Dan' / 'DTM').\n"
-    payload += "   - **Adam Olen:** Often called by his initials **'AMO'**.\n"
+    payload += "   - **Adam Olen:** Often called by his nickname **'AMO'** (pronounced *'Ammo'*).\n"
     payload += "   - **Alex Kite:** Often called by his nickname **'Shooter'**.\n"
     payload += "   - **Mykonos Minotaurs (Nick Christus):** Pronounced *'Mee-ko-nos'*.\n\n"
 
@@ -2201,13 +2216,19 @@ def generate_payload(season: int, week_num: int):
             w_tr = trajectories.get(w['id'], {})
             l_tr = trajectories.get(l['id'], {})
             
-            w_rec = f"{w_tr.get('overall_w', 0)}-{w_tr.get('overall_l', 0)} (Streak: {w_tr.get('streak_str', 'N/A')})"
-            l_rec = f"{l_tr.get('overall_w', 0)}-{l_tr.get('overall_l', 0)} (Streak: {l_tr.get('streak_str', 'N/A')})"
+            w_ent = entering_trajectories.get(w['id'], {})
+            l_ent = entering_trajectories.get(l['id'], {})
+            w_ent_streak = f", Streak: {w_ent.get('streak_str')}" if w_ent.get('streak_str') and w_ent.get('streak_str') != 'N/A' else ""
+            l_ent_streak = f", Streak: {l_ent.get('streak_str')}" if l_ent.get('streak_str') and l_ent.get('streak_str') != 'N/A' else ""
+            w_ent_rec = f"Entering Week {week_num}: {w_ent.get('overall_w', 0)}-{w_ent.get('overall_l', 0)}{w_ent_streak}"
+            l_ent_rec = f"Entering Week {week_num}: {l_ent.get('overall_w', 0)}-{l_ent.get('overall_l', 0)}{l_ent_streak}"
+            w_post_rec = f"{w_tr.get('overall_w', 0)}-{w_tr.get('overall_l', 0)}, Streak: {w_tr.get('streak_str', 'N/A')}"
+            l_post_rec = f"{l_tr.get('overall_w', 0)}-{l_tr.get('overall_l', 0)}, Streak: {l_tr.get('streak_str', 'N/A')}"
             
             div_tag = " [💥 DIVISIONAL RIVALRY]" if w_team.get('division') == l_team.get('division') else ""
 
-            payload += f"### 🏟️ MATCHUP #{idx_m} OF 8: {w['owner']} ({w_rec}) vs {l['owner']} ({l_rec}){div_tag}\n"
-            payload += f"**Result:** {w['owner']} ({w['name']}) def. {l['owner']} ({l['name']})\n"
+            payload += f"### 🏟️ MATCHUP #{idx_m} OF 8: {w['owner']} ({w_ent_rec}) vs {l['owner']} ({l_ent_rec}){div_tag}\n"
+            payload += f"**Result:** {w['owner']} ({w['name']}, moves to {w_post_rec}) def. {l['owner']} ({l['name']}, drops to {l_post_rec})\n"
             payload += f"**Final Score:** {max(m['away_score'], m['home_score'])} to {min(m['away_score'], m['home_score'])} (Margin: {m['margin']})\n"
             payload += f"{build_completed_matchup_h2h_tidbit(w['owner'], l['owner'], h2h_through_week, season, week_num)}\n"
 

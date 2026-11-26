@@ -1208,57 +1208,59 @@ def _call_gemini(
     response_mime: str = "text/plain",
     thinking_budget: int = None,
     temperature: float = 0.1,
+    timeout: int = 35,
+    max_rounds: int = 2,
 ) -> str:
+    import time as _time
+
     env_models = os.getenv("GEMINI_MODELS", "").strip()
     if env_models:
         models = [m.strip() for m in env_models.split(",") if m.strip()]
     else:
-        # Free-tier friendly Flash + Flash-Lite fallback chain (avoids Pro 429s and 503 spikes)
+        # Verified live free-tier Flash-Lite + Flash fallback chain (replaces deprecated 2.5-flash)
         models = [
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemini-flash-latest",
+            "gemini-3.5-flash-lite",
             "gemini-flash-lite-latest",
-            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-flash-latest",
         ]
 
     errs = []
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
-        gen_cfg = {"temperature": float(temperature)}
-        if response_mime == "application/json":
-            gen_cfg["responseMimeType"] = "application/json"
-        if thinking_budget is not None and "2.5-flash" in model:
-            gen_cfg["thinkingConfig"] = {"thinkingBudget": int(thinking_budget)}
+    for round_idx in range(max(1, max_rounds)):
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+            gen_cfg = {"temperature": float(temperature)}
+            if response_mime == "application/json":
+                gen_cfg["responseMimeType"] = "application/json"
+            # Only legacy 2.5-flash supports numeric thinkingBudget; 3.x models reject it with HTTP 400
+            if thinking_budget is not None and "2.5-flash" in model:
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": int(thinking_budget)}
 
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": gen_cfg,
-        }
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": gen_cfg,
+            }
 
-        # Allow 1 quick retry on transient 503 overload (or strip thinkingConfig on 400)
-        for attempt in range(2):
             try:
-                r = requests.post(url, headers=headers, json=payload, timeout=15)
+                r = requests.post(url, headers=headers, json=payload, timeout=timeout)
                 if r.status_code == 200:
                     data = r.json()
                     cands = data.get("candidates", [])
                     if cands:
                         return cands[0]["content"]["parts"][0]["text"]
-                if r.status_code == 400 and "thinkingConfig" in payload["generationConfig"] and attempt == 0:
-                    payload["generationConfig"].pop("thinkingConfig", None)
-                    continue
-                if r.status_code == 503 and attempt == 0:
-                    import time as _time
-                    _time.sleep(1.2)
-                    continue
-                errs.append(f"{model} HTTP {r.status_code}: {r.text[:160]}")
-                break
+                errs.append(f"{model} HTTP {r.status_code}: {r.text[:140]}")
             except Exception as e:
                 errs.append(f"{model}: {e}")
-                break
-    raise RuntimeError("Gemini API call failed: " + " | ".join(errs))
+
+        # Brief cooldown between full pool passes when Google is experiencing a 503 demand spike
+        if round_idx + 1 < max_rounds:
+            _time.sleep(3.5 * (round_idx + 1))
+
+    raise RuntimeError("Gemini API call failed: " + " | ".join(errs[-6:]))
 
 
 def answer_natural_language_question(question: str, auto_sync: bool = False) -> dict:
