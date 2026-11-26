@@ -54,10 +54,21 @@ function getFaFillsForWeek(owner, week) {
   return [];
 }
 
-function gaussianRand() {
+function createSeededRng(seed) {
+  // Deterministic Mulberry32 PRNG so Monte Carlo odds are 100% reproducible across clicks/unclicks
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function gaussianRand(rng) {
   let u = 0, v = 0;
-  while (u === 0) u = Math.random();
-  while (v === 0) v = Math.random();
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
   return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
 }
 
@@ -207,11 +218,18 @@ function buildStateWithLockedPicks() {
   return { records, h2h, ownerDiv, power, unlockedGames };
 }
 
-function runBrowserMonteCarlo(nSims = 2000) {
+function runBrowserMonteCarlo(nSims = 4000) {
   const { records, h2h, power, unlockedGames } = buildStateWithLockedPicks();
   const owners = HUB.teams.map(t => t.owner);
   const poCount = {}, divCount = {}, byeCount = {};
   for (const o of owners) { poCount[o] = 0; divCount[o] = 0; byeCount[o] = 0; }
+
+  // Deterministic Common Random Numbers (CRN): fixed seed + draw per canonical schedule game
+  // so clicking & unclicking restores 100% bit-for-bit identical odds with zero random wobble.
+  const seed = (HUB.season * 1000) + (HUB.completed_week * 31) + (MODEL_MODE === "optimal" ? 7 : 13);
+  const rng = createSeededRng(seed);
+  const unlockedKeys = new Set(unlockedGames.map(g => gameKey(g)));
+  const allRem = HUB.remaining_schedule;
 
   const iters = unlockedGames.length === 0 ? 1 : nSims;
   for (let i = 0; i < iters; i++) {
@@ -219,11 +237,14 @@ function runBrowserMonteCarlo(nSims = 2000) {
     for (const o of owners) simRec[o] = { wins: records[o].wins, losses: records[o].losses, pf: records[o].pf };
     const simH2H = Object.assign({}, h2h);
 
-    for (const g of unlockedGames) {
+    for (const g of allRem) {
+      const zA = gaussianRand(rng);
+      const zH = gaussianRand(rng);
+      if (!unlockedKeys.has(gameKey(g))) continue;
       const aMu = getProjectedMeanForWeek(g.away, g.week, power);
       const hMu = getProjectedMeanForWeek(g.home, g.week, power);
-      const aPts = aMu + gaussianRand() * power[g.away].std;
-      const hPts = hMu + gaussianRand() * power[g.home].std;
+      const aPts = aMu + zA * power[g.away].std;
+      const hPts = hMu + zH * power[g.home].std;
       simRec[g.away].pf += aPts;
       simRec[g.home].pf += hPts;
       if (aPts >= hPts) {
@@ -256,7 +277,7 @@ function runBrowserMonteCarlo(nSims = 2000) {
 /* ---------- RENDER PLAYOFF MACHINE ---------- */
 
 function renderPlayoffMachine() {
-  const { records, h2h, odds, currentSeeding, unlockedCount, iters } = runBrowserMonteCarlo(2000);
+  const { records, h2h, odds, currentSeeding, unlockedCount, iters } = runBrowserMonteCarlo(4000);
   const lockedCount = Object.keys(LOCKED_PICKS).length;
   const totalRem = HUB.remaining_schedule.length;
   const teamMap = Object.fromEntries(HUB.teams.map(t => [t.owner, t]));
