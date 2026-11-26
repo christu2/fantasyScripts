@@ -20,6 +20,7 @@
         <button class="tab-btn active" data-tab="playoff" role="tab">Playoff Machine</button>
         <button class="tab-btn" data-tab="history" role="tab">Record Book &amp; H2H</button>
         <button class="tab-btn" data-tab="drafts" role="tab">Draft Hall</button>
+        <button class="tab-btn" data-tab="trades" role="tab">Trade Vault</button>
         <button class="tab-btn" data-tab="podcast" role="tab">Podcast &amp; Awards</button>
       </nav>
     </div>
@@ -214,7 +215,79 @@
       </div>
     </section>
 
-    <!-- TAB 4: PODCAST STUDIO & WEEKLY AWARDS -->
+    <!-- TAB 4: TRADE VAULT & 2026 LIVE TRACKER -->
+    <section id="tab-trades" class="tab-panel">
+      <div class="hero-bar">
+        <div>
+          <h2 id="tradeVaultTitle">BFL Trade Vault — Hall of Fleeces</h2>
+          <p class="muted small" id="tradeMethodologyBlurb">
+            Graded on post-trade <strong>16-Team Positional VORP</strong> (Points Above Waiver Replacement: QB16, RB36, WR38, TE16)
+            with <strong>1.5&times; Championship Playoff weighting</strong> (consolation excluded). Automatically neutralizes 2-for-1s &amp; QB inflation.
+          </p>
+        </div>
+        <div class="controls">
+          <div class="seg-group" id="tradeEraGroup" role="group" aria-label="Trade Era">
+            <button class="seg-btn active" data-era="all_time">All-Time Vault (2018–2025)</button>
+            <button class="seg-btn" data-era="live" id="btnLiveEra">2026 Live Tracker</button>
+          </div>
+          <div class="seg-group" id="tradeLensGroup" role="group" aria-label="Grading Lens">
+            <button class="seg-btn active" data-lens="started" title="Only counts weeks the acquiring manager actually started the player">Actual Lineup Impact</button>
+            <button class="seg-btn" data-lens="ros" title="Counts all rest-of-season points above replacement regardless of benching or drops">Pure Player Outcome</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="trade-filters">
+        <div class="controls">
+          <select id="tradeCategorySelect" class="select select-sm">
+            <option value="fleeces">Most Lopsided Fleeces</option>
+            <option value="playoffs">Title &amp; Playoff Impact Deals</option>
+            <option value="deadline">Deadline Masterstrokes (Wk 8+)</option>
+            <option value="win_win">Best Win-Win Deals</option>
+            <option value="lose_lose">Biggest Lose-Lose Disasters</option>
+            <option value="recent">Most Recent First</option>
+          </select>
+          <select id="tradeSeasonSelect" class="select select-sm"></select>
+          <select id="tradeOwnerSelect" class="select select-sm"></select>
+        </div>
+        <span class="pill" id="tradeCountPill">Loading trades...</span>
+      </div>
+
+      <div id="ownerTradeReport" style="display:none"></div>
+
+      <div class="trade-layout">
+        <div>
+          <div id="tradeList" class="trade-list"></div>
+        </div>
+        <div>
+          <div class="card" style="margin-bottom:0">
+            <div class="card-head">
+              <h3 id="sharksTitle">Trade Sharks vs. Marks</h3>
+              <span class="pill pill-blue" id="sharksLensPill">Started VORP</span>
+            </div>
+            <p class="muted small" style="margin-bottom:10px">
+              Click any manager to inspect their Best Trade, Worst Regret, and full deal log.
+            </p>
+            <div class="table-wrap">
+              <table class="data-table compact" id="tradeSharksTable">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Manager</th>
+                    <th>Deals</th>
+                    <th>W-L</th>
+                    <th>Net VORP</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: PODCAST STUDIO & WEEKLY AWARDS -->
     <section id="tab-podcast" class="tab-panel">
       <div class="grid-two">
         <div class="card">

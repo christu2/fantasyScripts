@@ -37,6 +37,7 @@ load_project_env()
 from FantasyRecap.bfl_history_db import DB_PATH, compute_position_normalized_draft_value
 from FantasyRecap.config import CURRENT_YEAR
 from FantasyRecap.league_history_intelligence import BFL_CHAMPIONSHIPS, standardize_name
+from FantasyRecap.trade_vault_engine import evaluate_all_trades, sync_trades_from_espn
 from FantasyRecap.league_recap_generator import (
     ESPN_LEAGUE_ID,
     ESPN_S2,
@@ -297,6 +298,11 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         for wk, wk_map in weekly_projections.items()
     }
     history_pack = export_history_and_drafts(DB_PATH)
+    try:
+        sync_trades_from_espn(DB_PATH, seasons=[season], force=True, quiet=True)
+    except Exception as exc:
+        print(f"⚠️ Skipping live {season} trade sync (using cached SQLite trades): {exc}")
+    trades_pack = evaluate_all_trades(DB_PATH, current_season=season)
     episodes = fetch_rss_episodes()
 
     hub_data = {
@@ -319,6 +325,7 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         "weekly_projections": weekly_proj_export,
         "awards": awards_data,
         "history": history_pack,
+        "trades": trades_pack,
         "podcast": {
             "rss_url": DEFAULT_RSS_URL,
             "episodes": episodes,

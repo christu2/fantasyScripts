@@ -185,6 +185,32 @@ def init_db(conn: sqlite3.Connection):
             PRIMARY KEY (season, week)
         );
 
+        CREATE TABLE IF NOT EXISTS trades (
+            trade_id TEXT PRIMARY KEY,
+            season INTEGER NOT NULL,
+            trade_week INTEGER NOT NULL,
+            effective_week INTEGER NOT NULL,
+            team_a_id INTEGER NOT NULL,
+            owner_a TEXT NOT NULL,
+            team_b_id INTEGER NOT NULL,
+            owner_b TEXT NOT NULL,
+            process_date_ms INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'espn_tx'
+        );
+
+        CREATE TABLE IF NOT EXISTS trade_items (
+            trade_id TEXT NOT NULL,
+            season INTEGER NOT NULL,
+            from_team_id INTEGER NOT NULL,
+            from_owner TEXT NOT NULL,
+            to_team_id INTEGER NOT NULL,
+            to_owner TEXT NOT NULL,
+            player_id INTEGER NOT NULL,
+            player_name TEXT NOT NULL,
+            position TEXT NOT NULL,
+            PRIMARY KEY (trade_id, player_id, from_team_id, to_team_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_games_season_owner ON games(season, owner);
         CREATE INDEX IF NOT EXISTS idx_games_opp_owner ON games(season, opp_owner);
         CREATE INDEX IF NOT EXISTS idx_pb_season_pos ON player_boxscores(season, position, is_starter);
@@ -196,6 +222,9 @@ def init_db(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_dp_owner_season ON draft_picks(owner, season);
         CREATE INDEX IF NOT EXISTS idx_dp_player_season ON draft_picks(player_name, season);
         CREATE INDEX IF NOT EXISTS idx_dp_pos_season ON draft_picks(position, season);
+        CREATE INDEX IF NOT EXISTS idx_trades_season ON trades(season, trade_week);
+        CREATE INDEX IF NOT EXISTS idx_trades_owners ON trades(owner_a, owner_b);
+        CREATE INDEX IF NOT EXISTS idx_trade_items_season ON trade_items(season, player_id);
         """
     )
     conn.commit()

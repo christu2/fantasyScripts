@@ -578,6 +578,325 @@ function renderDraftsTab() {
   draw();
 }
 
+/* ---------- RENDER TRADE VAULT ---------- */
+
+let TRADE_ERA = "all_time"; // "all_time" | "live"
+let TRADE_LENS = "started"; // "started" | "ros"
+
+function renderTradesTab() {
+  const pack = HUB.trades;
+  if (!pack) return;
+
+  const liveYr = pack.live ? pack.live.season : HUB.season;
+  const btnLive = document.getElementById("btnLiveEra");
+  if (btnLive) {
+    btnLive.textContent = `${liveYr} Live Tracker (${pack.live ? pack.live.trade_count : 0})`;
+  }
+  const btnAll = document.querySelector('#tradeEraGroup [data-era="all_time"]');
+  if (btnAll && pack.all_time) {
+    const yrs = pack.all_time.seasons || [];
+    const span = yrs.length ? `${Math.min(...yrs)}–${Math.max(...yrs)}` : "2018–2025";
+    btnAll.textContent = `All-Time Vault (${span})`;
+  }
+
+  const catSel = document.getElementById("tradeCategorySelect");
+  const yrSel = document.getElementById("tradeSeasonSelect");
+  const ownSel = document.getElementById("tradeOwnerSelect");
+
+  ownSel.innerHTML = `<option value="">All Managers</option>` +
+    HUB.teams.map(t => t.owner).sort().map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
+
+  const syncSeasonSelect = () => {
+    const bucket = pack[TRADE_ERA] || { seasons: [], trades: [] };
+    if (TRADE_ERA === "live") {
+      yrSel.innerHTML = `<option value="">${liveYr} Live Season</option>`;
+      yrSel.disabled = true;
+    } else {
+      const yrs = bucket.seasons || [];
+      yrSel.disabled = false;
+      yrSel.innerHTML = `<option value="">All Seasons (${yrs.length ? Math.min(...yrs) + "–" + Math.max(...yrs) : ""})</option>` +
+        yrs.map(y => `<option value="${y}">${y} Season</option>`).join("");
+    }
+  };
+
+  const tagClass = (t) => {
+    if (t.includes("Title") || t.includes("Finals") || t.includes("Playoff")) return "tag-gold";
+    if (t.includes("Flipped") || t.includes("Win-Win") || t.includes("Deadline")) return "tag-green";
+    if (t.includes("Injury") || t.includes("Cut") || t.includes("Lose-Lose")) return "tag-red";
+    if (t.includes("Tree")) return "tag-purple";
+    return "tag-blue";
+  };
+
+  const fmtVorp = (v) => `${v > 0 ? "+" : ""}${Number(v).toFixed(1)}`;
+
+  const draw = () => {
+    const bucket = pack[TRADE_ERA] || { trades: [], owner_cards: { started: [], ros: [] } };
+    const lens = TRADE_LENS;
+    const cat = catSel.value;
+    const yrFilter = TRADE_ERA === "all_time" ? yrSel.value : "";
+    const ownFilter = ownSel.value;
+
+    document.getElementById("tradeVaultTitle").textContent =
+      TRADE_ERA === "live"
+        ? `${liveYr} Live Trade Tracker (Through Week ${HUB.completed_week})`
+        : "BFL All-Time Trade Vault — Hall of Fleeces";
+    document.getElementById("sharksTitle").textContent =
+      TRADE_ERA === "live" ? `${liveYr} Live Deal Makers` : "Career Trade Sharks vs. Marks";
+    document.getElementById("sharksLensPill").textContent =
+      lens === "started" ? "Actual Lineup VORP" : "Pure Player VORP";
+
+    // Methodology blurb tailored to active lens
+    const blurb = document.getElementById("tradeMethodologyBlurb");
+    blurb.innerHTML = lens === "started"
+      ? `<strong>Actual Lineup Impact:</strong> Counts only weeks the acquiring manager <em>started</em> the player above 16-team positional replacement (QB16, RB36, WR38, TE16), with <strong>1.5&times; Championship Playoff weighting</strong> (consolation = 0&times;).`
+      : `<strong>Pure Player Outcome:</strong> Counts all rest-of-season weeks above 16-team positional replacement from the trade week onward (even if benched, dropped, or flipped), with <strong>1.5&times; Playoff-week weighting</strong>.`;
+
+    // 1. Render Sharks vs Marks Leaderboard
+    const cards = (bucket.owner_cards && bucket.owner_cards[lens]) || [];
+    const sharksBody = document.querySelector("#tradeSharksTable tbody");
+    sharksBody.innerHTML = cards.map((c, idx) => {
+      const col = c.net_vorp > 3 ? "var(--green)" : (c.net_vorp < -3 ? "var(--red)" : "var(--muted)");
+      const selCls = ownFilter === c.owner ? "selected-row" : "";
+      return `
+        <tr class="clickable-row ${selCls}" data-owner="${c.owner}">
+          <td>${idx + 1}</td>
+          <td><strong>${shortName(c.owner)}</strong></td>
+          <td>${c.trades}</td>
+          <td>${c.wins}-${c.losses}${c.pushes ? `-${c.pushes}` : ""}</td>
+          <td style="color:${col};font-weight:800">${fmtVorp(c.net_vorp)}</td>
+        </tr>
+      `;
+    }).join("");
+
+    sharksBody.querySelectorAll("tr[data-owner]").forEach(tr => {
+      tr.addEventListener("click", () => {
+        const clicked = tr.dataset.owner;
+        ownSel.value = (ownSel.value === clicked) ? "" : clicked;
+        draw();
+      });
+    });
+
+    // 2. Owner Report Card (if a specific manager is selected)
+    const repEl = document.getElementById("ownerTradeReport");
+    const ownerCard = ownFilter ? cards.find(c => c.owner === ownFilter) : null;
+    if (ownerCard) {
+      repEl.style.display = "block";
+      const netCol = ownerCard.net_vorp >= 0 ? "var(--green)" : "var(--red)";
+      const favTxt = ownerCard.favorite_partner
+        ? `${shortName(ownerCard.favorite_partner.owner)} (${ownerCard.favorite_partner.count} deals, ${fmtVorp(ownerCard.favorite_partner.net_vorp)})`
+        : "—";
+      const markTxt = ownerCard.biggest_mark
+        ? `${shortName(ownerCard.biggest_mark.owner)} (${fmtVorp(ownerCard.biggest_mark.net_vorp)} in ${ownerCard.biggest_mark.count})`
+        : "—";
+      const nemTxt = ownerCard.worst_nemesis
+        ? `${shortName(ownerCard.worst_nemesis.owner)} (${fmtVorp(ownerCard.worst_nemesis.net_vorp)} in ${ownerCard.worst_nemesis.count})`
+        : "—";
+      const renderExtreme = (label, item, cls) => {
+        if (!item) return `<div class="extreme-box ${cls}"><div class="muted small">${label}</div><div>No trades recorded.</div></div>`;
+        return `
+          <div class="extreme-box ${cls}">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <strong style="color:${cls === "best" ? "var(--green)" : "var(--red)"}">${label}</strong>
+              <span class="pill">${item.season} Wk ${item.week} &bull; ${fmtVorp(item.swing)} VORP</span>
+            </div>
+            <div>vs <strong>${displayName(item.partner)}</strong></div>
+            <div class="muted small" style="margin-top:3px">Got: ${item.received.join(", ")}</div>
+            <div class="muted small">Sent: ${item.sent.join(", ")}</div>
+          </div>
+        `;
+      };
+      repEl.innerHTML = `
+        <div class="owner-report">
+          <div class="owner-report-head">
+            <div>
+              <h3 style="font-size:1.05rem">${displayName(ownerCard.owner)} — ${TRADE_ERA === "live" ? liveYr + " Live" : "Career"} Trade Report Card</h3>
+              <span class="muted small">${ownerCard.trades} verified deals &bull; ${lens === "started" ? "Actual Lineup Impact" : "Pure Player Outcome"}</span>
+            </div>
+            <button id="btnClearTradeOwner" class="btn btn-secondary btn-sm">Clear Manager Filter</button>
+          </div>
+          <div class="owner-report-grid">
+            <div class="stat-box"><div class="lbl">Trade Record</div><div class="val">${ownerCard.wins}–${ownerCard.losses}${ownerCard.pushes ? `–${ownerCard.pushes}` : ""} (${ownerCard.win_pct}%)</div></div>
+            <div class="stat-box"><div class="lbl">Net Trade VORP</div><div class="val" style="color:${netCol}">${fmtVorp(ownerCard.net_vorp)}</div></div>
+            <div class="stat-box"><div class="lbl">Avg Swing / Deal</div><div class="val">${fmtVorp(ownerCard.avg_swing)}</div></div>
+            <div class="stat-box"><div class="lbl">Favorite Partner</div><div class="val" style="font-size:0.84rem">${favTxt}</div></div>
+            <div class="stat-box"><div class="lbl">Biggest Mark</div><div class="val" style="font-size:0.84rem;color:var(--green)">${markTxt}</div></div>
+            <div class="stat-box"><div class="lbl">Worst Nemesis</div><div class="val" style="font-size:0.84rem;color:var(--red)">${nemTxt}</div></div>
+          </div>
+          <div class="owner-extremes">
+            ${renderExtreme("Best Trade Ever (Biggest Fleece)", ownerCard.best_trade, "best")}
+            ${renderExtreme("Worst Trade Ever (Biggest Regret)", ownerCard.worst_trade, "worst")}
+          </div>
+        </div>
+      `;
+      document.getElementById("btnClearTradeOwner").addEventListener("click", () => {
+        ownSel.value = "";
+        draw();
+      });
+    } else {
+      repEl.style.display = "none";
+      repEl.innerHTML = "";
+    }
+
+    // 3. Filter & Sort Trades
+    let list = (bucket.trades || []).filter(t => {
+      if (yrFilter && String(t.season) !== yrFilter) return false;
+      if (ownFilter && t.owner_a !== ownFilter && t.owner_b !== ownFilter) return false;
+      const ld = t[lens];
+      if (cat === "playoffs") {
+        return ld.win_playoff_vorp >= 10 || ld.tags.some(x => x.includes("Title") || x.includes("Finals") || x.includes("Playoff"));
+      }
+      if (cat === "deadline") return t.effective_week >= 8;
+      if (cat === "win_win") {
+        return Math.min(ld.a_vorp, ld.b_vorp) >= 12 && ld.abs_swing <= 18;
+      }
+      if (cat === "lose_lose") {
+        return Math.max(ld.a_vorp, ld.b_vorp) <= 8;
+      }
+      return true;
+    });
+
+    if (cat === "recent") {
+      list.sort((a, b) => (b.season - a.season) || (b.trade_week - a.trade_week));
+    } else if (cat === "playoffs") {
+      list.sort((a, b) => (b[lens].win_playoff_vorp - a[lens].win_playoff_vorp) || (b[lens].abs_swing - a[lens].abs_swing));
+    } else if (cat === "win_win") {
+      list.sort((a, b) => (Math.min(b[lens].a_vorp, b[lens].b_vorp) - Math.min(a[lens].a_vorp, a[lens].b_vorp)));
+    } else if (cat === "lose_lose") {
+      list.sort((a, b) => (a[lens].a_vorp + a[lens].b_vorp) - (b[lens].a_vorp + b[lens].b_vorp));
+    } else {
+      list.sort((a, b) => (b[lens].abs_swing - a[lens].abs_swing) || (b.season - a.season));
+    }
+
+    document.getElementById("tradeCountPill").textContent =
+      `Showing ${Math.min(list.length, 30)} of ${list.length} trade${list.length === 1 ? "" : "s"}`;
+
+    const listEl = document.getElementById("tradeList");
+    if (!list.length) {
+      listEl.innerHTML = `<div class="card"><p class="muted">No trades match this filter combination.</p></div>`;
+      return;
+    }
+
+    listEl.innerHTML = list.slice(0, 30).map((t, idx) => {
+      const ld = t[lens];
+      const aV = ld.a_vorp;
+      const bV = ld.b_vorp;
+      const isPush = ld.winner === "PUSH";
+      const aWon = ld.winner === t.owner_a;
+      const bWon = ld.winner === t.owner_b;
+
+      // Tug-of-war ratio (shift floor so negatives still render cleanly)
+      const shift = Math.min(0, aV, bV);
+      const adjA = Math.max(2, aV - shift + 4);
+      const adjB = Math.max(2, bV - shift + 4);
+      const pctA = Math.round((adjA / (adjA + adjB)) * 100);
+
+      const headline = isPush
+        ? `Even Swap (${fmtVorp(ld.abs_swing)} VORP diff)`
+        : `${displayName(ld.winner)} ${TRADE_ERA === "live" ? "leads" : "fleeced"} ${displayName(ld.loser)}`;
+
+      const renderSide = (owner, players, vorp, outcome, gamesSwung, won, lost) => {
+        const cls = won ? "side-win" : (lost ? "side-lose" : "");
+        const col = vorp > 2 ? "var(--green)" : (vorp < -2 ? "var(--red)" : "var(--muted)");
+        const metaBits = [];
+        if (outcome && outcome.won_champ) metaBits.push("Champ");
+        else if (outcome && outcome.runner_up) metaBits.push("Runner-Up");
+        else if (outcome && outcome.made_playoffs) metaBits.push("Playoffs");
+        if (gamesSwung > 0 && lens === "started") metaBits.push(`+${gamesSwung}W swung`);
+
+        const pRows = players.map(p => {
+          const pV = lens === "started" ? p.started_vorp : p.ros_vorp;
+          const pWks = lens === "started" ? p.started_wks : p.ros_wks;
+          const pPts = lens === "started" ? p.started_pts : p.ros_pts;
+          const pPpg = lens === "started" ? p.started_ppg : p.ros_ppg;
+          const pPo = lens === "started" ? p.po_started_vorp : p.po_ros_vorp;
+          const pCol = pV > 2 ? "var(--green)" : (pV < -2 ? "var(--red)" : "var(--muted)");
+          const wkLbl = lens === "started" ? `${pWks} st` : `${pWks} gm`;
+          const flipHtml = p.flipped
+            ? `<span class="flip-note">&#8627; Flipped Wk ${p.flipped.week} &rarr; ${shortName(p.flipped.to)}</span>`
+            : "";
+          const poHtml = pPo >= 8 ? ` <span style="color:var(--gold)">(PO ${fmtVorp(pPo)})</span>` : "";
+          return `
+            <div class="trade-player-row">
+              <div>
+                <span class="pos-chip">${p.pos}</span>
+                <span class="trade-player-name">${p.name}</span>${poHtml}
+                ${flipHtml}
+              </div>
+              <div class="trade-player-stat">
+                ${wkLbl} &bull; ${pPts} pts (${pPpg}) &bull; <strong style="color:${pCol}">${fmtVorp(pV)}</strong>
+              </div>
+            </div>
+          `;
+        }).join("");
+
+        return `
+          <div class="trade-side ${cls}">
+            <div class="trade-side-head">
+              <div>
+                <span class="trade-side-owner">${displayName(owner)} received</span>
+                ${metaBits.length ? `<span class="tie-note">${metaBits.join(" • ")}</span>` : ""}
+              </div>
+              <span class="trade-side-score" style="color:${col}">${fmtVorp(vorp)} VORP</span>
+            </div>
+            ${pRows}
+          </div>
+        `;
+      };
+
+      const tagsHtml = (ld.tags || []).map(tg => `<span class="tag-pill ${tagClass(tg)}">${tg}</span>`).join("");
+
+      return `
+        <div class="trade-card">
+          <div class="trade-card-head">
+            <div class="trade-meta-left">
+              <span class="trade-rank">#${idx + 1}</span>
+              <span class="pill">${t.season} &bull; Wk ${t.trade_week}</span>
+              <span class="trade-headline">${headline}</span>
+            </div>
+            <span class="pill ${isPush ? "" : "pill-green"}">${isPush ? "PUSH" : `+${ld.abs_swing.toFixed(1)} VORP Swing`}</span>
+          </div>
+          ${tagsHtml ? `<div class="trade-tags">${tagsHtml}</div>` : ""}
+          <div class="tug-wrap" title="${displayName(t.owner_a)} (${fmtVorp(aV)}) vs ${displayName(t.owner_b)} (${fmtVorp(bV)})">
+            <div class="tug-a" style="width:${pctA}%"></div>
+            <div class="tug-b" style="width:${100 - pctA}%"></div>
+          </div>
+          <div class="trade-sides">
+            ${renderSide(t.owner_a, t.a_received, aV, t.a_outcome, t.a_games_swung, aWon, bWon)}
+            ${renderSide(t.owner_b, t.b_received, bV, t.b_outcome, t.b_games_swung, bWon, aWon)}
+          </div>
+        </div>
+      `;
+    }).join("");
+  };
+
+  // Wire era & lens segmented controls
+  document.querySelectorAll("#tradeEraGroup .seg-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#tradeEraGroup .seg-btn").forEach(b => b.classList.remove("active", "active-gold"));
+      TRADE_ERA = btn.dataset.era;
+      btn.classList.add(TRADE_ERA === "live" ? "active-gold" : "active");
+      syncSeasonSelect();
+      draw();
+    });
+  });
+
+  document.querySelectorAll("#tradeLensGroup .seg-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#tradeLensGroup .seg-btn").forEach(b => b.classList.remove("active"));
+      TRADE_LENS = btn.dataset.lens;
+      btn.classList.add("active");
+      draw();
+    });
+  });
+
+  catSel.addEventListener("change", draw);
+  yrSel.addEventListener("change", draw);
+  ownSel.addEventListener("change", draw);
+
+  syncSeasonSelect();
+  draw();
+}
+
 /* ---------- RENDER PODCAST & AWARDS ---------- */
 
 function renderPodcastAndAwards() {
@@ -677,6 +996,7 @@ async function init() {
   renderPlayoffMachine();
   renderHistoryTab();
   renderDraftsTab();
+  renderTradesTab();
   renderPodcastAndAwards();
 }
 

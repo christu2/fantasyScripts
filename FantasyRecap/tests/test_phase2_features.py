@@ -189,5 +189,147 @@ class TestLeagueHubBundle(unittest.TestCase):
             self.assertIn("2026", hist["drafts"])
 
 
+class TestTradeVaultEngine(unittest.TestCase):
+    def test_extract_executed_trades_dedups_and_ignores_declines_and_draft_swaps(self):
+        from FantasyRecap.trade_vault_engine import _extract_executed_trades_from_txs
+
+        txs = [
+            # Declined trade (must be ignored even though status == EXECUTED)
+            {"id": "dec1", "type": "TRADE_DECLINE", "status": "EXECUTED", "scoringPeriodId": 4, "items": [
+                {"type": "TRADE", "fromTeamId": 1, "toTeamId": 2, "playerId": 999},
+            ]},
+            # Draft-pick-only swap (playerId == 0, type == DRAFT_TRADE — must be ignored)
+            {"id": "drf1", "type": "TRADE_UPHOLD", "status": "EXECUTED", "scoringPeriodId": 1, "items": [
+                {"type": "DRAFT_TRADE", "fromTeamId": 1, "toTeamId": 2, "playerId": 0},
+            ]},
+            # Real trade: proposal holds items, TRADE_UPHOLD & TRADE_ACCEPT confirm it (must emit ONCE)
+            {"id": "prop1", "type": "TRADE_PROPOSAL", "status": "PENDING", "scoringPeriodId": 6, "items": [
+                {"type": "TRADE", "fromTeamId": 1, "toTeamId": 6, "playerId": 1001},
+                {"type": "TRADE", "fromTeamId": 6, "toTeamId": 1, "playerId": 2002},
+                {"type": "DROP", "fromTeamId": 1, "toTeamId": 0, "playerId": 3003},
+            ]},
+            {"id": "acc1", "type": "TRADE_ACCEPT", "status": "EXECUTED", "scoringPeriodId": 6, "relatedTransactionId": "prop1", "items": None},
+            {"id": "uph1", "type": "TRADE_UPHOLD", "status": "EXECUTED", "scoringPeriodId": 6, "relatedTransactionId": "prop1", "items": None},
+        ]
+        parsed = _extract_executed_trades_from_txs(txs, season=2025)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["trade_week"], 6)
+        self.assertEqual(len(parsed[0]["items"]), 2)
+
+    def test_dual_lens_vorp_playoff_weight_matchups_flipped_and_trade_trees(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from FantasyRecap.bfl_history_db import init_db
+        from FantasyRecap.trade_vault_engine import evaluate_all_trades
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test_vault.db"
+            conn = sqlite3.connect(db)
+            init_db(conn)
+            cur = conn.cursor()
+
+            # Two teams in 2025 (All-Time) + one trade in 2026 (Live)
+            cur.execute(
+                "INSERT INTO team_seasons VALUES (2025,1,'Team A','Nick Christus','Nick Christus','Nick Christus',1,'East',10,4,0,0.714,1500,1300,4,2,0,1,1,1,1,1,1,0,1)"
+            )
+            cur.execute(
+                "INSERT INTO team_seasons VALUES (2025,2,'Team B','Daniel Kruszewski','Daniel Kruszewski','Daniel Kruszewski',1,'East',7,7,0,0.5,1350,1350,3,3,0,2,0,9,0,0,0,0,1)"
+            )
+            # Trade 1 (2025 Wk 10): Nick acquires WR Stud (101) from Dan for WR Bench (202)
+            cur.execute(
+                "INSERT INTO trades VALUES ('2025_w10_a',2025,10,10,1,'Nick Christus',2,'Daniel Kruszewski',0,'espn_tx')"
+            )
+            cur.execute(
+                "INSERT INTO trade_items VALUES ('2025_w10_a',2025,2,'Daniel Kruszewski',1,'Nick Christus',101,'Stud WR','WR')"
+            )
+            cur.execute(
+                "INSERT INTO trade_items VALUES ('2025_w10_a',2025,1,'Nick Christus',2,'Daniel Kruszewski',202,'Bench WR','WR')"
+            )
+            # Trade 2 (2025 Wk 12): Dan flips Bench WR (202) to Team 3 -> triggers Trade Tree!
+            cur.execute(
+                "INSERT INTO trades VALUES ('2025_w12_b',2025,12,12,2,'Daniel Kruszewski',3,'Shawn Lukose',0,'espn_tx')"
+            )
+            cur.execute(
+                "INSERT INTO trade_items VALUES ('2025_w12_b',2025,2,'Daniel Kruszewski',3,'Shawn Lukose',202,'Bench WR','WR')"
+            )
+            cur.execute(
+                "INSERT INTO trade_items VALUES ('2025_w12_b',2025,3,'Shawn Lukose',2,'Daniel Kruszewski',303,'Depth RB','RB')"
+            )
+            # Live 2026 trade (must stay separated in `live`, NOT mixed into `all_time`)
+            cur.execute(
+                "INSERT INTO trades VALUES ('2026_w04_c',2026,4,4,1,'Nick Christus',2,'Daniel Kruszewski',0,'espn_tx')"
+            )
+            cur.execute(
+                "INSERT INTO trade_items VALUES ('2026_w04_c',2026,2,'Daniel Kruszewski',1,'Nick Christus',401,'Live WR','WR')"
+            )
+            cur.execute(
+                "INSERT INTO trade_items VALUES ('2026_w04_c',2026,1,'Nick Christus',2,'Daniel Kruszewski',402,'Live RB','RB')"
+            )
+
+            # Games: Week 10 regular win by 5 pts; Week 15 playoff win by 10 pts
+            cur.execute(
+                "INSERT INTO games VALUES (2025,10,1,'NONE',1,0,0,1,'Team A','Nick Christus','Nick Christus','Nick Christus',110,2,'Team B','Daniel Kruszewski','Daniel Kruszewski',105,1,5.0)"
+            )
+            cur.execute(
+                "INSERT INTO games VALUES (2025,15,2,'WINNERS_BRACKET',0,1,0,1,'Team A','Nick Christus','Nick Christus','Nick Christus',125,3,'Team C','Shawn Lukose','Shawn Lukose',115,1,10.0)"
+            )
+
+            # Boxscores (fallback WR baseline = 8.0):
+            # Stud WR (101) started by Nick in Wk 10 (20.0 -> +12.0 VORP, flips 5-pt win!) & Wk 15 Playoffs (24.0 -> 1.5 * 16.0 = +24.0 VORP, flips 10-pt win!)
+            cur.execute(
+                "INSERT INTO player_boxscores VALUES (2025,10,1,1,'Team A','Nick Christus','Nick Christus',2,'Daniel Kruszewski','NONE',1,0,0,101,'Stud WR','DAL','WR',4,'WR',1,20.0,15.0)"
+            )
+            cur.execute(
+                "INSERT INTO player_boxscores VALUES (2025,15,2,1,'Team A','Nick Christus','Nick Christus',3,'Shawn Lukose','WINNERS_BRACKET',0,1,0,101,'Stud WR','DAL','WR',4,'WR',1,24.0,16.0)"
+            )
+            # Bench WR (202) BENCHED on Dan's team in Wk 10 (22.0 -> 0 started VORP, +14.0 Pure ROS VORP!)
+            # AND started in CONSOLATION Wk 15 (25.0 -> 0 started VORP because consolation excluded!)
+            cur.execute(
+                "INSERT INTO player_boxscores VALUES (2025,10,1,2,'Team B','Daniel Kruszewski','Daniel Kruszewski',1,'Nick Christus','NONE',1,0,0,202,'Bench WR','NYG','WR',20,'Bench',0,22.0,10.0)"
+            )
+            cur.execute(
+                "INSERT INTO player_boxscores VALUES (2025,15,3,2,'Team B','Daniel Kruszewski','Daniel Kruszewski',4,'Adam Olen','LOSERS_CONSOLATION_LADDER',0,0,1,202,'Bench WR','NYG','WR',4,'WR',1,25.0,10.0)"
+            )
+            conn.commit()
+            conn.close()
+
+            vault = evaluate_all_trades(db, current_season=2026)
+            self.assertEqual(vault["all_time"]["trade_count"], 2)
+            self.assertEqual(vault["live"]["trade_count"], 1)
+
+            tr1 = next(t for t in vault["all_time"]["trades"] if t["trade_id"] == "2025_w10_a")
+            # Actual Lineup Impact: Nick = +12.0 (Wk10) + 1.5*16.0 (Wk15 PO) = +36.0; Dan = 0.0 (benched + consolation)
+            self.assertAlmostEqual(tr1["started"]["a_vorp"], 36.0, places=1)
+            self.assertAlmostEqual(tr1["started"]["b_vorp"], 0.0, places=1)
+            self.assertEqual(tr1["started"]["winner"], "Nick Christus")
+            self.assertEqual(tr1["a_games_swung"], 2)
+            self.assertIn("Title Deal", tr1["started"]["tags"])
+            self.assertIn("Playoff Hero", tr1["started"]["tags"])
+            self.assertIn("Trade Tree", tr1["started"]["tags"])
+            # Pure Player Outcome: Dan's Bench WR DID score 22 (Wk10: +14) + 25 (Wk15 PO 1.5x: +25.5) = +39.5 ROS VORP!
+            self.assertAlmostEqual(tr1["ros"]["a_vorp"], 36.0, places=1)
+            self.assertAlmostEqual(tr1["ros"]["b_vorp"], 39.5, places=1)
+            self.assertEqual(tr1["ros"]["winner"], "Daniel Kruszewski")
+            # Trade Tree metadata attached to Bench WR
+            self.assertEqual(tr1["b_received"][0]["flipped"]["week"], 12)
+            self.assertEqual(tr1["b_received"][0]["flipped"]["to"], "Shawn Lukose")
+
+    def test_live_db_trade_vault_and_web_hub_ui(self):
+        from FantasyRecap.trade_vault_engine import evaluate_all_trades
+
+        idx_html = (WEB_HUB_DIR / "index.html").read_text(encoding="utf-8")
+        app_js = (WEB_HUB_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="tab-trades"', idx_html)
+        self.assertIn("function renderTradesTab()", app_js)
+
+        if DB_PATH.exists():
+            vault = evaluate_all_trades(DB_PATH, current_season=2026)
+            self.assertGreaterEqual(vault["all_time"]["trade_count"], 100)
+            self.assertGreaterEqual(vault["live"]["trade_count"], 10)
+            self.assertEqual(len(vault["all_time"]["owner_cards"]["started"]), 16)
+            self.assertEqual(len(vault["all_time"]["owner_cards"]["ros"]), 16)
+
+
 if __name__ == "__main__":
     unittest.main()
