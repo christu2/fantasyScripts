@@ -133,6 +133,8 @@ def load_scheduler_state(season: int, week: int) -> dict:
         "mnf_board_posted": mnf_board_done,
         "post_mnf_payload_generated": False,
         "tuesday_morning_payload_refreshed": False,
+        "tuesday_awards_posted": False,
+        "tuesday_hub_deployed": False,
         "last_live_tick_at": None,
         "all_games_final_first_seen_epoch": None,
     }
@@ -301,7 +303,7 @@ def check_and_run_orchestrator(override_season: int = None, override_week: int =
                 save_scheduler_state(season, week, st)
 
         # ---------------------------------------------------------------------
-        # MILESTONE 5: Tuesday Morning Final Refresh (Tue >= 6:45 AM CT)
+        # MILESTONE 5: Tuesday Morning Final Refresh, Weekly Awards & Hub Sync (Tue >= 6:45 AM CT)
         # ---------------------------------------------------------------------
         if now_ct.weekday() == 1 and (now_ct.hour > 6 or (now_ct.hour == 6 and now_ct.minute >= 45)):
             if not st.get("tuesday_morning_payload_refreshed"):
@@ -315,6 +317,25 @@ def check_and_run_orchestrator(override_season: int = None, override_week: int =
                 )
                 if ok_tue:
                     st["tuesday_morning_payload_refreshed"] = True
+                    save_scheduler_state(season, week, st)
+
+            if not st.get("tuesday_awards_posted"):
+                ok_aw = run_py_script(
+                    ["weekly_awards_engine.py", "--season", str(season), "--week", str(week), "--post-discord"],
+                    f"Week {week} Tuesday Weekly Awards & Manager Briefing",
+                )
+                if ok_aw:
+                    st["tuesday_awards_posted"] = True
+                    save_scheduler_state(season, week, st)
+
+            if not st.get("tuesday_hub_deployed"):
+                hub_bucket = os.getenv("GCS_HUB_BUCKET", "bfl-hub-7x9k2").strip()
+                hub_args = ["build_league_hub.py", "--season", str(season), "--week", str(week)]
+                if hub_bucket:
+                    hub_args.extend(["--deploy-gcs", hub_bucket])
+                ok_hub = run_py_script(hub_args, f"Week {week} BFL League Hub & Playoff Machine Refresh")
+                if ok_hub:
+                    st["tuesday_hub_deployed"] = True
                     save_scheduler_state(season, week, st)
 
 
@@ -344,6 +365,8 @@ def print_status(override_season: int = None, override_week: int = None):
     print(f"  3. Sunday Post-SNF Entering-MNF Board      : {'✅ DONE' if st.get('mnf_board_posted') else '⏳ PENDING (Fires immediately after SNF hits FINAL)'}")
     print(f"  4. Monday Post-MNF Podcast Scoreboard      : {'✅ DONE' if st.get('post_mnf_payload_generated') else '⏳ PENDING (Fires 12 mins after MNF hits FINAL)'}")
     print(f"  5. Tuesday 6:45 AM CT Morning Refresh      : {'✅ DONE' if st.get('tuesday_morning_payload_refreshed') else '⏳ PENDING (Fires Tue >= 6:45 AM CT)'}")
+    print(f"  6. Tuesday Weekly Awards & Briefing Post   : {'✅ DONE' if st.get('tuesday_awards_posted') else '⏳ PENDING (Fires Tue >= 6:45 AM CT)'}")
+    print(f"  7. Tuesday League Hub & Playoff Machine    : {'✅ DONE' if st.get('tuesday_hub_deployed') else '⏳ PENDING (Fires Tue >= 6:45 AM CT)'}")
     print("-" * 78)
     print(f"🏈 NFL WEEK {week} GAME WINDOWS ({len(games)} Games):")
     for g in games:

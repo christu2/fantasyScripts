@@ -2,6 +2,9 @@
 
 let HUB = null;
 const LOCKED_PICKS = {}; // key: `${week}|${away}|${home}` -> winnerOwner
+const CUSTOM_SCORES = {}; // key: `${week}|${away}|${home}` -> { away: number, home: number }
+let MODEL_MODE = "optimal"; // "optimal" (weekly optimal healthy lineup + FA fill) | "season_avg"
+let EDIT_SCORES_OPEN = false;
 
 const DIV_ORDER = ["North", "South", "East", "West"];
 
@@ -9,13 +12,46 @@ function gameKey(g) {
   return `${g.week}|${g.away}|${g.home}`;
 }
 
+function displayName(owner) {
+  if (!owner) return "";
+  if (owner.toLowerCase() === "rej hoxha") return "Rej Hoxha";
+  return owner;
+}
+
 function shortName(owner) {
   if (!owner) return "";
   if (owner === "Shawn Lukose") return "Lukose";
   if (owner === "Shawn Ullenbrauck") return "Thor";
   if (owner === "Adam Olen") return "AMO";
-  if (owner === "rej hoxha") return "Ray";
+  if (owner.toLowerCase() === "rej hoxha") return "Rej";
   return owner.split(" ")[0];
+}
+
+function normCdf(z) {
+  // Abramowitz & Stegun fast normal CDF approximation for game win probability display
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp(-z * z / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return z > 0 ? 1 - p : p;
+}
+
+function getProjectedMeanForWeek(owner, week, powerMap) {
+  const base = powerMap[owner].mean;
+  if (MODEL_MODE === "optimal" && HUB.weekly_projections && HUB.weekly_projections[String(week)]) {
+    const info = HUB.weekly_projections[String(week)][owner];
+    if (info && info.proj > 0) {
+      return 0.75 * info.proj + 0.25 * base;
+    }
+  }
+  return base;
+}
+
+function getFaFillsForWeek(owner, week) {
+  if (HUB.weekly_projections && HUB.weekly_projections[String(week)]) {
+    const info = HUB.weekly_projections[String(week)][owner];
+    if (info && Array.isArray(info.fa_fills)) return info.fa_fills;
+  }
+  return [];
 }
 
 function gaussianRand() {
@@ -151,13 +187,16 @@ function buildStateWithLockedPicks() {
   const unlockedGames = [];
   for (const g of HUB.remaining_schedule) {
     const k = gameKey(g);
+    const custom = CUSTOM_SCORES[k];
     const lockedWinner = LOCKED_PICKS[k];
-    if (lockedWinner) {
-      // Award deterministic average-power scores preserving the chosen winner
-      const mA = power[g.away].mean;
-      const mH = power[g.home].mean;
-      const hi = Math.max(mA, mH) + 4.0;
-      const lo = Math.min(mA, mH) - 4.0;
+    if (custom && Number.isFinite(custom.away) && Number.isFinite(custom.home)) {
+      applyGame(g.away, g.home, custom.away, custom.home);
+    } else if (lockedWinner) {
+      // Use the team's actual Week-W projected mean (+small winner margin) for realistic PF tiebreakers
+      const mA = getProjectedMeanForWeek(g.away, g.week, power);
+      const mH = getProjectedMeanForWeek(g.home, g.week, power);
+      const hi = Math.max(mA, mH) + 3.5;
+      const lo = Math.min(mA, mH) - 3.5;
       if (lockedWinner === g.away) applyGame(g.away, g.home, hi, lo);
       else applyGame(g.away, g.home, lo, hi);
     } else {
@@ -181,8 +220,10 @@ function runBrowserMonteCarlo(nSims = 2000) {
     const simH2H = Object.assign({}, h2h);
 
     for (const g of unlockedGames) {
-      const aPts = power[g.away].mean + gaussianRand() * power[g.away].std;
-      const hPts = power[g.home].mean + gaussianRand() * power[g.home].std;
+      const aMu = getProjectedMeanForWeek(g.away, g.week, power);
+      const hMu = getProjectedMeanForWeek(g.home, g.week, power);
+      const aPts = aMu + gaussianRand() * power[g.away].std;
+      const hPts = hMu + gaussianRand() * power[g.home].std;
       simRec[g.away].pf += aPts;
       simRec[g.home].pf += hPts;
       if (aPts >= hPts) {
@@ -221,12 +262,15 @@ function renderPlayoffMachine() {
   const teamMap = Object.fromEntries(HUB.teams.map(t => [t.owner, t]));
 
   const banner = document.getElementById("pickStatusBanner");
+  const modelTxt = MODEL_MODE === "optimal"
+    ? "Optimal Healthy Weekly Lineups (auto-fills Bye/Injury gaps with best Free Agent)"
+    : "Season Average PPG";
   if (lockedCount === 0) {
-    banner.innerHTML = `<strong>Live Standings through Week ${HUB.completed_week}:</strong> ${totalRem} regular-season games remaining (Weeks ${HUB.completed_week + 1}–14). Click any team below to simulate scenarios instantly.`;
+    banner.innerHTML = `<strong>Standings:</strong> Completed Weeks 1–${HUB.completed_week} (no games locked yet). <strong>PO% / Div% / Bye%:</strong> ${iters.toLocaleString()} live Monte Carlo sims over Weeks ${HUB.completed_week + 1}–14 using <em>${modelTxt}</em>.`;
   } else if (unlockedCount === 0) {
-    banner.innerHTML = `<strong>Full Season Locked (${lockedCount}/${totalRem} games picked):</strong> Exact deterministic Week 15 BFL Playoff Bracket computed with official H2H &amp; Points-For tiebreakers.`;
+    banner.innerHTML = `<strong>Full Season Locked (${lockedCount}/${totalRem} games):</strong> Exact deterministic Week 15 BFL Playoff Bracket computed with official H2H &amp; Points-For tiebreakers. Toggle <em>Edit Scores</em> to test exact PF tiebreakers.`;
   } else {
-    banner.innerHTML = `<strong>Custom Scenario Active:</strong> ${lockedCount} of ${totalRem} remaining games locked &bull; Simulating remaining ${unlockedCount} games across ${iters.toLocaleString()} live Monte Carlo runs.`;
+    banner.innerHTML = `<strong>Custom Scenario (${lockedCount}/${totalRem} locked):</strong> Standings reflect Weeks 1–${HUB.completed_week} + your picks; remaining ${unlockedCount} games simulated ${iters.toLocaleString()}x via <em>${modelTxt}</em>.`;
   }
   document.getElementById("simModeBadge").textContent =
     unlockedCount === 0 ? "100% Deterministic Bracket" : `${iters.toLocaleString()} Live Browser Sims`;
@@ -243,7 +287,7 @@ function renderPlayoffMachine() {
     return `
       <tr>
         <td><span class="seed-badge ${badgeCls}">#${seed}</span></td>
-        <td><strong>${own}</strong><span class="tie-note">${roleTag}</span></td>
+        <td><strong>${displayName(own)}</strong><span class="tie-note">${roleTag}</span></td>
         <td>${t.division}</td>
         <td><strong>${r.wins}-${r.losses}</strong></td>
         <td>${r.pf.toFixed(1)}</td>
@@ -264,7 +308,7 @@ function renderPlayoffMachine() {
     return `
       <tr>
         <td>#${rank}</td>
-        <td><strong>${own}</strong></td>
+        <td><strong>${displayName(own)}</strong></td>
         <td>${t.division}</td>
         <td>${r.wins}-${r.losses}</td>
         <td>${r.pf.toFixed(1)}</td>
@@ -299,7 +343,8 @@ function renderPlayoffMachine() {
   `;
   document.getElementById("bracketPreview").innerHTML = brHtml;
 
-  // Interactive Schedule Picker grouped by week
+  // Interactive Schedule Picker grouped by week (with live weekly optimal projections & optional custom score editor!)
+  const powerMap = Object.fromEntries(HUB.teams.map(t => [t.owner, { mean: t.power_mean, std: t.power_std }]));
   const byWeek = {};
   for (const g of HUB.remaining_schedule) {
     if (!byWeek[g.week]) byWeek[g.week] = [];
@@ -309,35 +354,81 @@ function renderPlayoffMachine() {
   schedEl.innerHTML = Object.keys(byWeek).map(Number).sort((a, b) => a - b).map(wk => {
     const gamesHtml = byWeek[wk].map(g => {
       const k = gameKey(g);
-      const picked = LOCKED_PICKS[k] || "";
+      const custom = CUSTOM_SCORES[k];
+      const picked = custom
+        ? (custom.away >= custom.home ? g.away : g.home)
+        : (LOCKED_PICKS[k] || "");
       const aCls = picked === g.away ? "picked-win" : (picked === g.home ? "picked-loss" : "");
       const hCls = picked === g.home ? "picked-win" : (picked === g.away ? "picked-loss" : "");
-      const aRec = `${records[g.away].wins}-${records[g.away].losses}`;
-      const hRec = `${records[g.home].wins}-${records[g.home].losses}`;
+
+      const aMu = getProjectedMeanForWeek(g.away, wk, powerMap);
+      const hMu = getProjectedMeanForWeek(g.home, wk, powerMap);
+      const combStd = Math.sqrt(powerMap[g.away].std ** 2 + powerMap[g.home].std ** 2) || 20.0;
+      const aWinPct = Math.round(normCdf((aMu - hMu) / combStd) * 100);
+      const hWinPct = 100 - aWinPct;
+      const aFa = getFaFillsForWeek(g.away, wk);
+      const hFa = getFaFillsForWeek(g.home, wk);
+      const aFaBadge = (MODEL_MODE === "optimal" && aFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${aFa.join(', ')}">FA</span>` : "";
+      const hFaBadge = (MODEL_MODE === "optimal" && hFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${hFa.join(', ')}">FA</span>` : "";
+
+      const aDispScore = custom ? custom.away.toFixed(1) : aMu.toFixed(1);
+      const hDispScore = custom ? custom.home.toFixed(1) : hMu.toFixed(1);
+
+      const editRow = EDIT_SCORES_OPEN ? `
+        <div class="score-edit-row">
+          <input class="score-inp" type="number" step="0.5" data-skey="${k}" data-side="away" value="${aDispScore}" aria-label="${shortName(g.away)} score" />
+          <span>Custom Score (PF)</span>
+          <input class="score-inp" type="number" step="0.5" data-skey="${k}" data-side="home" value="${hDispScore}" aria-label="${shortName(g.home)} score" />
+        </div>
+      ` : "";
+
       return `
         <div class="match-row">
-          <button class="pick-btn ${aCls}" data-key="${k}" data-win="${g.away}">
-            <span>${shortName(g.away)}</span><span class="pick-rec">${aRec}</span>
+          <button class="pick-btn ${aCls}" data-key="${k}" data-win="${g.away}" title="${displayName(g.away)} projected ${aMu.toFixed(1)} pts (${aWinPct}% win prob)">
+            <span>${shortName(g.away)}${aFaBadge}</span><span class="pick-rec">${aMu.toFixed(0)} · ${aWinPct}%</span>
           </button>
           <span class="at-sep">@</span>
-          <button class="pick-btn ${hCls}" data-key="${k}" data-win="${g.home}">
-            <span>${shortName(g.home)}</span><span class="pick-rec">${hRec}</span>
+          <button class="pick-btn ${hCls}" data-key="${k}" data-win="${g.home}" title="${displayName(g.home)} projected ${hMu.toFixed(1)} pts (${hWinPct}% win prob)">
+            <span>${shortName(g.home)}${hFaBadge}</span><span class="pick-rec">${hMu.toFixed(0)} · ${hWinPct}%</span>
           </button>
         </div>
+        ${editRow}
       `;
     }).join("");
-    return `<div class="week-col"><h4><span>Week ${wk}</span><span class="muted small">${wk === 14 ? "Regular Season Finale" : "Click winner"}</span></h4>${gamesHtml}</div>`;
+    return `<div class="week-col"><h4><span>Week ${wk}</span><span class="muted small">${wk === 14 ? "Regular Season Finale" : "Proj · Win%"}</span></h4>${gamesHtml}</div>`;
   }).join("");
 
   schedEl.querySelectorAll(".pick-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       const k = btn.dataset.key;
       const w = btn.dataset.win;
+      delete CUSTOM_SCORES[k];
       if (LOCKED_PICKS[k] === w) delete LOCKED_PICKS[k];
       else LOCKED_PICKS[k] = w;
       renderPlayoffMachine();
     });
   });
+
+  if (EDIT_SCORES_OPEN) {
+    schedEl.querySelectorAll(".score-inp").forEach(inp => {
+      inp.addEventListener("change", () => {
+        const k = inp.dataset.skey;
+        const side = inp.dataset.side;
+        const val = parseFloat(inp.value);
+        if (!Number.isFinite(val)) return;
+        const g = HUB.remaining_schedule.find(x => gameKey(x) === k);
+        if (!g) return;
+        const cur = CUSTOM_SCORES[k] || {
+          away: parseFloat(getProjectedMeanForWeek(g.away, g.week, powerMap).toFixed(1)),
+          home: parseFloat(getProjectedMeanForWeek(g.home, g.week, powerMap).toFixed(1)),
+        };
+        cur[side] = val;
+        CUSTOM_SCORES[k] = cur;
+        LOCKED_PICKS[k] = cur.away >= cur.home ? g.away : g.home;
+        renderPlayoffMachine();
+      });
+    });
+  }
 
   // 4 Division Standings Cards
   const divEl = document.getElementById("divisionsGrid");
@@ -350,7 +441,7 @@ function renderPlayoffMachine() {
       return `
         <tr>
           <td>${idx + 1}</td>
-          <td><strong>${own}</strong> ${inPo ? `<span class="pill pill-green">#${seedNum}</span>` : ""}</td>
+          <td><strong>${displayName(own)}</strong> ${inPo ? `<span class="pill pill-green">#${seedNum}</span>` : ""}</td>
           <td><strong>${r.wins}-${r.losses}</strong></td>
           <td>${r.divWins}-${r.divLosses}</td>
           <td>${r.pf.toFixed(1)}</td>
@@ -378,8 +469,8 @@ function renderHistoryTab() {
   const owners = HUB.teams.map(t => t.owner).sort();
   const sel1 = document.getElementById("rivOwner1");
   const sel2 = document.getElementById("rivOwner2");
-  sel1.innerHTML = owners.map(o => `<option value="${o}">${o}</option>`).join("");
-  sel2.innerHTML = owners.map(o => `<option value="${o}">${o}</option>`).join("");
+  sel1.innerHTML = owners.map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
+  sel2.innerHTML = owners.map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
   sel1.value = "Nick Christus";
   sel2.value = "Daniel Kruszewski";
 
@@ -402,9 +493,9 @@ function renderHistoryTab() {
     const avgB = a === o1 ? rec.avg2 : rec.avg1;
     const poA = a === o1 ? rec.po1 : rec.po2;
     const poB = a === o1 ? rec.po2 : rec.po1;
-    const headTxt = wA > wB ? `<strong>${a}</strong> leads ${wA}–${wB}` : (wB > wA ? `<strong>${b}</strong> leads ${wB}–${wA}` : `Series deadlocked <strong>${wA}–${wB}</strong>`);
+    const headTxt = wA > wB ? `<strong>${displayName(a)}</strong> leads ${wA}–${wB}` : (wB > wA ? `<strong>${displayName(b)}</strong> leads ${wB}–${wA}` : `Series deadlocked <strong>${wA}–${wB}</strong>`);
     const sbTxt = rec.super_bowls.length
-      ? rec.super_bowls.map(s => `${s.year}: ${s.champ} def. ${s.runner_up} (${s.score})`).join(" • ")
+      ? rec.super_bowls.map(s => `${s.year}: ${displayName(s.champ)} def. ${displayName(s.runner_up)} (${s.score})`).join(" • ")
       : "None";
 
     card.innerHTML = `
@@ -427,7 +518,7 @@ function renderHistoryTab() {
   document.querySelector("#careerTable tbody").innerHTML = HUB.history.career.map((c, idx) => `
     <tr>
       <td>${idx + 1}</td>
-      <td><strong>${c.owner}</strong><span class="tie-note">${c.division} &bull; ${c.seasons} yrs</span></td>
+      <td><strong>${displayName(c.owner)}</strong><span class="tie-note">${c.division} &bull; ${c.seasons} yrs</span></td>
       <td>${c.rings > 0 ? `<span class="pill pill-gold">${c.rings}</span>` : "0"}</td>
       <td>${c.wins}-${c.losses}</td>
       <td><strong>${c.win_pct.toFixed(1)}%</strong></td>
@@ -440,8 +531,8 @@ function renderHistoryTab() {
   document.querySelector("#champsTable tbody").innerHTML = HUB.history.championships.map(s => `
     <tr>
       <td><strong>${s.year}</strong></td>
-      <td><strong>${s.champ}</strong></td>
-      <td>${s.runner_up}</td>
+      <td><strong>${displayName(s.champ)}</strong></td>
+      <td>${displayName(s.runner_up)}</td>
       <td>${s.score}</td>
     </tr>
   `).join("");
@@ -458,7 +549,7 @@ function renderDraftsTab() {
     `<option value="all">All-Time (2018–${HUB.season})</option>`,
     ...years.filter(y => y !== HUB.season).map(y => `<option value="${y}">${y} Draft</option>`),
   ].join("");
-  oSel.innerHTML = `<option value="">All Managers</option>` + HUB.teams.map(t => `<option value="${t.owner}">${t.owner}</option>`).join("");
+  oSel.innerHTML = `<option value="">All Managers</option>` + HUB.teams.map(t => `<option value="${t.owner}">${displayName(t.owner)}</option>`).join("");
 
   const draw = () => {
     const yr = sSel.value;
@@ -547,22 +638,38 @@ async function init() {
     });
   });
 
-  // Playoff Machine presets
+  // Playoff Machine presets & scoring model controls
+  document.getElementById("modelModeSelect").addEventListener("change", (e) => {
+    MODEL_MODE = e.target.value;
+    renderPlayoffMachine();
+  });
+  document.getElementById("btnToggleScores").addEventListener("click", (e) => {
+    EDIT_SCORES_OPEN = !EDIT_SCORES_OPEN;
+    e.target.textContent = EDIT_SCORES_OPEN ? "Hide Score Editor" : "Edit Scores (PF Tiebreakers)";
+    renderPlayoffMachine();
+  });
   document.getElementById("btnResetPicks").addEventListener("click", () => {
     for (const k of Object.keys(LOCKED_PICKS)) delete LOCKED_PICKS[k];
+    for (const k of Object.keys(CUSTOM_SCORES)) delete CUSTOM_SCORES[k];
     renderPlayoffMachine();
   });
   document.getElementById("btnPickFavs").addEventListener("click", () => {
-    const pwr = Object.fromEntries(HUB.teams.map(t => [t.owner, t.power_mean]));
+    const pwr = Object.fromEntries(HUB.teams.map(t => [t.owner, { mean: t.power_mean, std: t.power_std }]));
+    for (const k of Object.keys(CUSTOM_SCORES)) delete CUSTOM_SCORES[k];
     for (const g of HUB.remaining_schedule) {
-      LOCKED_PICKS[gameKey(g)] = (pwr[g.away] >= pwr[g.home]) ? g.away : g.home;
+      const mA = getProjectedMeanForWeek(g.away, g.week, pwr);
+      const mH = getProjectedMeanForWeek(g.home, g.week, pwr);
+      LOCKED_PICKS[gameKey(g)] = (mA >= mH) ? g.away : g.home;
     }
     renderPlayoffMachine();
   });
   document.getElementById("btnPickDogs").addEventListener("click", () => {
-    const pwr = Object.fromEntries(HUB.teams.map(t => [t.owner, t.power_mean]));
+    const pwr = Object.fromEntries(HUB.teams.map(t => [t.owner, { mean: t.power_mean, std: t.power_std }]));
+    for (const k of Object.keys(CUSTOM_SCORES)) delete CUSTOM_SCORES[k];
     for (const g of HUB.remaining_schedule) {
-      LOCKED_PICKS[gameKey(g)] = (pwr[g.away] < pwr[g.home]) ? g.away : g.home;
+      const mA = getProjectedMeanForWeek(g.away, g.week, pwr);
+      const mH = getProjectedMeanForWeek(g.home, g.week, pwr);
+      LOCKED_PICKS[gameKey(g)] = (mA < mH) ? g.away : g.home;
     }
     renderPlayoffMachine();
   });

@@ -48,6 +48,7 @@ def _get_manifest_teams() -> list:
 from FantasyRecap.bfl_history_db import (
     DB_PATH,
     answer_natural_language_question,
+    compute_position_normalized_draft_value,
     sync_history_db,
 )
 from FantasyRecap.config import CURRENT_YEAR
@@ -269,7 +270,8 @@ def build_rivalry_report(owner1_query: str, owner2_query: str, db_path: Path = D
 
 def build_draft_steals_report(season: Optional[int] = None, owner_query: str = "", db_path: Path = DB_PATH) -> dict:
     """
-    Instant zero-LLM draft steals & busts report directly from `draft_picks` (2018-present).
+    Instant zero-LLM draft steals & busts report using position-normalized value
+    over draft slot (`actual_pts - expected_pts[pos_draft_rank]`) so QBs never skew the list.
     Pass `season=0` for all-time (2018-present), or omit for active season.
     """
     if not db_path.exists():
@@ -280,61 +282,46 @@ def build_draft_steals_report(season: Optional[int] = None, owner_query: str = "
         raise ValueError(f"Could not match BFL manager '{owner_query}'.")
 
     eff_season = int(os.getenv("SEASON_YEAR") or CURRENT_YEAR) if season is None else int(season)
-    where = ["has_season_stats = 1", "position IN ('QB', 'RB', 'WR', 'TE')"]
-    params: List = []
-    if eff_season > 0:
-        where.append("season = ?")
-        params.append(eff_season)
-    if owner_filter:
-        where.append("LOWER(owner) = LOWER(?)")
-        params.append(owner_filter)
-
-    where_sql = " AND ".join(where)
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    steals = conn.execute(
-        f"""
-        SELECT season, overall_pick, round_id, owner, player_name, position,
-               pos_draft_rank, pos_finish_rank, season_points, points_above_round_avg
-        FROM draft_picks
-        WHERE {where_sql} AND round_id >= 4 AND points_above_round_avg IS NOT NULL
-        ORDER BY points_above_round_avg DESC
-        LIMIT 5
-        """,
-        params,
-    ).fetchall()
-    busts = conn.execute(
-        f"""
-        SELECT season, overall_pick, round_id, owner, player_name, position,
-               pos_draft_rank, pos_finish_rank, season_points, points_above_round_avg
-        FROM draft_picks
-        WHERE {where_sql} AND round_id <= 5 AND points_above_round_avg IS NOT NULL
-        ORDER BY points_above_round_avg ASC
-        LIMIT 5
-        """,
-        params,
-    ).fetchall()
-    conn.close()
+    res = compute_position_normalized_draft_value(
+        db_path=db_path,
+        season=eff_season if eff_season > 0 else None,
+        owner=owner_filter,
+        limit=5,
+    )
+    steals = res["steals"]
+    busts = res["busts"]
 
     scope = f"{eff_season} Draft" if eff_season > 0 else "All-Time (2018–Present)"
     if owner_filter:
         scope = f"{owner_filter} • {scope}"
+
+    def _short_mgr(own: str) -> str:
+        if own == "Shawn Lukose":
+            return "Lukose"
+        if own == "Shawn Ullenbrauck":
+            return "Thor"
+        if own == "Adam Olen":
+            return "AMO"
+        if own.lower() == "rej hoxha":
+            return "Rej"
+        return own.split()[0]
 
     def _fmt_rows(rows) -> str:
         if not rows:
             return "No qualifying picks found."
         out = []
         for idx, r in enumerate(rows, 1):
-            yr_tag = f"[{r[0]}] " if eff_season == 0 else ""
-            owner_tag = "" if owner_filter else f" ({r[3].split()[0]})"
-            pr_str = f"{r[5]}{r[6]} → {r[5]}{r[7]}" if r[6] and r[7] else r[5]
+            yr_tag = f"[{r['season']}] " if eff_season == 0 else ""
+            owner_tag = "" if owner_filter else f" ({_short_mgr(r['owner'])})"
+            pr_str = f"{r['pos']}{r['pos_draft_rank']} → {r['pos']}{r['pos_finish_rank']}" if r["pos_draft_rank"] and r["pos_finish_rank"] else r["pos"]
             out.append(
-                f"**{idx}. {yr_tag}{r[4]}**{owner_tag} — Rd {r[2]} (#{r[1]}) • `{pr_str}` • `{r[8]:.1f} pts` (`{r[9]:+.1f}` vs rd avg)"
+                f"**{idx}. {yr_tag}{r['player']}**{owner_tag} — Rd {r['round']} (#{r['pick']}) • `{pr_str}` • `{r['pts']:.1f} pts` (`{r['delta']:+.1f}` vs pos slot)"
             )
         return "\n".join(out)
 
     return {
         "title": f"BFL Draft Steals & Busts — {scope}",
-        "description": "Ranked by season fantasy points above/below the average return of their draft round.",
+        "description": "Ranked by position-normalized points above/below the expected return for that exact position & draft slot.",
         "fields": [
             {"name": "Biggest Steals (Round 4+)", "value": _fmt_rows(steals), "inline": False},
             {"name": "Biggest Busts (Rounds 1–5)", "value": _fmt_rows(busts), "inline": False},

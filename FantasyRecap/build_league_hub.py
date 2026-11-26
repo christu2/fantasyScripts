@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from FantasyRecap.core.manifest import get_divisions, get_owner_to_division, load_manifest, load_project_env
 load_project_env()
 
-from FantasyRecap.bfl_history_db import DB_PATH
+from FantasyRecap.bfl_history_db import DB_PATH, compute_position_normalized_draft_value
 from FantasyRecap.config import CURRENT_YEAR
 from FantasyRecap.league_history_intelligence import BFL_CHAMPIONSHIPS, standardize_name
 from FantasyRecap.league_recap_generator import (
@@ -46,6 +46,7 @@ from FantasyRecap.league_recap_generator import (
     parse_league_members_and_teams,
 )
 from FantasyRecap.playoff_odds_simulator import (
+    build_future_week_optimal_projections,
     extract_live_state_from_espn,
     run_playoff_simulation,
 )
@@ -183,51 +184,21 @@ def export_history_and_drafts(db_path: Path = DB_PATH) -> dict:
             "super_bowls": sbs,
         }
 
-    # 3. Draft Steals & Busts by Season (2018-present) + All-Time
-    draft_seasons = [
-        int(r[0]) for r in cur.execute(
-            "SELECT DISTINCT season FROM draft_picks WHERE has_season_stats = 1 ORDER BY season DESC"
-        ).fetchall()
-    ]
-    drafts = {}
-    for yr_key in [0] + draft_seasons:
-        yr_cond = "AND season = ?" if yr_key > 0 else ""
-        params = [yr_key] if yr_key > 0 else []
-        steals = cur.execute(
-            f"""
-            SELECT season, overall_pick, round_id, owner, player_name, position,
-                   pos_draft_rank, pos_finish_rank, season_points, points_above_round_avg
-            FROM draft_picks
-            WHERE has_season_stats = 1 AND position IN ('QB','RB','WR','TE')
-              AND round_id >= 4 AND points_above_round_avg IS NOT NULL {yr_cond}
-            ORDER BY points_above_round_avg DESC LIMIT 12
-            """,
-            params,
-        ).fetchall()
-        busts = cur.execute(
-            f"""
-            SELECT season, overall_pick, round_id, owner, player_name, position,
-                   pos_draft_rank, pos_finish_rank, season_points, points_above_round_avg
-            FROM draft_picks
-            WHERE has_season_stats = 1 AND position IN ('QB','RB','WR','TE')
-              AND round_id <= 5 AND points_above_round_avg IS NOT NULL {yr_cond}
-            ORDER BY points_above_round_avg ASC LIMIT 12
-            """,
-            params,
-        ).fetchall()
-
-        def _ser(rows):
-            return [
-                {
-                    "season": int(x[0]), "pick": int(x[1]), "round": int(x[2]),
-                    "owner": _canon_owner(x[3]), "player": x[4], "pos": x[5],
-                    "pos_draft_rank": int(x[6] or 0), "pos_finish_rank": int(x[7] or 0),
-                    "pts": round(float(x[8] or 0.0), 1), "delta": round(float(x[9] or 0.0), 1),
-                }
-                for x in rows
-            ]
-
-        drafts["all" if yr_key == 0 else str(yr_key)] = {"steals": _ser(steals), "busts": _ser(busts)}
+    # 3. Position-Normalized Draft Steals & Busts (2018-present + All-Time — zero QB bias!)
+    all_pack = compute_position_normalized_draft_value(db_path=db_path, season=None, limit=15)
+    draft_seasons = all_pack["seasons"]
+    drafts = {
+        "all": {
+            "steals": [{**x, "owner": _canon_owner(x["owner"])} for x in all_pack["steals"]],
+            "busts": [{**x, "owner": _canon_owner(x["owner"])} for x in all_pack["busts"]],
+        }
+    }
+    for yr in draft_seasons:
+        yp = compute_position_normalized_draft_value(db_path=db_path, season=yr, limit=15)
+        drafts[str(yr)] = {
+            "steals": [{**x, "owner": _canon_owner(x["owner"])} for x in yp["steals"]],
+            "busts": [{**x, "owner": _canon_owner(x["owner"])} for x in yp["busts"]],
+        }
 
     conn.close()
     return {
@@ -271,8 +242,17 @@ def build_hub_data(season: int, completed_week: int) -> dict:
     completed_games, full_schedule, team_power = extract_live_state_from_espn(raw_data, completed_week)
 
     target_sim_week = min(14, completed_week + 1)
+    future_weeks = list(range(completed_week + 1, 15))
+    print(f"🧠 Solving optimal healthy weekly lineups (+FA bye/injury gap fills) for Weeks {future_weeks}...")
+    weekly_projections = build_future_week_optimal_projections(season, future_weeks, teams_by_id=teams_raw)
+
     baseline_odds = run_playoff_simulation(
-        target_sim_week, completed_games, full_schedule, team_power=team_power, n_sims=5000
+        target_sim_week,
+        completed_games,
+        full_schedule,
+        team_power=team_power,
+        n_sims=5000,
+        weekly_projections=weekly_projections,
     )
 
     # Compute current weekly awards
@@ -305,6 +285,17 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         })
 
     remaining_schedule = [g for g in full_schedule if g["week"] > completed_week]
+    # Compact weekly optimal projections for browser Playoff Machine
+    weekly_proj_export = {
+        str(wk): {
+            own: {
+                "proj": info["optimal_proj"],
+                "fa_fills": info["fa_fills"],
+            }
+            for own, info in wk_map.items()
+        }
+        for wk, wk_map in weekly_projections.items()
+    }
     history_pack = export_history_and_drafts(DB_PATH)
     episodes = fetch_rss_episodes()
 
@@ -325,6 +316,7 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         "teams": teams_info,
         "completed_games": completed_games,
         "remaining_schedule": remaining_schedule,
+        "weekly_projections": weekly_proj_export,
         "awards": awards_data,
         "history": history_pack,
         "podcast": {

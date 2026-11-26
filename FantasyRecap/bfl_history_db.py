@@ -1263,6 +1263,104 @@ def _call_gemini(
     raise RuntimeError("Gemini API call failed: " + " | ".join(errs[-6:]))
 
 
+def compute_position_normalized_draft_value(
+    db_path: Path = DB_PATH,
+    *,
+    season: int = None,
+    owner: str = None,
+    limit: int = 10,
+) -> dict:
+    """
+    Computes TRUE position-normalized draft value (`value_over_slot`) so QBs never
+    artificially dominate Draft Steals simply because QBs score more raw points than WRs/RBs/TEs.
+
+    Formula per `(season, position)`:
+      Let `expected_pts[k]` be the points scored by the k-th highest-scoring drafted player
+      at that same position in that same season. For a player drafted at positional rank `d`
+      (e.g., WR33 or QB16), their true draft value is:
+          `value_over_slot = actual_season_points - expected_pts[d]`
+      (Example: QB16 finishing QB18 gets negative value instead of +106 vs Round Avg!)
+    """
+    if not db_path.exists():
+        return {"steals": [], "busts": [], "seasons": []}
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    cur = conn.cursor()
+    avail_seasons = [
+        int(r[0]) for r in cur.execute(
+            "SELECT DISTINCT season FROM draft_picks WHERE has_season_stats = 1 ORDER BY season DESC"
+        ).fetchall()
+    ]
+
+    where = ["has_season_stats = 1", "position IN ('QB', 'RB', 'WR', 'TE')", "pos_draft_rank IS NOT NULL"]
+    params = []
+    if season and int(season) > 0:
+        where.append("season = ?")
+        params.append(int(season))
+
+    rows = cur.execute(
+        f"""
+        SELECT season, overall_pick, round_id, owner, player_name, position,
+               pos_draft_rank, pos_finish_rank, season_points
+        FROM draft_picks
+        WHERE {' AND '.join(where)}
+        """,
+        params,
+    ).fetchall()
+    conn.close()
+
+    # Group by (season, position) to build each season's exact positional scoring curve
+    curves = {}
+    for r in rows:
+        curves.setdefault((int(r[0]), r[5]), []).append(float(r[8] or 0.0))
+    for k in curves:
+        curves[k].sort(reverse=True)
+
+    scored = []
+    for r in rows:
+        yr, pick, rnd, own, pname, pos, pdr, pfr, pts = (
+            int(r[0]), int(r[1]), int(r[2]), r[3], r[4], r[5], int(r[6] or 0), int(r[7] or 0), float(r[8] or 0.0)
+        )
+        if owner and own.lower() != owner.lower():
+            continue
+        curve = curves.get((yr, pos), [])
+        if not curve or pdr <= 0:
+            continue
+        # Expected points for drafting the pdr-th player at this position in this season
+        slot_idx = min(pdr - 1, len(curve) - 1)
+        expected_pts = curve[slot_idx]
+        val_over_slot = round(pts - expected_pts, 1)
+        pos_leap = (pdr - pfr) if pfr > 0 else 0
+        scored.append({
+            "season": yr,
+            "pick": pick,
+            "round": rnd,
+            "owner": own,
+            "player": pname,
+            "pos": pos,
+            "pos_draft_rank": pdr,
+            "pos_finish_rank": pfr,
+            "pos_leap": pos_leap,
+            "pts": round(pts, 1),
+            "expected_pts": round(expected_pts, 1),
+            "delta": val_over_slot,
+        })
+
+    # Steals: Round 4+ picks who genuinely outperformed their positional draft slot (`delta > 0` & `pos_leap >= 3`)
+    steals = [x for x in scored if x["round"] >= 4 and x["delta"] > 0 and x["pos_leap"] >= 3]
+    steals.sort(key=lambda x: (x["delta"], x["pos_leap"]), reverse=True)
+
+    # Busts: Early-round picks (Rounds 1-5) who severely underperformed their positional draft slot
+    busts = [x for x in scored if x["round"] <= 5 and x["delta"] < 0]
+    busts.sort(key=lambda x: (x["delta"], x["pos_leap"]))
+
+    return {
+        "steals": steals[:limit],
+        "busts": busts[:limit],
+        "seasons": avail_seasons,
+    }
+
+
 def answer_natural_language_question(question: str, auto_sync: bool = False) -> dict:
     """
     Library-friendly Gemini Text-to-SQL engine over `bfl_history.db`.

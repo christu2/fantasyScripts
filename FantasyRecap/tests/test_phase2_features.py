@@ -12,13 +12,14 @@ from FantasyRecap.bfl_historian_bot import (
     build_rivalry_report,
     resolve_owner_name,
 )
-from FantasyRecap.bfl_history_db import DB_PATH
+from FantasyRecap.bfl_history_db import DB_PATH, compute_position_normalized_draft_value
 from FantasyRecap.build_league_hub import WEB_HUB_DIR, export_history_and_drafts
 from FantasyRecap.live_game_desk_daemon import (
     _pick_live_copy,
     format_catalyst_phrase,
     is_nuclear_performance,
 )
+from FantasyRecap.playoff_odds_simulator import solve_optimal_starting_lineup
 from FantasyRecap.thursday_lineup_preview import determine_game_stakes
 from FantasyRecap.weekly_awards_engine import (
     compute_weekly_awards,
@@ -141,9 +142,46 @@ class TestDiscordPostQualityUpgrades(unittest.TestCase):
 
 
 class TestLeagueHubBundle(unittest.TestCase):
+    def test_optimal_starting_lineup_ignores_bench_and_autofills_fa_gaps(self):
+        # Manager has no active TE (on bye / injured) and 3 strong RBs; solver must start best legal lineup + FA TE fill
+        roster = [
+            {"id": 1, "name": "QB Stud", "pos": "QB", "proj": 21.5, "injury": "ACTIVE"},
+            {"id": 2, "name": "RB1", "pos": "RB", "proj": 16.0, "injury": "ACTIVE"},
+            {"id": 3, "name": "RB2", "pos": "RB", "proj": 14.0, "injury": "ACTIVE"},
+            {"id": 4, "name": "RB3 Flex", "pos": "RB", "proj": 12.5, "injury": "ACTIVE"},
+            {"id": 5, "name": "WR1", "pos": "WR", "proj": 15.0, "injury": "ACTIVE"},
+            {"id": 6, "name": "WR2", "pos": "WR", "proj": 11.0, "injury": "ACTIVE"},
+            {"id": 7, "name": "WR3 Bench", "pos": "WR", "proj": 9.0, "injury": "ACTIVE"},
+            {"id": 8, "name": "TE Injured", "pos": "TE", "proj": 12.0, "injury": "OUT"},
+            {"id": 9, "name": "TE Bye", "pos": "TE", "proj": 0.0, "injury": "ACTIVE"},
+            {"id": 10, "name": "Kicker", "pos": "K", "proj": 8.5, "injury": "ACTIVE"},
+            {"id": 11, "name": "Defense", "pos": "D/ST", "proj": 7.5, "injury": "ACTIVE"},
+        ]
+        fa = {"QB": 14.0, "RB": 7.0, "WR": 7.0, "TE": 6.2, "FLEX": 7.0, "K": 8.0, "D/ST": 6.5}
+        sol = solve_optimal_starting_lineup(roster, fa_baselines=fa)
+        self.assertEqual(len(sol["starters"]), 9)
+        self.assertEqual(sol["fa_fills"], ["FA TE (+6.2)"])
+        # 21.5 + 16 + 14 + 15 + 11 + 6.2(FA TE) + 12.5(RB3 FLEX) + 7.5 + 8.5 = 112.2
+        self.assertAlmostEqual(sol["optimal_proj"], 112.2, places=1)
+
+    def test_position_normalized_draft_steals_avoids_qb_inflation(self):
+        if not DB_PATH.exists():
+            self.skipTest("bfl_history.db not present")
+        res = compute_position_normalized_draft_value(DB_PATH, season=2026, limit=10)
+        steal_names = [s["player"] for s in res["steals"]]
+        # Mid-pack QB18 Trevor Lawrence must NOT show up as a top steal
+        self.assertNotIn("Trevor Lawrence", steal_names)
+        # Steals must include non-QB positional out-performers (RB/WR/TE)
+        steal_positions = {s["pos"] for s in res["steals"]}
+        self.assertTrue(bool(steal_positions & {"RB", "WR", "TE"}))
+
     def test_web_hub_static_files_and_history_export(self):
         for fname in ("index.html", "styles.css", "app.js"):
             self.assertTrue((WEB_HUB_DIR / fname).exists(), f"Missing {fname}")
+        # Ensure Rej's written name is spelled "Rej" (not "Ray") in web UI
+        app_js = (WEB_HUB_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn('return "Rej"', app_js)
+        self.assertNotIn('return "Ray"', app_js)
         if DB_PATH.exists():
             hist = export_history_and_drafts(DB_PATH)
             self.assertEqual(len(hist["career"]), 16)

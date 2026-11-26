@@ -37,9 +37,14 @@
           </p>
         </div>
         <div class="controls">
+          <select id="modelModeSelect" class="select select-sm" title="Simulation Scoring Model">
+            <option value="optimal" selected>Model: Optimal Weekly Lineups (+FA Fill)</option>
+            <option value="season_avg">Model: Season Avg PPG</option>
+          </select>
+          <button id="btnToggleScores" class="btn btn-secondary">Edit Scores (PF Tiebreakers)</button>
           <button id="btnResetPicks" class="btn btn-secondary">Reset Live</button>
           <button id="btnPickFavs" class="btn btn-secondary">Pick Favorites</button>
-          <button id="btnPickDogs" class="btn btn-secondary">Chaos (Underdogs)</button>
+          <button id="btnPickDogs" class="btn btn-secondary">Chaos</button>
         </div>
       </div>
 
@@ -178,14 +183,17 @@
             <select id="draftOwnerSelect" class="select"></select>
           </div>
         </div>
-        <p class="muted small">Ranked by season fantasy points above/below the average return of their draft round.</p>
+        <p class="muted small">
+          <strong>+/- vs Slot</strong> = actual season points minus what that exact position &amp; draft slot produced that season
+          (e.g., comparing WR33 against the 33rd-best WR and QB16 against the 16th-best QB — so QBs never skew steals).
+        </p>
         <div class="grid-two mt-1">
           <div>
             <h4 class="subhead green">Biggest Draft Steals (Round 4+)</h4>
             <div class="table-wrap">
               <table class="data-table compact" id="stealsTable">
                 <thead>
-                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>vs Rd</th></tr>
+                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>+/- vs Slot</th></tr>
                 </thead>
                 <tbody></tbody>
               </table>
@@ -196,7 +204,7 @@
             <div class="table-wrap">
               <table class="data-table compact" id="bustsTable">
                 <thead>
-                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>vs Rd</th></tr>
+                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>+/- vs Slot</th></tr>
                 </thead>
                 <tbody></tbody>
               </table>

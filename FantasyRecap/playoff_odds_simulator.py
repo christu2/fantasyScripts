@@ -205,9 +205,221 @@ def extract_live_state_from_espn(raw_data: dict, completed_through_week: int):
 
     return completed_games, full_schedule, team_power
 
-def run_playoff_simulation(current_week: int, completed_games: list, schedule: list, team_power: dict = None, n_sims: int = 10000):
+# Realistic BFL waiver-wire replacement baselines used when a manager has a Bye/Injury gap
+# at a required starting slot and live ESPN Free Agent projections aren't reachable.
+FA_REPLACEMENT_FALLBACK = {
+    "QB": 13.5,
+    "RB": 7.5,
+    "WR": 7.5,
+    "TE": 5.5,
+    "FLEX": 7.2,
+    "K": 7.5,
+    "D/ST": 6.5,
+}
+POS_ID_TO_NAME = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
+UNAVAILABLE_INJURY_STATUSES = {"OUT", "INJURY_RESERVE", "IR", "DOUBTFUL", "SUSPENSION"}
+
+
+def fetch_top_free_agent_baselines(season: int, week_num: int) -> dict:
+    """
+    Fetches the best available healthy Free Agent projected score at each position
+    (`QB`, `RB`, `WR`, `TE`, `K`, `D/ST`) for `week_num` from ESPN `kona_player_info`.
+    Falls back cleanly to `FA_REPLACEMENT_FALLBACK` on timeout/offline.
+    """
+    baselines = dict(FA_REPLACEMENT_FALLBACK)
+    if not (ESPN_S2 and ESPN_SWID):
+        return baselines
+    try:
+        cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
+        flt = {
+            "players": {
+                "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
+                "limit": 120,
+                "sortPercOwned": {"sortPriority": 1, "sortAsc": False},
+            }
+        }
+        headers = {"x-fantasy-filter": json.dumps(flt)}
+        url = (
+            f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
+            f"/segments/0/leagues/{ESPN_LEAGUE_ID}?view=kona_player_info&scoringPeriodId={week_num}"
+        )
+        r = requests.get(url, cookies=cookies, headers=headers, timeout=8)
+        if r.status_code != 200:
+            return baselines
+
+        best_by_pos = {}
+        for entry in r.json().get("players", []):
+            pl = entry.get("player", {})
+            pos = POS_ID_TO_NAME.get(pl.get("defaultPositionId", 0))
+            if not pos:
+                continue
+            inj = str(pl.get("injuryStatus") or "ACTIVE").upper()
+            if inj in UNAVAILABLE_INJURY_STATUSES:
+                continue
+            proj = 0.0
+            for s in pl.get("stats", []):
+                if s.get("statSourceId") == 1 and s.get("scoringPeriodId") == week_num:
+                    proj = float(s.get("appliedTotal", 0.0) or 0.0)
+                    break
+            if proj > 0 and proj > best_by_pos.get(pos, 0.0):
+                best_by_pos[pos] = round(proj, 1)
+
+        for pos, val in best_by_pos.items():
+            baselines[pos] = val
+        baselines["FLEX"] = max(
+            baselines.get("RB", 7.5),
+            baselines.get("WR", 7.5),
+            baselines.get("TE", 5.5),
+        )
+    except Exception:
+        pass
+    return baselines
+
+
+def solve_optimal_starting_lineup(
+    roster_players: list,
+    fa_baselines: dict = None,
+) -> dict:
+    """
+    Given all rostered players for a manager in a specific week (`[{'name', 'pos', 'proj', 'injury'}]`),
+    ignores whatever slots they currently sit in (because managers rarely set lineups weeks ahead),
+    filters out injured/IR/bye players (`proj <= 0`), picks the highest-projected legal BFL lineup
+    (`1 QB, 2 RB, 2 WR, 1 TE, 1 FLEX [RB/WR/TE], 1 D/ST, 1 K`), and auto-fills any remaining
+    positional gap using the best available Free Agent projection!
+    """
+    fa = fa_baselines or FA_REPLACEMENT_FALLBACK
+    available = [
+        p for p in roster_players
+        if float(p.get("proj", 0.0)) > 0.0
+        and str(p.get("injury") or "ACTIVE").upper() not in UNAVAILABLE_INJURY_STATUSES
+    ]
+
+    by_pos = {k: [] for k in ("QB", "RB", "WR", "TE", "K", "D/ST")}
+    for p in available:
+        pos = p.get("pos", "")
+        if pos in by_pos:
+            by_pos[pos].append(p)
+    for pos in by_pos:
+        by_pos[pos].sort(key=lambda x: float(x.get("proj", 0.0)), reverse=True)
+
+    starters = []
+    fa_fills = []
+    used_ids = set()
+
+    def _take(pos: str, count: int):
+        picked = 0
+        for p in by_pos[pos]:
+            key = p.get("id", p.get("name"))
+            if key in used_ids:
+                continue
+            used_ids.add(key)
+            starters.append({"slot": pos, "name": p["name"], "pos": pos, "proj": round(float(p["proj"]), 2)})
+            picked += 1
+            if picked == count:
+                break
+        while picked < count:
+            rep = round(float(fa.get(pos, FA_REPLACEMENT_FALLBACK[pos])), 2)
+            fa_fills.append(f"FA {pos} (+{rep:.1f})")
+            starters.append({"slot": pos, "name": f"Best FA {pos}", "pos": pos, "proj": rep, "is_fa": True})
+            picked += 1
+
+    _take("QB", 1)
+    _take("RB", 2)
+    _take("WR", 2)
+    _take("TE", 1)
+
+    # FLEX: highest remaining RB / WR / TE
+    flex_pool = [
+        p for pos in ("RB", "WR", "TE") for p in by_pos[pos]
+        if p.get("id", p.get("name")) not in used_ids
+    ]
+    flex_pool.sort(key=lambda x: float(x.get("proj", 0.0)), reverse=True)
+    if flex_pool:
+        fp = flex_pool[0]
+        used_ids.add(fp.get("id", fp.get("name")))
+        starters.append({"slot": "FLEX", "name": fp["name"], "pos": fp["pos"], "proj": round(float(fp["proj"]), 2)})
+    else:
+        rep = round(float(fa.get("FLEX", FA_REPLACEMENT_FALLBACK["FLEX"])), 2)
+        fa_fills.append(f"FA FLEX (+{rep:.1f})")
+        starters.append({"slot": "FLEX", "name": "Best FA FLEX", "pos": "FLEX", "proj": rep, "is_fa": True})
+
+    _take("D/ST", 1)
+    _take("K", 1)
+
+    total_proj = round(sum(s["proj"] for s in starters), 2)
+    return {
+        "optimal_proj": total_proj,
+        "fa_fills": fa_fills,
+        "starters": starters,
+    }
+
+
+def build_future_week_optimal_projections(
+    season: int,
+    future_weeks: list,
+    *,
+    teams_by_id: dict = None,
+) -> dict:
+    """
+    Fetches each future regular-season week (`future_weeks`, e.g. `[12, 13, 14]`) from ESPN,
+    computes every manager's optimal healthy projected starting lineup (+ best FA gap fills),
+    and returns `{week: {owner: {'optimal_proj', 'fa_fills', 'starters'}}}`.
+    """
+    weekly_proj = {}
+    for wk in future_weeks:
+        if wk < 1 or wk > 14:
+            continue
+        try:
+            wk_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), wk, ESPN_S2, ESPN_SWID)
+            tmap = teams_by_id or parse_league_members_and_teams(wk_data)
+            fa_base = fetch_top_free_agent_baselines(season, wk)
+            wk_out = {}
+            for t in wk_data.get("teams", []):
+                tid = t.get("id")
+                if tid not in tmap:
+                    continue
+                own = standardize_name(tmap[tid]["owner"])
+                if own.lower() == "rej hoxha":
+                    own = "rej hoxha"
+                roster_players = []
+                for e in t.get("roster", {}).get("entries", []):
+                    pl = e.get("playerPoolEntry", {}).get("player", {})
+                    pos = POS_ID_TO_NAME.get(pl.get("defaultPositionId", 0))
+                    if not pos:
+                        continue
+                    proj = 0.0
+                    for s in pl.get("stats", []):
+                        if s.get("statSourceId") == 1 and s.get("scoringPeriodId") == wk:
+                            proj = float(s.get("appliedTotal", 0.0) or 0.0)
+                            break
+                    roster_players.append({
+                        "id": pl.get("id", pl.get("fullName")),
+                        "name": pl.get("fullName", "Unknown"),
+                        "pos": pos,
+                        "proj": proj,
+                        "injury": pl.get("injuryStatus", "ACTIVE"),
+                    })
+                wk_out[own] = solve_optimal_starting_lineup(roster_players, fa_baselines=fa_base)
+            if wk_out:
+                weekly_proj[wk] = wk_out
+        except Exception:
+            continue
+    return weekly_proj
+
+
+def run_playoff_simulation(
+    current_week: int,
+    completed_games: list,
+    schedule: list,
+    team_power: dict = None,
+    n_sims: int = 10000,
+    weekly_projections: dict = None,
+):
     """
     Runs Monte Carlo simulation for remaining weeks (current_week through 14).
+    When `weekly_projections` is provided (from `build_future_week_optimal_projections`),
+    each remaining week blends 75% Optimal Healthy Weekly Lineup (+FA gap fill) with
+    25% empirical team power so Bye Weeks, Injuries, and Matchups are accurately priced in!
     Also tracks conditional Playoff % if a team WINS vs LOSES their current_week matchup (Playoff Leverage).
     """
     if not team_power:
@@ -260,12 +472,17 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
         sim_h2h = dict(base_h2h)
         won_current_week = {}
         
-        # Simulate remaining games
+        # Simulate remaining games (using Week-specific Optimal Lineup projections when available!)
         for g in remaining_schedule:
             a_own = g['away']
             h_own = g['home']
-            a_score = random.gauss(team_power[a_own]['mean'], team_power[a_own]['std'])
-            h_score = random.gauss(team_power[h_own]['mean'], team_power[h_own]['std'])
+            wk_p = (weekly_projections or {}).get(g['week'], {})
+            a_opt = wk_p.get(a_own, {}).get('optimal_proj')
+            h_opt = wk_p.get(h_own, {}).get('optimal_proj')
+            a_mu = (0.75 * a_opt + 0.25 * team_power[a_own]['mean']) if a_opt else team_power[a_own]['mean']
+            h_mu = (0.75 * h_opt + 0.25 * team_power[h_own]['mean']) if h_opt else team_power[h_own]['mean']
+            a_score = random.gauss(a_mu, team_power[a_own]['std'])
+            h_score = random.gauss(h_mu, team_power[h_own]['std'])
             
             sim_records[a_own]['pf'] += a_score
             sim_records[h_own]['pf'] += h_score
@@ -450,13 +667,41 @@ def run_playoff_simulation(current_week: int, completed_games: list, schedule: l
         
     return results
 
-def simulate_league_playoff_odds_from_espn(raw_data: dict, completed_through_week: int, n_sims: int = 10000) -> dict:
-    """Convenience helper to run the full 10,000-sim engine directly from an ESPN API payload."""
+def simulate_league_playoff_odds_from_espn(
+    raw_data: dict,
+    completed_through_week: int,
+    n_sims: int = 10000,
+    use_optimal_weekly_lineups: bool = True,
+    season: int = None,
+) -> dict:
+    """
+    Convenience helper to run the full 10,000-sim engine directly from an ESPN API payload,
+    automatically incorporating optimal healthy future-week projected lineups (+ FA gap fills)
+    for remaining Weeks (completed_through_week + 1 .. 14).
+    """
     completed_games, full_schedule, team_power = extract_live_state_from_espn(raw_data, completed_through_week)
     if not full_schedule:
         full_schedule = load_schedule_csv()
     target_sim_week = min(14, completed_through_week + 1)
-    return run_playoff_simulation(target_sim_week, completed_games, full_schedule, team_power=team_power, n_sims=n_sims)
+
+    weekly_projections = None
+    if use_optimal_weekly_lineups and completed_through_week < 14:
+        eff_season = int(season or raw_data.get("seasonId") or CURRENT_YEAR)
+        future_weeks = list(range(completed_through_week + 1, 15))
+        if future_weeks:
+            teams_by_id = parse_league_members_and_teams(raw_data)
+            weekly_projections = build_future_week_optimal_projections(
+                eff_season, future_weeks, teams_by_id=teams_by_id
+            )
+
+    return run_playoff_simulation(
+        target_sim_week,
+        completed_games,
+        full_schedule,
+        team_power=team_power,
+        n_sims=n_sims,
+        weekly_projections=weekly_projections,
+    )
 
 def format_playoff_odds_report(results: dict, current_week: int, season: int) -> str:
     """Formats playoff odds into clean markdown."""
