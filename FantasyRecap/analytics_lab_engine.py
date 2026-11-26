@@ -194,6 +194,7 @@ def compute_weekly_trends(
     season: int = int(CURRENT_YEAR),
     completed_week: int = 11,
     n_sims: int = 800,
+    final_week_odds: Optional[dict] = None,
 ) -> dict:
     """
     Computes week-by-week 2026 trajectories (Weeks 1..completed_week):
@@ -266,16 +267,21 @@ def compute_weekly_trends(
             std_val = max(11.0, min(22.0, std_val))
             team_power_w[own] = {"mean": round(reg_mean, 2), "std": round(std_val, 2), "raw_avg": round(raw_mean, 2)}
 
-        # Deterministic seeded Monte Carlo snapshot as of end of week `wk`
-        games_up_to_wk = [g for g in completed_games if int(g["week"]) <= wk]
-        random.seed(season * 1000 + wk * 17)
-        odds_w = run_playoff_simulation(
-            min(14, wk + 1),
-            games_up_to_wk,
-            full_schedule,
-            team_power=team_power_w,
-            n_sims=n_sims,
-        )
+        # Deterministic seeded Monte Carlo snapshot as of end of week `wk`.
+        # For the latest completed week, anchor to the live Optimal Weekly Lineups (+FA Fill)
+        # odds (`final_week_odds`) when provided so the endpoint matches the Playoff Machine 1:1.
+        if wk == int(completed_week) and final_week_odds:
+            odds_w = final_week_odds
+        else:
+            games_up_to_wk = [g for g in completed_games if int(g["week"]) <= wk]
+            random.seed(season * 1000 + wk * 17)
+            odds_w = run_playoff_simulation(
+                min(14, wk + 1),
+                games_up_to_wk,
+                full_schedule,
+                team_power=team_power_w,
+                n_sims=n_sims,
+            )
 
         # Power Rank (1..16): 55% All-Play %, 35% Actual Win %, 10% Normalized PF
         rank_tuples = []
@@ -433,6 +439,7 @@ def build_analytics_lab_bundle(
     db_path: Path = DB_PATH,
     season: int = int(CURRENT_YEAR),
     completed_week: int = 11,
+    final_week_odds: Optional[dict] = None,
 ) -> dict:
     """Assembles the full Analytics Lab payload for `hub_data.json`."""
     luck_current = compute_all_play_luck(db_path, season=season, max_week=completed_week)
@@ -452,6 +459,7 @@ def build_analytics_lab_bundle(
         season=season,
         completed_week=completed_week,
         n_sims=800,
+        final_week_odds=final_week_odds,
     )
     heatmap = compute_positional_strength_heatmap(db_path, season=season, max_week=completed_week)
 

@@ -1161,6 +1161,20 @@ function renderAnalyticsLabTab() {
   const tr = an.trends;
   const weeks = (tr && tr.weeks) || [];
   const series = (tr && tr.series) || {};
+  // Anchor final week's Playoff Odds point to the exact live Playoff Machine odds (0 picks locked)
+  // so Playoff Machine & Analytics Lab always agree to the exact 0.1%.
+  const savedLocked = Object.assign({}, LOCKED_PICKS);
+  const savedCustom = Object.assign({}, CUSTOM_SCORES);
+  for (const k of Object.keys(LOCKED_PICKS)) delete LOCKED_PICKS[k];
+  for (const k of Object.keys(CUSTOM_SCORES)) delete CUSTOM_SCORES[k];
+  const baseSim = runBrowserMonteCarlo(4000);
+  Object.assign(LOCKED_PICKS, savedLocked);
+  Object.assign(CUSTOM_SCORES, savedCustom);
+  for (const o of Object.keys(series)) {
+    if (baseSim.odds[o] && series[o].po && series[o].po.length) {
+      series[o].po[series[o].po.length - 1] = parseFloat(baseSim.odds[o].po);
+    }
+  }
   const ownersSorted = Object.keys(series).sort((a, b) => {
     const la = series[a].po[series[a].po.length - 1] || 0;
     const lb = series[b].po[series[b].po.length - 1] || 0;

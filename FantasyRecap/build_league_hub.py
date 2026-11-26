@@ -311,6 +311,7 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         db_path=DB_PATH,
         season=season,
         completed_week=completed_week,
+        final_week_odds=baseline_odds,
     )
     episodes = fetch_rss_episodes()
 
