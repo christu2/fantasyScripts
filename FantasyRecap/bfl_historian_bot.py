@@ -315,13 +315,13 @@ def build_draft_steals_report(season: Optional[int] = None, owner_query: str = "
             owner_tag = "" if owner_filter else f" ({_short_mgr(r['owner'])})"
             pr_str = f"{r['pos']}{r['pos_draft_rank']} → {r['pos']}{r['pos_finish_rank']}" if r["pos_draft_rank"] and r["pos_finish_rank"] else r["pos"]
             out.append(
-                f"**{idx}. {yr_tag}{r['player']}**{owner_tag} — Rd {r['round']} (#{r['pick']}) • `{pr_str}` • `{r['pts']:.1f} pts` (`{r['delta']:+.1f}` vs pos slot)"
+                f"**{idx}. {yr_tag}{r['player']}**{owner_tag} — Rd {r['round']} (#{r['pick']}) • `{pr_str}` • `{r['pts']:.1f} pts` (`{r['delta']:+.1f}` VORP vs slot)"
             )
         return "\n".join(out)
 
     return {
         "title": f"BFL Draft Steals & Busts — {scope}",
-        "description": "Ranked by position-normalized points above/below the expected return for that exact position & draft slot.",
+        "description": "Ranked by 16-team **Draft VORP vs Slot** (`Actual VORP − Expected VORP` above QB16/RB36/WR38/TE16 replacement).",
         "fields": [
             {"name": "Biggest Steals (Round 4+)", "value": _fmt_rows(steals), "inline": False},
             {"name": "Biggest Busts (Rounds 1–5)", "value": _fmt_rows(busts), "inline": False},

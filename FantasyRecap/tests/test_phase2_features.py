@@ -167,13 +167,20 @@ class TestLeagueHubBundle(unittest.TestCase):
     def test_position_normalized_draft_steals_avoids_qb_inflation(self):
         if not DB_PATH.exists():
             self.skipTest("bfl_history.db not present")
-        res = compute_position_normalized_draft_value(DB_PATH, season=2026, limit=10)
-        steal_names = [s["player"] for s in res["steals"]]
-        # Mid-pack QB18 Trevor Lawrence must NOT show up as a top steal
-        self.assertNotIn("Trevor Lawrence", steal_names)
-        # Steals must include non-QB positional out-performers (RB/WR/TE)
-        steal_positions = {s["pos"] for s in res["steals"]}
+        res_2026 = compute_position_normalized_draft_value(DB_PATH, season=2026, limit=10)
+        steal_names_2026 = [s["player"] for s in res_2026["steals"]]
+        # Mid-pack/below-replacement QBs (Trevor Lawrence QB18, Jacoby Brissett QB18) must NOT show up as steals
+        self.assertNotIn("Trevor Lawrence", steal_names_2026)
+        self.assertNotIn("Jacoby Brissett", steal_names_2026)
+        steal_positions = {s["pos"] for s in res_2026["steals"]}
         self.assertTrue(bool(steal_positions & {"RB", "WR", "TE"}))
+
+        res_all = compute_position_normalized_draft_value(DB_PATH, season=None, limit=10)
+        all_names = [s["player"] for s in res_all["steals"]]
+        # True MVP/league-winning steals (Lamar Jackson, Patrick Mahomes, Kyren Williams) must outrank backup-cliff QBs
+        self.assertIn("Lamar Jackson", all_names[:3])
+        self.assertNotIn("Sam Howell", all_names)
+        self.assertNotIn("Daniel Jones", all_names[:5])
 
     def test_web_hub_static_files_and_history_export(self):
         for fname in ("index.html", "styles.css", "app.js"):

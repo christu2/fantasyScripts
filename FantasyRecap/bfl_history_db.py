@@ -1292,6 +1292,14 @@ def _call_gemini(
     raise RuntimeError("Gemini API call failed: " + " | ".join(errs[-6:]))
 
 
+DRAFT_REPLACEMENT_RANKS = {
+    "QB": 16,
+    "RB": 36,
+    "WR": 38,
+    "TE": 16,
+}
+
+
 def compute_position_normalized_draft_value(
     db_path: Path = DB_PATH,
     *,
@@ -1300,15 +1308,20 @@ def compute_position_normalized_draft_value(
     limit: int = 10,
 ) -> dict:
     """
-    Computes TRUE position-normalized draft value (`value_over_slot`) so QBs never
-    artificially dominate Draft Steals simply because QBs score more raw points than WRs/RBs/TEs.
+    Computes Draft VORP Above Slot (`actual_vorp - expected_vorp[pos_draft_rank]`)
+    using BFL's exact 16-team positional replacement baselines (QB16, RB36, WR38, TE16).
 
     Formula per `(season, position)`:
-      Let `expected_pts[k]` be the points scored by the k-th highest-scoring drafted player
-      at that same position in that same season. For a player drafted at positional rank `d`
-      (e.g., WR33 or QB16), their true draft value is:
-          `value_over_slot = actual_season_points - expected_pts[d]`
-      (Example: QB16 finishing QB18 gets negative value instead of +106 vs Round Avg!)
+      - `repl_pts` = season points scored by the replacement-level starter (QB16, RB36, WR38, TE16)
+      - `actual_vorp = max(0.0, actual_season_points - repl_pts)`
+      - `expected_vorp = max(0.0, expected_pts[pos_draft_rank] - repl_pts)`
+      - `delta (VORP vs Slot) = actual_vorp - expected_vorp`
+
+    Why VORP beats raw positional points:
+      - Late-round backup QBs who merely become average starters (e.g., QB26 -> QB12 or QB18)
+        no longer get +200 pt cliff bonuses over waiver-level QBs.
+      - True league-winners (Lamar QB1, Mahomes QB1, Kyren RB4) rise to the top.
+      - Busts accurately reflect lost VORP (blowing #1 overall RB1 hurts far more than missing on a Rd 5 QB8).
     """
     if not db_path.exists():
         return {"steals": [], "busts": [], "seasons": []}
@@ -1338,12 +1351,17 @@ def compute_position_normalized_draft_value(
     ).fetchall()
     conn.close()
 
-    # Group by (season, position) to build each season's exact positional scoring curve
+    # Group by (season, position) to build each season's exact positional scoring curve & replacement threshold
     curves = {}
     for r in rows:
         curves.setdefault((int(r[0]), r[5]), []).append(float(r[8] or 0.0))
-    for k in curves:
-        curves[k].sort(reverse=True)
+    repl_pts_map = {}
+    for k, vals in curves.items():
+        vals.sort(reverse=True)
+        pos = k[1]
+        r_rank = DRAFT_REPLACEMENT_RANKS.get(pos, 16)
+        r_idx = min(r_rank - 1, len(vals) - 1)
+        repl_pts_map[k] = vals[r_idx] if vals else 0.0
 
     scored = []
     for r in rows:
@@ -1355,10 +1373,12 @@ def compute_position_normalized_draft_value(
         curve = curves.get((yr, pos), [])
         if not curve or pdr <= 0:
             continue
-        # Expected points for drafting the pdr-th player at this position in this season
+        repl_pts = repl_pts_map.get((yr, pos), 0.0)
         slot_idx = min(pdr - 1, len(curve) - 1)
         expected_pts = curve[slot_idx]
-        val_over_slot = round(pts - expected_pts, 1)
+        actual_vorp = max(0.0, pts - repl_pts)
+        expected_vorp = max(0.0, expected_pts - repl_pts)
+        vorp_over_slot = round(actual_vorp - expected_vorp, 1)
         pos_leap = (pdr - pfr) if pfr > 0 else 0
         scored.append({
             "season": yr,
@@ -1372,14 +1392,16 @@ def compute_position_normalized_draft_value(
             "pos_leap": pos_leap,
             "pts": round(pts, 1),
             "expected_pts": round(expected_pts, 1),
-            "delta": val_over_slot,
+            "actual_vorp": round(actual_vorp, 1),
+            "expected_vorp": round(expected_vorp, 1),
+            "delta": vorp_over_slot,
         })
 
-    # Steals: Round 4+ picks who genuinely outperformed their positional draft slot (`delta > 0` & `pos_leap >= 3`)
+    # Steals: Round 4+ picks who genuinely beat replacement & outperformed their draft slot's expected VORP
     steals = [x for x in scored if x["round"] >= 4 and x["delta"] > 0 and x["pos_leap"] >= 3]
     steals.sort(key=lambda x: (x["delta"], x["pos_leap"]), reverse=True)
 
-    # Busts: Early-round picks (Rounds 1-5) who severely underperformed their positional draft slot
+    # Busts: Early-round picks (Rounds 1-5) who severely underperformed their draft slot's expected VORP
     busts = [x for x in scored if x["round"] <= 5 and x["delta"] < 0]
     busts.sort(key=lambda x: (x["delta"], x["pos_leap"]))
 
