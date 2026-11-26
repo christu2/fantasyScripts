@@ -627,7 +627,7 @@ def _compute_tags(
     elif win_games_swung == 1 and win_playoff_vorp >= 10.0:
         tags.append("Flipped Playoff Game")
 
-    if abs_swing < 12.0 and win_vorp >= 18.0 and lose_vorp >= 18.0:
+    if abs_swing < 18.0 and win_vorp >= 18.0 and lose_vorp >= 18.0:
         tags.append("Win-Win")
     elif win_vorp < 6.0 and lose_vorp < 6.0:
         tags.append("Lose-Lose")

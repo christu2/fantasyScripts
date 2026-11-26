@@ -792,9 +792,22 @@ function renderTradesTab() {
       const adjB = Math.max(2, bV - shift + 4);
       const pctA = Math.round((adjA / (adjA + adjB)) * 100);
 
+      const minSideVorp = Math.min(aV, bV);
+      let verb = "leads";
+      if (TRADE_ERA !== "live") {
+        if (ld.abs_swing >= 45 && minSideVorp < 25) verb = "fleeced";
+        else if (ld.abs_swing >= 45) verb = "crushed";
+        else if (ld.abs_swing >= 25) verb = "won over";
+        else if (minSideVorp >= 18 && ld.abs_swing < 18) verb = "edged (Win-Win) vs.";
+        else verb = "edged";
+      } else {
+        if (ld.abs_swing >= 45 && minSideVorp < 20) verb = "is fleecing";
+        else if (ld.abs_swing >= 20) verb = "leads";
+        else verb = "edges";
+      }
       const headline = isPush
         ? `Even Swap (${fmtVorp(ld.abs_swing)} VORP diff)`
-        : `${displayName(ld.winner)} ${TRADE_ERA === "live" ? "leads" : "fleeced"} ${displayName(ld.loser)}`;
+        : `${displayName(ld.winner)} ${verb} ${displayName(ld.loser)}`;
 
       const renderSide = (owner, players, vorp, outcome, gamesSwung, won, lost) => {
         const cls = won ? "side-win" : (lost ? "side-lose" : "");
