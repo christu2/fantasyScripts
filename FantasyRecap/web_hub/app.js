@@ -683,7 +683,7 @@ function renderTradesTab() {
       repEl.style.display = "block";
       const netCol = ownerCard.net_vorp >= 0 ? "var(--green)" : "var(--red)";
       const favTxt = ownerCard.favorite_partner
-        ? `${shortName(ownerCard.favorite_partner.owner)} (${ownerCard.favorite_partner.count} deals, ${fmtVorp(ownerCard.favorite_partner.net_vorp)})`
+        ? `${shortName(ownerCard.favorite_partner.owner)} (${ownerCard.favorite_partner.count} ${ownerCard.favorite_partner.count === 1 ? "deal" : "deals"}, ${fmtVorp(ownerCard.favorite_partner.net_vorp)})`
         : "—";
       const markTxt = ownerCard.biggest_mark
         ? `${shortName(ownerCard.biggest_mark.owner)} (${fmtVorp(ownerCard.biggest_mark.net_vorp)} in ${ownerCard.biggest_mark.count})`
@@ -691,8 +691,8 @@ function renderTradesTab() {
       const nemTxt = ownerCard.worst_nemesis
         ? `${shortName(ownerCard.worst_nemesis.owner)} (${fmtVorp(ownerCard.worst_nemesis.net_vorp)} in ${ownerCard.worst_nemesis.count})`
         : "—";
-      const renderExtreme = (label, item, cls) => {
-        if (!item) return `<div class="extreme-box ${cls}"><div class="muted small">${label}</div><div>No trades recorded.</div></div>`;
+      const renderExtreme = (label, item, cls, emptyMsg) => {
+        if (!item) return `<div class="extreme-box ${cls}"><div style="font-weight:700;margin-bottom:3px;color:${cls === "best" ? "var(--green)" : "var(--red)"}">${label}</div><div class="muted small">${emptyMsg}</div></div>`;
         return `
           <div class="extreme-box ${cls}">
             <div style="display:flex;justify-content:space-between;margin-bottom:4px">
@@ -705,12 +705,14 @@ function renderTradesTab() {
           </div>
         `;
       };
+      const bestLbl = TRADE_ERA === "live" ? `Best ${liveYr} Trade` : "Best Trade Ever (Biggest Fleece)";
+      const worstLbl = TRADE_ERA === "live" ? `Worst ${liveYr} Trade` : "Worst Trade Ever (Biggest Regret)";
       repEl.innerHTML = `
         <div class="owner-report">
           <div class="owner-report-head">
             <div>
               <h3 style="font-size:1.05rem">${displayName(ownerCard.owner)} — ${TRADE_ERA === "live" ? liveYr + " Live" : "Career"} Trade Report Card</h3>
-              <span class="muted small">${ownerCard.trades} verified deals &bull; ${lens === "started" ? "Actual Lineup Impact" : "Pure Player Outcome"}</span>
+              <span class="muted small">${ownerCard.trades} verified ${ownerCard.trades === 1 ? "deal" : "deals"} &bull; ${lens === "started" ? "Actual Lineup Impact" : "Pure Player Outcome"}</span>
             </div>
             <button id="btnClearTradeOwner" class="btn btn-secondary btn-sm">Clear Manager Filter</button>
           </div>
@@ -723,8 +725,8 @@ function renderTradesTab() {
             <div class="stat-box"><div class="lbl">Worst Nemesis</div><div class="val" style="font-size:0.84rem;color:var(--red)">${nemTxt}</div></div>
           </div>
           <div class="owner-extremes">
-            ${renderExtreme("Best Trade Ever (Biggest Fleece)", ownerCard.best_trade, "best")}
-            ${renderExtreme("Worst Trade Ever (Biggest Regret)", ownerCard.worst_trade, "worst")}
+            ${renderExtreme(bestLbl, ownerCard.best_trade, "best", "No winning trades in this view.")}
+            ${renderExtreme(worstLbl, ownerCard.worst_trade, "worst", "No losing trades in this view.")}
           </div>
         </div>
       `;
@@ -798,9 +800,11 @@ function renderTradesTab() {
         const cls = won ? "side-win" : (lost ? "side-lose" : "");
         const col = vorp > 2 ? "var(--green)" : (vorp < -2 ? "var(--red)" : "var(--muted)");
         const metaBits = [];
-        if (outcome && outcome.won_champ) metaBits.push("Champ");
-        else if (outcome && outcome.runner_up) metaBits.push("Runner-Up");
-        else if (outcome && outcome.made_playoffs) metaBits.push("Playoffs");
+        if (outcome && outcome.is_complete) {
+          if (outcome.won_champ) metaBits.push("Won Championship");
+          else if (outcome.runner_up) metaBits.push("Super Bowl Runner-Up");
+          else if (outcome.made_playoffs) metaBits.push("Made Playoffs");
+        }
         if (gamesSwung > 0 && lens === "started") metaBits.push(`+${gamesSwung}W swung`);
 
         const pRows = players.map(p => {

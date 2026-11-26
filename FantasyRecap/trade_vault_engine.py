@@ -706,6 +706,12 @@ def _build_owner_report_cards(
         tlist = owner_trades[own]
         best_tr = max(tlist, key=lambda x: x[0]) if tlist else None
         worst_tr = min(tlist, key=lambda x: x[0]) if tlist else None
+        if best_tr and worst_tr and best_tr[1]["trade_id"] == worst_tr[1]["trade_id"]:
+            # Single-trade sample: don't duplicate the same deal into both Best and Worst
+            if best_tr[0] >= 0:
+                worst_tr = None
+            else:
+                best_tr = None
 
         fav_partner = None
         if partner_counts[own]:
@@ -841,20 +847,22 @@ def evaluate_all_trades(db_path: Path = DB_PATH, current_season: int = int(CURRE
         ).fetchone()[0]
         playoff_start_by_season[s] = int(po_min) if po_min else (14 if s <= 2020 else 15)
 
-    # Preload team_seasons outcomes
+    # Preload team_seasons outcomes (only finalized playoff/title badges for completed seasons)
     ts_outcomes: Dict[Tuple[int, int], dict] = {}
     for r in cur.execute(
         """
-        SELECT season, team_id, wins, losses, made_playoffs, won_championship, runner_up, final_rank
+        SELECT season, team_id, wins, losses, made_playoffs, won_championship, runner_up, final_rank, is_season_complete
         FROM team_seasons
         """
     ).fetchall():
+        is_done = bool(r[8])
         ts_outcomes[(int(r[0]), int(r[1]))] = {
             "record": f"{int(r[2])}-{int(r[3])}",
-            "made_playoffs": bool(r[4]),
-            "won_champ": bool(r[5]),
-            "runner_up": bool(r[6]),
-            "final_rank": int(r[7]),
+            "is_complete": is_done,
+            "made_playoffs": bool(r[4]) if is_done else False,
+            "won_champ": bool(r[5]) if is_done else False,
+            "runner_up": bool(r[6]) if is_done else False,
+            "final_rank": int(r[7]) if is_done else 0,
         }
 
     # Preload non-consolation games for Matchups Flipped detection: (season, team_id, week) -> (win, margin, is_playoffs)
