@@ -558,6 +558,8 @@ def _build_tts_payload(model: str, dialogue_text: str, chris_voice: str, dave_vo
         return {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
+                # Moderate temperature reduces autoregressive syllable skips & name hallucinations on 3.8-tts
+                "temperature": 0.45,
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {
                     "multiSpeakerVoiceConfig": {
@@ -612,12 +614,12 @@ def synthesize_multispeaker_pcm(
         models = [m.strip() for m in env_tts.split(",") if m.strip()]
     else:
         # Verified live free-tier multi-speaker TTS models (separate RPD pools!).
-        # `gemini-3.1-flash-tts-preview` is primary: single-pass continuous conversation
-        # (zero choppy per-turn `parts[]` seams like 3.8-tts) + clean -47.6 dB studio noise floor
-        # (12 dB cleaner than 2.5-flash-preview-tts).
+        # `gemini-3.8-flash-tts` is primary per Nick's voice/tone preference (with temp=0.45
+        # and gentle 9.8 kHz anti-aliasing lowpass in mastering), falling back cleanly to
+        # `gemini-3.1-flash-tts-preview` (brisk single-pass) / `3.8-lite` / `2.5-flash-preview-tts`.
         models = [
-            "gemini-3.1-flash-tts-preview",
             "gemini-3.8-flash-tts",
+            "gemini-3.1-flash-tts-preview",
             "gemini-3.8-flash-lite-tts",
             "gemini-2.5-flash-preview-tts",
         ]
@@ -751,7 +753,9 @@ def _two_pass_linear_normalize_wav(
     cause vinyl-like warble), two-pass linear normalization measures the exact LUFS
     first and applies one clean constant gain + true-peak ceiling.
     """
-    pre_chain = "highpass=f=65" + (",afftdn=nf=-28" if denoise else "")
+    # High-pass removes sub-bass rumble; 9.8 kHz gentle low-pass tames harsh 8-12 kHz Nyquist
+    # neural-vocoder buzz/aliasing on 24 kHz TTS audio without dulling voice clarity.
+    pre_chain = "highpass=f=65,lowpass=f=9800" + (",afftdn=nf=-28" if denoise else "")
     pass1_cmd = [
         "ffmpeg", "-y", "-i", str(in_wav),
         "-af", f"{pre_chain},loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}:print_format=json",
