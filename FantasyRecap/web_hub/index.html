@@ -18,6 +18,7 @@
       </div>
       <nav class="tabs" role="tablist">
         <button class="tab-btn active" data-tab="playoff" role="tab">Playoff Machine</button>
+        <button class="tab-btn" data-tab="analytics" role="tab">Analytics Lab</button>
         <button class="tab-btn" data-tab="history" role="tab">Record Book &amp; H2H</button>
         <button class="tab-btn" data-tab="drafts" role="tab">Draft Hall</button>
         <button class="tab-btn" data-tab="trades" role="tab">Trade Vault</button>
@@ -56,20 +57,21 @@
         <div class="card">
           <div class="card-head">
             <h3>Projected 7-Team Playoff Field</h3>
-            <span class="pill" id="simModeBadge">2,000 Live Browser Sims</span>
+            <span class="pill" id="simModeBadge">4,000 Live Browser Sims</span>
           </div>
+          <p class="muted small" style="margin-bottom:8px">Click any manager row to load their personalized <strong>Rooting Guide</strong> below.</p>
           <div class="table-wrap">
             <table class="data-table" id="playoffTable">
               <thead>
                 <tr>
                   <th>Seed</th>
                   <th>Manager</th>
-                  <th>Div</th>
                   <th>Rec</th>
                   <th>PF</th>
                   <th>PO %</th>
                   <th>Div %</th>
                   <th>Bye %</th>
+                  <th>Title %</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -79,7 +81,7 @@
 
         <div class="card">
           <div class="card-head">
-            <h3>Week 15 Bracket Preview</h3>
+            <h3>Playoff Bracket &amp; Title Path</h3>
             <span class="pill pill-gold">NFL Dynamic Re-Seeding</span>
           </div>
           <div id="bracketPreview" class="bracket-grid"></div>
@@ -95,12 +97,28 @@
                   <th>Rec</th>
                   <th>PF</th>
                   <th>PO %</th>
+                  <th>Title %</th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
           </div>
         </div>
+      </div>
+
+      <!-- Interactive Rooting Guide / Path to Playoffs -->
+      <div class="card" id="rootingGuideCard">
+        <div class="card-head">
+          <div>
+            <h3>Rooting Guide &amp; Playoff Leverage</h3>
+            <p class="muted small">Exact conditional odds from all 4,000 simulated seasons — see which games swing your playoff &amp; title hopes most.</p>
+          </div>
+          <div class="controls">
+            <select id="rootingOwnerSelect" class="select select-sm"></select>
+            <span class="pill pill-blue" id="rootingStatusPill">Contending</span>
+          </div>
+        </div>
+        <div id="rootingGuideBody"></div>
       </div>
 
       <!-- Interactive Remaining Schedule -->
@@ -114,6 +132,108 @@
 
       <!-- 4 Division Standings -->
       <div class="divisions-grid" id="divisionsGrid"></div>
+    </section>
+
+    <!-- TAB 2: ANALYTICS LAB (WEEKLY TRENDS, ALL-PLAY LUCK, POSITIONAL HEATMAP) -->
+    <section id="tab-analytics" class="tab-panel">
+      <div class="hero-bar">
+        <div>
+          <h2>BFL Analytics Lab — Storylines, Schedule Luck &amp; Roster DNA</h2>
+          <p class="muted small">
+            Track weekly Playoff Odds swings, expose Schedule Frauds via <strong>All-Play Record</strong>, and inspect 2026 positional VORP advantages heading into the playoffs.
+          </p>
+        </div>
+      </div>
+
+      <!-- 1. Interactive Week-by-Week Trend Chart -->
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3 id="trendChartTitle">2026 Week-by-Week Playoff Odds Rollercoaster</h3>
+            <p class="muted small">Click any manager chip below the chart to spotlight their season trajectory.</p>
+          </div>
+          <div class="controls">
+            <div class="seg-group" id="trendMetricGroup" role="group" aria-label="Trend Metric">
+              <button class="seg-btn active" data-metric="po">Playoff Odds %</button>
+              <button class="seg-btn" data-metric="rank">Power Rank</button>
+              <button class="seg-btn" data-metric="pf">Cumulative PF</button>
+            </div>
+          </div>
+        </div>
+        <div id="trendChartWrap" class="chart-wrap"></div>
+        <div id="trendLegend" class="trend-legend"></div>
+      </div>
+
+      <!-- 2. All-Play Record & Schedule Luck ("Fraud Detector") -->
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>All-Play Record &amp; Schedule Luck ("Fraud Detector")</h3>
+            <p class="muted small">
+              <strong>All-Play</strong> = your record if you played all 15 other managers every single week. <strong>Luck</strong> = Actual Wins minus Expected Wins.
+            </p>
+          </div>
+          <div class="controls">
+            <select id="luckSeasonSelect" class="select select-sm"></select>
+            <select id="luckSortSelect" class="select select-sm">
+              <option value="true_rank">Sort: True Strength (All-Play %)</option>
+              <option value="luck_desc">Sort: Luckiest (Biggest Frauds)</option>
+              <option value="luck_asc">Sort: Most Cursed (Unluckiest)</option>
+              <option value="sos">Sort: Hardest Schedule (Avg PA)</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table compact" id="luckTable">
+            <thead>
+              <tr>
+                <th>True #</th>
+                <th>Manager</th>
+                <th>Actual</th>
+                <th>All-Play</th>
+                <th>Exp W</th>
+                <th>Luck (&Delta;W)</th>
+                <th>Avg PF</th>
+                <th>Avg PA (SOS)</th>
+                <th>Verdict</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 3. 2026 Positional Strength VORP Heatmap -->
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3 id="heatmapTitle">2026 Positional Strength Heatmap (Starter VORP / Week)</h3>
+            <p class="muted small" id="heatmapBlurb">
+              Average weekly starting points above 16-team positional replacement (QB16, RB36, WR38, TE16, K16, D/ST16). Green = league-leading edge; Red = roster hole.
+            </p>
+          </div>
+          <span class="pill pill-blue" id="heatmapSeasonPill">2026 Starters</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table compact heatmap-table" id="heatmapTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Manager</th>
+                <th>QB</th>
+                <th>RB</th>
+                <th>WR</th>
+                <th>TE</th>
+                <th>K</th>
+                <th>D/ST</th>
+                <th>Total VORP/Wk</th>
+                <th>Edge / Hole</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <!-- TAB 2: 18-YEAR RECORD BOOK & H2H -->

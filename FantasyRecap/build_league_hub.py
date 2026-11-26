@@ -34,6 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from FantasyRecap.core.manifest import get_divisions, get_owner_to_division, load_manifest, load_project_env
 load_project_env()
 
+from FantasyRecap.analytics_lab_engine import build_analytics_lab_bundle
 from FantasyRecap.bfl_history_db import DB_PATH, compute_position_normalized_draft_value
 from FantasyRecap.config import CURRENT_YEAR
 from FantasyRecap.league_history_intelligence import BFL_CHAMPIONSHIPS, standardize_name
@@ -303,6 +304,14 @@ def build_hub_data(season: int, completed_week: int) -> dict:
     except Exception as exc:
         print(f"⚠️ Skipping live {season} trade sync (using cached SQLite trades): {exc}")
     trades_pack = evaluate_all_trades(DB_PATH, current_season=season)
+    print("📊 Computing Analytics Lab (All-Play Luck, Weekly Trends, Positional VORP Heatmap)...")
+    analytics_pack = build_analytics_lab_bundle(
+        completed_games,
+        full_schedule,
+        db_path=DB_PATH,
+        season=season,
+        completed_week=completed_week,
+    )
     episodes = fetch_rss_episodes()
 
     hub_data = {
@@ -326,6 +335,7 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         "awards": awards_data,
         "history": history_pack,
         "trades": trades_pack,
+        "analytics": analytics_pack,
         "podcast": {
             "rss_url": DEFAULT_RSS_URL,
             "episodes": episodes,

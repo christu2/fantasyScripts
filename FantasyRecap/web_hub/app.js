@@ -218,48 +218,133 @@ function buildStateWithLockedPicks() {
   return { records, h2h, ownerDiv, power, unlockedGames };
 }
 
+let ROOTING_OWNER = "Nick Christus";
+
 function runBrowserMonteCarlo(nSims = 4000) {
   const { records, h2h, power, unlockedGames } = buildStateWithLockedPicks();
   const owners = HUB.teams.map(t => t.owner);
-  const poCount = {}, divCount = {}, byeCount = {};
-  for (const o of owners) { poCount[o] = 0; divCount[o] = 0; byeCount[o] = 0; }
+  const poCount = {}, divCount = {}, byeCount = {}, finalsCount = {}, titleCount = {};
+  for (const o of owners) {
+    poCount[o] = 0; divCount[o] = 0; byeCount[o] = 0; finalsCount[o] = 0; titleCount[o] = 0;
+  }
 
   // Deterministic Common Random Numbers (CRN): fixed seed + draw per canonical schedule game
-  // so clicking & unclicking restores 100% bit-for-bit identical odds with zero random wobble.
+  // + fixed playoff draws so clicking & unclicking restores 100% bit-for-bit identical odds.
   const seed = (HUB.season * 1000) + (HUB.completed_week * 31) + (MODEL_MODE === "optimal" ? 7 : 13);
   const rng = createSeededRng(seed);
   const unlockedKeys = new Set(unlockedGames.map(g => gameKey(g)));
   const allRem = HUB.remaining_schedule;
 
-  const iters = unlockedGames.length === 0 ? 1 : nSims;
-  for (let i = 0; i < iters; i++) {
-    const simRec = {};
-    for (const o of owners) simRec[o] = { wins: records[o].wins, losses: records[o].losses, pf: records[o].pf };
-    const simH2H = Object.assign({}, h2h);
+  // Conditional outcome counters per unlocked game for instant exact Rooting Guide
+  const cond = {};
+  for (const g of unlockedGames) {
+    const k = gameKey(g);
+    cond[k] = {
+      game: g,
+      aTrials: 0, hTrials: 0,
+      aPo: {}, hPo: {}, aBye: {}, hBye: {}, aTitle: {}, hTitle: {},
+    };
+    for (const o of owners) {
+      cond[k].aPo[o] = 0; cond[k].hPo[o] = 0;
+      cond[k].aBye[o] = 0; cond[k].hBye[o] = 0;
+      cond[k].aTitle[o] = 0; cond[k].hTitle[o] = 0;
+    }
+  }
 
-    for (const g of allRem) {
-      const zA = gaussianRand(rng);
-      const zH = gaussianRand(rng);
-      if (!unlockedKeys.has(gameKey(g))) continue;
-      const aMu = getProjectedMeanForWeek(g.away, g.week, power);
-      const hMu = getProjectedMeanForWeek(g.home, g.week, power);
-      const aPts = aMu + zA * power[g.away].std;
-      const hPts = hMu + zH * power[g.home].std;
-      simRec[g.away].pf += aPts;
-      simRec[g.home].pf += hPts;
-      if (aPts >= hPts) {
-        simRec[g.away].wins += 1; simRec[g.home].losses += 1;
-        simH2H[`${g.away}|${g.home}`] = (simH2H[`${g.away}|${g.home}`] || 0) + 1;
-      } else {
-        simRec[g.home].wins += 1; simRec[g.away].losses += 1;
-        simH2H[`${g.home}|${g.away}`] = (simH2H[`${g.home}|${g.away}`] || 0) + 1;
+  // Always run nSims for Title % even when regular season is 100% locked!
+  const iters = nSims;
+  const regLocked = unlockedGames.length === 0;
+  const detSeeding = regLocked ? computeStandingsAndSeeding(records, h2h, HUB.divisions) : null;
+
+  for (let i = 0; i < iters; i++) {
+    let sortedChamps, fullSeeding;
+    const gameWinners = [];
+
+    if (!regLocked) {
+      const simRec = {};
+      for (const o of owners) simRec[o] = { wins: records[o].wins, losses: records[o].losses, pf: records[o].pf };
+      const simH2H = Object.assign({}, h2h);
+
+      for (const g of allRem) {
+        const zA = gaussianRand(rng);
+        const zH = gaussianRand(rng);
+        const k = gameKey(g);
+        if (!unlockedKeys.has(k)) continue;
+        const aMu = getProjectedMeanForWeek(g.away, g.week, power);
+        const hMu = getProjectedMeanForWeek(g.home, g.week, power);
+        const aPts = aMu + zA * power[g.away].std;
+        const hPts = hMu + zH * power[g.home].std;
+        simRec[g.away].pf += aPts;
+        simRec[g.home].pf += hPts;
+        if (aPts >= hPts) {
+          simRec[g.away].wins += 1; simRec[g.home].losses += 1;
+          simH2H[`${g.away}|${g.home}`] = (simH2H[`${g.away}|${g.home}`] || 0) + 1;
+          gameWinners.push([k, true]);
+        } else {
+          simRec[g.home].wins += 1; simRec[g.away].losses += 1;
+          simH2H[`${g.home}|${g.away}`] = (simH2H[`${g.home}|${g.away}`] || 0) + 1;
+          gameWinners.push([k, false]);
+        }
       }
+      ({ sortedChamps, fullSeeding } = computeStandingsAndSeeding(simRec, simH2H, HUB.divisions));
+    } else {
+      ({ sortedChamps, fullSeeding } = detSeeding);
     }
 
-    const { sortedChamps, fullSeeding } = computeStandingsAndSeeding(simRec, simH2H, HUB.divisions);
+    const poField = fullSeeding.slice(0, 7);
+    const poSet = new Set(poField);
+    const byeOwner = sortedChamps.length ? sortedChamps[0] : poField[0];
     for (const dc of sortedChamps) divCount[dc] += 1;
-    if (sortedChamps.length) byeCount[sortedChamps[0]] += 1;
-    for (const pfTeam of fullSeeding.slice(0, 7)) poCount[pfTeam] += 1;
+    if (byeOwner) byeCount[byeOwner] += 1;
+    for (const pfTeam of poField) poCount[pfTeam] += 1;
+
+    // Simulate Weeks 15–17 Playoff Bracket with NFL Dynamic Re-Seeding
+    // Round 1 (Week 15): #2 vs #7, #3 vs #6, #4 vs #5 (#1 Bye)
+    const r1Pairs = [[2, 7], [3, 6], [4, 5]];
+    const r1Winners = [];
+    for (const [sHi, sLo] of r1Pairs) {
+      const tHi = poField[sHi - 1], tLo = poField[sLo - 1];
+      const scHi = power[tHi].mean + gaussianRand(rng) * power[tHi].std;
+      const scLo = power[tLo].mean + gaussianRand(rng) * power[tLo].std;
+      r1Winners.push(scHi >= scLo ? [sHi, tHi] : [sLo, tLo]);
+    }
+    // Round 2 (Week 16): NFL Dynamic Re-Seeding — #1 plays lowest surviving seed (largest seed #)
+    r1Winners.sort((a, b) => a[0] - b[0]);
+    const t1 = poField[0];
+    const tLow = r1Winners[2][1];
+    const s1A = power[t1].mean + gaussianRand(rng) * power[t1].std;
+    const s1B = power[tLow].mean + gaussianRand(rng) * power[tLow].std;
+    const semiW1 = s1A >= s1B ? t1 : tLow;
+
+    const tS1 = r1Winners[0][1], tS2 = r1Winners[1][1];
+    const s2A = power[tS1].mean + gaussianRand(rng) * power[tS1].std;
+    const s2B = power[tS2].mean + gaussianRand(rng) * power[tS2].std;
+    const semiW2 = s2A >= s2B ? tS1 : tS2;
+
+    finalsCount[semiW1] += 1;
+    finalsCount[semiW2] += 1;
+
+    // Week 17: BFL Super Bowl
+    const fA = power[semiW1].mean + gaussianRand(rng) * power[semiW1].std;
+    const fB = power[semiW2].mean + gaussianRand(rng) * power[semiW2].std;
+    const champ = fA >= fB ? semiW1 : semiW2;
+    titleCount[champ] += 1;
+
+    // Accumulate conditional stats for Rooting Guide
+    for (const [k, awayWon] of gameWinners) {
+      const c = cond[k];
+      if (awayWon) {
+        c.aTrials += 1;
+        for (const o of poField) c.aPo[o] += 1;
+        if (byeOwner) c.aBye[byeOwner] += 1;
+        c.aTitle[champ] += 1;
+      } else {
+        c.hTrials += 1;
+        for (const o of poField) c.hPo[o] += 1;
+        if (byeOwner) c.hBye[byeOwner] += 1;
+        c.hTitle[champ] += 1;
+      }
+    }
   }
 
   const odds = {};
@@ -268,16 +353,121 @@ function runBrowserMonteCarlo(nSims = 4000) {
       po: ((poCount[o] / iters) * 100).toFixed(1),
       div: ((divCount[o] / iters) * 100).toFixed(1),
       bye: ((byeCount[o] / iters) * 100).toFixed(1),
+      finals: ((finalsCount[o] / iters) * 100).toFixed(1),
+      title: ((titleCount[o] / iters) * 100).toFixed(1),
     };
   }
   const currentSeeding = computeStandingsAndSeeding(records, h2h, HUB.divisions);
-  return { records, h2h, odds, currentSeeding, unlockedCount: unlockedGames.length, iters };
+  return { records, h2h, odds, cond, currentSeeding, unlockedCount: unlockedGames.length, iters };
+}
+
+function renderRootingGuide(owner, odds, cond, unlockedCount) {
+  const sel = document.getElementById("rootingOwnerSelect");
+  if (sel && sel.options.length === 0) {
+    sel.innerHTML = HUB.teams.map(t => t.owner).sort().map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
+    sel.value = owner;
+    sel.addEventListener("change", () => {
+      ROOTING_OWNER = sel.value;
+      renderPlayoffMachine();
+    });
+  } else if (sel) {
+    sel.value = owner;
+  }
+
+  const o = odds[owner] || { po: "0.0", div: "0.0", bye: "0.0", finals: "0.0", title: "0.0" };
+  const poNum = parseFloat(o.po);
+  const byeNum = parseFloat(o.bye);
+  const titleNum = parseFloat(o.title);
+  const pill = document.getElementById("rootingStatusPill");
+  if (poNum >= 99.95 && byeNum >= 99.95) {
+    pill.textContent = `Clinched #1 Bye • Title ${o.title}%`;
+    pill.className = "pill pill-gold";
+  } else if (poNum >= 99.95) {
+    pill.textContent = `Clinched Playoffs • Bye ${o.bye}% • Title ${o.title}%`;
+    pill.className = "pill pill-green";
+  } else if (poNum <= 0.05) {
+    pill.textContent = "Eliminated from Playoffs";
+    pill.className = "pill";
+  } else {
+    pill.textContent = `PO ${o.po}% • Div ${o.div}% • Title ${o.title}%`;
+    pill.className = "pill pill-blue";
+  }
+
+  const body = document.getElementById("rootingGuideBody");
+  if (unlockedCount === 0) {
+    body.innerHTML = `<p class="muted small">All regular-season games are locked. <strong>${displayName(owner)}</strong> has <strong>${o.po}%</strong> Playoff odds, <strong>${o.finals}%</strong> Super Bowl odds, and <strong>${o.title}%</strong> Championship odds.</p>`;
+    return;
+  }
+
+  // If manager has already clinched >= 98% playoffs, evaluate leverage on #1 Bye % instead of PO %!
+  const useBye = poNum >= 98.0;
+  const metricLbl = useBye ? "#1 Bye" : "Playoff";
+
+  const ownGames = [];
+  const helpGames = [];
+  for (const k of Object.keys(cond)) {
+    const c = cond[k];
+    if (c.aTrials < 15 || c.hTrials < 15) continue;
+    const g = c.game;
+    const pAway = ((useBye ? c.aBye[owner] : c.aPo[owner]) / c.aTrials) * 100.0;
+    const pHome = ((useBye ? c.hBye[owner] : c.hPo[owner]) / c.hTrials) * 100.0;
+    const swing = Math.abs(pAway - pHome);
+    const rootFor = pAway >= pHome ? g.away : g.home;
+    const rootAgainst = pAway >= pHome ? g.home : g.away;
+    const hiP = Math.max(pAway, pHome);
+    const loP = Math.min(pAway, pHome);
+    const item = { week: g.week, away: g.away, home: g.home, rootFor, rootAgainst, hiP, loP, swing };
+    if (g.away === owner || g.home === owner) ownGames.push(item);
+    else if (swing >= 0.8) helpGames.push(item);
+  }
+  ownGames.sort((a, b) => a.week - b.week);
+  helpGames.sort((a, b) => b.swing - a.swing);
+
+  const ownHtml = ownGames.length
+    ? ownGames.map(x => {
+        const opp = x.away === owner ? x.home : x.away;
+        return `
+          <div class="rooting-item">
+            <div>
+              <strong>Wk ${x.week} vs ${displayName(opp)}</strong>
+              <span class="tie-note">Win &rarr; ${x.hiP.toFixed(1)}% &bull; Loss &rarr; ${x.loP.toFixed(1)}% ${metricLbl}</span>
+            </div>
+            <span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}% Swing</span>
+          </div>
+        `;
+      }).join("")
+    : `<p class="muted small">All of ${shortName(owner)}'s remaining games are locked.</p>`;
+
+  const helpHtml = helpGames.length
+    ? helpGames.slice(0, 5).map(x => `
+        <div class="rooting-item">
+          <div>
+            <strong>Wk ${x.week}: Root for ${shortName(x.rootFor)}</strong> over ${shortName(x.rootAgainst)}
+            <span class="tie-note">${metricLbl}: ${x.hiP.toFixed(1)}% if ${shortName(x.rootFor)} wins vs ${x.loP.toFixed(1)}%</span>
+          </div>
+          <span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}%</span>
+        </div>
+      `).join("")
+    : `<p class="muted small">No high-leverage outside games remaining for ${shortName(owner)} (${metricLbl} odds are largely self-determined).</p>`;
+
+  body.innerHTML = `
+    <div class="rooting-grid">
+      <div class="rooting-box">
+        <h4>${shortName(owner)}'s Remaining Games (${metricLbl} Leverage)</h4>
+        ${ownHtml}
+      </div>
+      <div class="rooting-box">
+        <h4>Biggest Outside Help (Who to Root For)</h4>
+        ${helpHtml}
+      </div>
+    </div>
+  `;
 }
 
 /* ---------- RENDER PLAYOFF MACHINE ---------- */
 
 function renderPlayoffMachine() {
-  const { records, h2h, odds, currentSeeding, unlockedCount, iters } = runBrowserMonteCarlo(4000);
+  const { records, h2h, odds, cond, currentSeeding, unlockedCount, iters } = runBrowserMonteCarlo(4000);
   const lockedCount = Object.keys(LOCKED_PICKS).length;
   const totalRem = HUB.remaining_schedule.length;
   const teamMap = Object.fromEntries(HUB.teams.map(t => [t.owner, t]));
@@ -287,14 +477,14 @@ function renderPlayoffMachine() {
     ? "Optimal Healthy Weekly Lineups (auto-fills Bye/Injury gaps with best Free Agent)"
     : "Season Average PPG";
   if (lockedCount === 0) {
-    banner.innerHTML = `<strong>Standings:</strong> Completed Weeks 1–${HUB.completed_week} (no games locked yet). <strong>PO% / Div% / Bye%:</strong> ${iters.toLocaleString()} live Monte Carlo sims over Weeks ${HUB.completed_week + 1}–14 using <em>${modelTxt}</em>.`;
+    banner.innerHTML = `<strong>Standings:</strong> Completed Weeks 1–${HUB.completed_week} (no games locked yet). <strong>PO% / Div% / Bye% / Title%:</strong> ${iters.toLocaleString()} live Monte Carlo sims through Week 17 using <em>${modelTxt}</em>.`;
   } else if (unlockedCount === 0) {
-    banner.innerHTML = `<strong>Full Season Locked (${lockedCount}/${totalRem} games):</strong> Exact deterministic Week 15 BFL Playoff Bracket computed with official H2H &amp; Points-For tiebreakers. Toggle <em>Edit Scores</em> to test exact PF tiebreakers.`;
+    banner.innerHTML = `<strong>Full Regular Season Locked (${lockedCount}/${totalRem} games):</strong> Exact deterministic Week 15 BFL Playoff Bracket + ${iters.toLocaleString()} simulated Week 15–17 Championship brackets (NFL Dynamic Re-Seeding).`;
   } else {
-    banner.innerHTML = `<strong>Custom Scenario (${lockedCount}/${totalRem} locked):</strong> Standings reflect Weeks 1–${HUB.completed_week} + your picks; remaining ${unlockedCount} games simulated ${iters.toLocaleString()}x via <em>${modelTxt}</em>.`;
+    banner.innerHTML = `<strong>Custom Scenario (${lockedCount}/${totalRem} locked):</strong> Standings reflect Weeks 1–${HUB.completed_week} + your picks; remaining ${unlockedCount} games + Playoffs simulated ${iters.toLocaleString()}x via <em>${modelTxt}</em>.`;
   }
   document.getElementById("simModeBadge").textContent =
-    unlockedCount === 0 ? "100% Deterministic Bracket" : `${iters.toLocaleString()} Live Browser Sims`;
+    unlockedCount === 0 ? "Locked Field • 4k Title Sims" : `${iters.toLocaleString()} Live Browser Sims`;
 
   // Playoff Table (#1-#7)
   const poBody = document.querySelector("#playoffTable tbody");
@@ -304,17 +494,18 @@ function renderPlayoffMachine() {
     const t = teamMap[own];
     const o = odds[own];
     const badgeCls = seed === 1 ? "seed-1" : (seed <= 4 ? "seed-div" : "seed-wc");
-    const roleTag = seed === 1 ? "1st-Rd Bye" : (seed <= 4 ? `${t.division} Ldr` : `WC #${seed - 4}`);
+    const roleTag = seed === 1 ? "1st-Rd Bye" : (seed <= 4 ? `${t.division} Ldr` : `${t.division} • WC #${seed - 4}`);
+    const selCls = own === ROOTING_OWNER ? "selected-row" : "";
     return `
-      <tr>
+      <tr class="clickable-row ${selCls}" data-root="${own}">
         <td><span class="seed-badge ${badgeCls}">#${seed}</span></td>
         <td><strong>${displayName(own)}</strong><span class="tie-note">${roleTag}</span></td>
-        <td>${t.division}</td>
         <td><strong>${r.wins}-${r.losses}</strong></td>
         <td>${r.pf.toFixed(1)}</td>
         <td><strong style="color:${Number(o.po) >= 75 ? 'var(--green)' : (Number(o.po) >= 35 ? 'var(--gold)' : 'var(--muted)')}">${o.po}%</strong></td>
         <td>${o.div}%</td>
         <td>${o.bye}%</td>
+        <td><strong style="color:var(--gold)" title="Super Bowl appearance odds: ${o.finals}%">${o.title}%</strong></td>
       </tr>
     `;
   }).join("");
@@ -326,43 +517,61 @@ function renderPlayoffMachine() {
     const r = records[own];
     const t = teamMap[own];
     const o = odds[own];
+    const selCls = own === ROOTING_OWNER ? "selected-row" : "";
     return `
-      <tr>
+      <tr class="clickable-row ${selCls}" data-root="${own}">
         <td>#${rank}</td>
         <td><strong>${displayName(own)}</strong></td>
         <td>${t.division}</td>
         <td>${r.wins}-${r.losses}</td>
         <td>${r.pf.toFixed(1)}</td>
         <td><strong>${o.po}%</strong></td>
+        <td style="color:var(--gold)">${o.title}%</td>
       </tr>
     `;
   }).join("");
 
-  // Week 15 Bracket Preview
+  document.querySelectorAll("#playoffTable tr[data-root], #bubbleTable tr[data-root]").forEach(tr => {
+    tr.addEventListener("click", () => {
+      ROOTING_OWNER = tr.dataset.root;
+      renderPlayoffMachine();
+    });
+  });
+
+  // Week 15 Bracket Preview + Title Favorite
   const f = currentSeeding.fullSeeding;
+  const topTitle = [...HUB.teams.map(t => t.owner)].sort((a, b) => parseFloat(odds[b].title) - parseFloat(odds[a].title));
   const brHtml = `
     <div class="bracket-box bye">
       <div class="bracket-lbl">First-Round Bye (Week 15)</div>
-      <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses}</span></div>
+      <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
       <div class="tie-note">Plays lowest surviving seed in Week 16 Semis</div>
     </div>
     <div class="bracket-box">
       <div class="bracket-lbl">Quarterfinal 1</div>
-      <div class="bracket-row"><span>#2 <strong>${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses}</span></div>
-      <div class="bracket-row"><span>#7 <strong>${shortName(f[6])}</strong></span><span>${records[f[6]].wins}-${records[f[6]].losses}</span></div>
+      <div class="bracket-row"><span>#2 <strong>${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
+      <div class="bracket-row"><span>#7 <strong>${shortName(f[6])}</strong></span><span>${records[f[6]].wins}-${records[f[6]].losses} (${odds[f[6]].title}% Title)</span></div>
     </div>
     <div class="bracket-box">
       <div class="bracket-lbl">Quarterfinal 2</div>
-      <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses}</span></div>
-      <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses}</span></div>
+      <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
+      <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
     </div>
     <div class="bracket-box">
       <div class="bracket-lbl">Quarterfinal 3</div>
-      <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses}</span></div>
-      <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses}</span></div>
+      <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
+      <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
+    </div>
+    <div class="bracket-box" style="grid-column:1 / -1;border-color:rgba(56,189,248,0.35)">
+      <div class="bracket-lbl">Championship Favorites (Weeks 15–17 Re-Seeded Sims)</div>
+      <div class="bracket-row" style="flex-wrap:wrap;gap:10px">
+        ${topTitle.slice(0, 4).map((o, idx) => `<span><strong>${idx + 1}. ${shortName(o)}</strong> <span style="color:var(--gold)">${odds[o].title}%</span> <span class="muted small">(${odds[o].finals}% Finals)</span></span>`).join("")}
+      </div>
     </div>
   `;
   document.getElementById("bracketPreview").innerHTML = brHtml;
+
+  renderRootingGuide(ROOTING_OWNER, odds, cond, unlockedCount);
 
   // Interactive Schedule Picker grouped by week (with live weekly optimal projections & optional custom score editor!)
   const powerMap = Object.fromEntries(HUB.teams.map(t => [t.owner, { mean: t.power_mean, std: t.power_std }]));
@@ -935,6 +1144,233 @@ function renderTradesTab() {
   draw();
 }
 
+/* ---------- RENDER ANALYTICS LAB (TRENDS, ALL-PLAY LUCK, POSITIONAL HEATMAP) ---------- */
+
+const TREND_PALETTE = [
+  "#38bdf8", "#22c55e", "#f59e0b", "#f43f5e", "#a78bfa", "#2dd4bf", "#fb923c", "#e879f9",
+  "#84cc16", "#60a5fa", "#fbbf24", "#f87171", "#c084fc", "#34d399", "#fdba74", "#94a3b8",
+];
+let TREND_METRIC = "po"; // "po" | "rank" | "pf"
+let TREND_SPOTLIGHT = null; // null = highlight top 6 contenders, or specific owner string
+
+function renderAnalyticsLabTab() {
+  const an = HUB.analytics;
+  if (!an) return;
+
+  // --- 1. Interactive Weekly Trend Chart ---
+  const tr = an.trends;
+  const weeks = (tr && tr.weeks) || [];
+  const series = (tr && tr.series) || {};
+  const ownersSorted = Object.keys(series).sort((a, b) => {
+    const la = series[a].po[series[a].po.length - 1] || 0;
+    const lb = series[b].po[series[b].po.length - 1] || 0;
+    return lb - la;
+  });
+  const colorMap = {};
+  ownersSorted.forEach((o, i) => { colorMap[o] = TREND_PALETTE[i % TREND_PALETTE.length]; });
+
+  const drawTrendChart = () => {
+    const titleEl = document.getElementById("trendChartTitle");
+    titleEl.textContent =
+      TREND_METRIC === "po"
+        ? `${tr.season} Week-by-Week Playoff Odds Rollercoaster`
+        : TREND_METRIC === "rank"
+          ? `${tr.season} Week-by-Week Power Rankings (1 = Best)`
+          : `${tr.season} Cumulative Points For Race`;
+
+    const W = 880, H = 310, padL = 48, padR = 96, padT = 18, padB = 32;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+    const nW = Math.max(1, weeks.length);
+
+    let yMin = 0, yMax = 100, invertY = false;
+    let yTicks = [0, 25, 50, 75, 100];
+    if (TREND_METRIC === "rank") {
+      yMin = 1; yMax = 16; invertY = true;
+      yTicks = [1, 4, 7, 10, 13, 16];
+    } else if (TREND_METRIC === "pf") {
+      const allPf = ownersSorted.flatMap(o => series[o].pf || []);
+      yMin = 0;
+      yMax = Math.ceil((Math.max(...allPf, 1000) + 50) / 200) * 200;
+      yTicks = [0, Math.round(yMax * 0.25), Math.round(yMax * 0.5), Math.round(yMax * 0.75), yMax];
+    }
+
+    const xOf = (idx) => padL + (nW === 1 ? plotW / 2 : (idx / (nW - 1)) * plotW);
+    const yOf = (val) => {
+      const frac = (val - yMin) / Math.max(1e-6, yMax - yMin);
+      return invertY ? (padT + frac * plotH) : (padT + (1 - frac) * plotH);
+    };
+
+    let svg = `<svg class="trend-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+    // Horizontal grid lines & Y labels
+    for (const tk of yTicks) {
+      const y = yOf(tk).toFixed(1);
+      const lbl = TREND_METRIC === "po" ? `${tk}%` : (TREND_METRIC === "rank" ? `#${tk}` : `${tk}`);
+      svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="rgba(143,161,188,0.16)" stroke-dasharray="${tk === 7 && TREND_METRIC === "rank" ? "5,4" : "2,3"}" />`;
+      svg += `<text x="${padL - 8}" y="${Number(y) + 4}" text-anchor="end" fill="#8fa1bc" font-size="11">${lbl}</text>`;
+    }
+    // Cutline highlight for Power Rank (#7) or 50% Playoff Odds
+    if (TREND_METRIC === "rank") {
+      const yCut = yOf(7.5).toFixed(1);
+      svg += `<line x1="${padL}" y1="${yCut}" x2="${W - padR}" y2="${yCut}" stroke="rgba(34,197,94,0.45)" stroke-dasharray="6,4" />`;
+      svg += `<text x="${W - padR - 4}" y="${Number(yCut) - 4}" text-anchor="end" fill="#22c55e" font-size="10" font-weight="700">Top 7 Playoff Cutline</text>`;
+    }
+    // X axis week labels
+    weeks.forEach((wk, i) => {
+      const x = xOf(i).toFixed(1);
+      svg += `<text x="${x}" y="${H - 10}" text-anchor="middle" fill="#8fa1bc" font-size="11">Wk ${wk}</text>`;
+    });
+
+    const activeSet = TREND_SPOTLIGHT ? new Set([TREND_SPOTLIGHT]) : new Set(ownersSorted.slice(0, 7));
+    // Draw dimmed lines first, highlighted lines on top
+    const drawOrder = [...ownersSorted.filter(o => !activeSet.has(o)), ...ownersSorted.filter(o => activeSet.has(o))];
+    const labelSpots = [];
+
+    for (const own of drawOrder) {
+      const vals = series[own][TREND_METRIC] || [];
+      if (!vals.length) continue;
+      const isHi = activeSet.has(own);
+      const col = colorMap[own];
+      const sw = TREND_SPOTLIGHT === own ? 3.4 : (isHi ? 2.2 : 1.2);
+      const op = isHi ? 0.95 : 0.16;
+      const ptsStr = vals.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
+      svg += `<polyline fill="none" stroke="${col}" stroke-width="${sw}" stroke-opacity="${op}" stroke-linecap="round" stroke-linejoin="round" points="${ptsStr}"><title>${displayName(own)}</title></polyline>`;
+
+      if (isHi) {
+        vals.forEach((v, i) => {
+          const cx = xOf(i).toFixed(1), cy = yOf(v).toFixed(1);
+          const vTxt = TREND_METRIC === "po" ? `${v}%` : (TREND_METRIC === "rank" ? `#${v}` : `${v} pts`);
+          svg += `<circle cx="${cx}" cy="${cy}" r="${TREND_SPOTLIGHT === own ? 4 : 2.6}" fill="${col}" fill-opacity="0.95"><title>${displayName(own)} • Wk ${weeks[i]}: ${vTxt} (${series[own].wins[i]}W)</title></circle>`;
+        });
+        const lastV = vals[vals.length - 1];
+        labelSpots.push({ own, col, y: yOf(lastV), val: lastV });
+      }
+    }
+
+    // De-overlap right-edge labels cleanly
+    labelSpots.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < labelSpots.length; i++) {
+      if (labelSpots[i].y - labelSpots[i - 1].y < 13) {
+        labelSpots[i].y = labelSpots[i - 1].y + 13;
+      }
+    }
+    for (const lb of labelSpots) {
+      const vTxt = TREND_METRIC === "po" ? `${lb.val}%` : (TREND_METRIC === "rank" ? `#${lb.val}` : `${Math.round(lb.val)}`);
+      svg += `<text x="${W - padR + 7}" y="${(lb.y + 4).toFixed(1)}" fill="${lb.col}" font-size="11" font-weight="700">${shortName(lb.own)} ${vTxt}</text>`;
+    }
+    svg += `</svg>`;
+    document.getElementById("trendChartWrap").innerHTML = svg;
+
+    // Clickable Legend Chips
+    const legEl = document.getElementById("trendLegend");
+    legEl.innerHTML = ownersSorted.map(o => {
+      const cls = TREND_SPOTLIGHT === o ? "active" : (TREND_SPOTLIGHT && TREND_SPOTLIGHT !== o ? "dimmed" : "");
+      return `<button class="legend-chip ${cls}" data-own="${o}"><span class="legend-dot" style="background:${colorMap[o]}"></span>${shortName(o)}</button>`;
+    }).join("") + (TREND_SPOTLIGHT ? `<button class="legend-chip" data-own="">Show Top 7</button>` : "");
+
+    legEl.querySelectorAll(".legend-chip").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const o = btn.dataset.own;
+        TREND_SPOTLIGHT = (!o || TREND_SPOTLIGHT === o) ? null : o;
+        drawTrendChart();
+      });
+    });
+  };
+
+  document.querySelectorAll("#trendMetricGroup .seg-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#trendMetricGroup .seg-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      TREND_METRIC = btn.dataset.metric;
+      drawTrendChart();
+    });
+  });
+  drawTrendChart();
+
+  // --- 2. All-Play Record & Schedule Luck Table ---
+  const luckPack = an.luck || { seasons: [], by_season: {} };
+  const lsSel = document.getElementById("luckSeasonSelect");
+  const lSortSel = document.getElementById("luckSortSelect");
+  lsSel.innerHTML = [
+    `<option value="${HUB.season}">${HUB.season} Season (Live)</option>`,
+    `<option value="all">All-Time (2008–${HUB.season})</option>`,
+    ...(luckPack.seasons || []).filter(y => y !== HUB.season).map(y => `<option value="${y}">${y} Season</option>`),
+  ].join("");
+
+  const drawLuckTable = () => {
+    const key = lsSel.value;
+    const mode = lSortSel.value;
+    const rows = [...(luckPack.by_season[key] || [])];
+    if (mode === "luck_desc") rows.sort((a, b) => b.luck_delta - a.luck_delta);
+    else if (mode === "luck_asc") rows.sort((a, b) => a.luck_delta - b.luck_delta);
+    else if (mode === "sos") rows.sort((a, b) => b.avg_pa - a.avg_pa);
+    else rows.sort((a, b) => a.true_rank - b.true_rank);
+
+    const vCls = (v) => {
+      if (v.includes("Blessed") || v.includes("Lucky")) return "tag-gold";
+      if (v.includes("Cursed") || v.includes("Unlucky")) return "tag-red";
+      return "tag-blue";
+    };
+
+    document.querySelector("#luckTable tbody").innerHTML = rows.map(r => {
+      const lCol = r.luck_delta >= 0.7 ? "var(--gold)" : (r.luck_delta <= -0.7 ? "var(--red)" : "var(--muted)");
+      return `
+        <tr>
+          <td><strong>#${r.true_rank}</strong></td>
+          <td><strong>${displayName(r.owner)}</strong><span class="tie-note">${r.division}</span></td>
+          <td>${r.wins}-${r.losses} <span class="muted small">(${r.win_pct}%)</span></td>
+          <td><strong>${r.ap_pct}%</strong> <span class="muted small">(${Math.round(r.ap_wins)}-${Math.round(r.ap_losses)})</span></td>
+          <td>${r.expected_wins.toFixed(1)}</td>
+          <td style="color:${lCol};font-weight:800">${r.luck_delta > 0 ? "+" : ""}${r.luck_delta.toFixed(2)} W</td>
+          <td>${r.avg_pf.toFixed(1)}</td>
+          <td>${r.avg_pa.toFixed(1)} <span class="muted small">(#${r.sos_rank})</span></td>
+          <td><span class="tag-pill ${vCls(r.verdict)}">${r.verdict}</span></td>
+        </tr>
+      `;
+    }).join("");
+  };
+  lsSel.addEventListener("change", drawLuckTable);
+  lSortSel.addEventListener("change", drawLuckTable);
+  drawLuckTable();
+
+  // --- 3. 2026 Positional Strength VORP Heatmap ---
+  const hm = an.heatmap;
+  if (hm && hm.rows) {
+    document.getElementById("heatmapTitle").textContent = `${hm.season} Positional Strength Heatmap (Starter VORP / Week)`;
+    document.getElementById("heatmapSeasonPill").textContent = `${hm.season} Starters`;
+    const posList = hm.positions || ["QB", "RB", "WR", "TE", "K", "D/ST"];
+
+    const heatBg = (val, pos) => {
+      const b = (hm.bounds && hm.bounds[pos]) || { min: -5, max: 5 };
+      if (val >= 0) {
+        const t = Math.min(1, val / Math.max(1.5, b.max));
+        return `rgba(34, 197, 94, ${(0.08 + t * 0.34).toFixed(2)})`;
+      }
+      const t = Math.min(1, Math.abs(val) / Math.max(1.5, Math.abs(b.min)));
+      return `rgba(239, 68, 68, ${(0.08 + t * 0.34).toFixed(2)})`;
+    };
+
+    document.querySelector("#heatmapTable tbody").innerHTML = hm.rows.map((r, idx) => {
+      const cells = posList.map(p => {
+        const d = r.positions[p] || { vorp_wk: 0, ppg: 0 };
+        const bg = heatBg(d.vorp_wk, p);
+        const sign = d.vorp_wk > 0 ? "+" : "";
+        return `<td class="hm-cell" style="background:${bg}">${sign}${d.vorp_wk.toFixed(1)}<span class="hm-sub">${d.ppg} ppg</span></td>`;
+      }).join("");
+      const totCol = r.total_vorp_wk >= 0 ? "var(--green)" : "var(--red)";
+      return `
+        <tr>
+          <td>${idx + 1}</td>
+          <td><strong>${displayName(r.owner)}</strong><span class="tie-note">${r.division}</span></td>
+          ${cells}
+          <td style="color:${totCol};font-weight:800;text-align:center">${r.total_vorp_wk > 0 ? "+" : ""}${r.total_vorp_wk.toFixed(1)}</td>
+          <td><span class="tag-pill tag-green">${r.best_pos}</span> <span class="tag-pill tag-red">${r.worst_pos}</span></td>
+        </tr>
+      `;
+    }).join("");
+  }
+}
+
 /* ---------- RENDER PODCAST & AWARDS ---------- */
 
 function renderPodcastAndAwards() {
@@ -1032,6 +1468,7 @@ async function init() {
   });
 
   renderPlayoffMachine();
+  renderAnalyticsLabTab();
   renderHistoryTab();
   renderDraftsTab();
   renderTradesTab();

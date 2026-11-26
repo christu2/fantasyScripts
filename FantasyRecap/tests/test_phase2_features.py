@@ -374,5 +374,40 @@ class TestTradeVaultEngine(unittest.TestCase):
             self.assertEqual(len(vault["all_time"]["owner_cards"]["ros"]), 16)
 
 
+class TestAnalyticsLabAndPlayoffPush(unittest.TestCase):
+    def test_all_play_luck_invariants_and_heatmap(self):
+        from FantasyRecap.analytics_lab_engine import (
+            compute_all_play_luck,
+            compute_positional_strength_heatmap,
+        )
+
+        if not DB_PATH.exists():
+            self.skipTest("bfl_history.db not present")
+
+        luck_2026 = compute_all_play_luck(DB_PATH, season=2026)
+        self.assertEqual(len(luck_2026["rows"]), 16)
+        # Sum of luck deltas across all 16 teams in a closed season must be ~0.0!
+        tot_luck = sum(r["luck_delta"] for r in luck_2026["rows"])
+        self.assertAlmostEqual(tot_luck, 0.0, delta=0.2)
+        # All-Play Win % across all 16 teams must average 50.0%
+        avg_ap = sum(r["ap_pct"] for r in luck_2026["rows"]) / 16.0
+        self.assertAlmostEqual(avg_ap, 50.0, delta=0.2)
+
+        hm = compute_positional_strength_heatmap(DB_PATH, season=2026)
+        self.assertEqual(len(hm["rows"]), 16)
+        self.assertEqual(hm["positions"], ["QB", "RB", "WR", "TE", "K", "D/ST"])
+        for row in hm["rows"]:
+            self.assertIn(row["best_pos"], ("QB", "RB", "WR", "TE"))
+            self.assertIn(row["worst_pos"], ("QB", "RB", "WR", "TE"))
+
+    def test_web_hub_has_title_odds_rooting_guide_and_analytics_lab(self):
+        idx_html = (WEB_HUB_DIR / "index.html").read_text(encoding="utf-8")
+        app_js = (WEB_HUB_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="tab-analytics"', idx_html)
+        self.assertIn('id="rootingGuideCard"', idx_html)
+        self.assertIn("function renderRootingGuide(", app_js)
+        self.assertIn("function renderAnalyticsLabTab()", app_js)
+
+
 if __name__ == "__main__":
     unittest.main()
