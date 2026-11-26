@@ -872,9 +872,9 @@ def analyze_trade_strategic_motives(
     best_rank = min((int(c.get('pos_rank', 999) or 999) for c in all_traded_ctx), default=999)
     has_caliber_data = any(bool(c) for c in all_traded_ctx)
     if has_caliber_data:
-        if best_rank <= 10 or max_ppg >= 14.5 or (a_len + b_len >= 4 and max_ppg >= 11.0):
+        if (best_rank <= 8 and max_ppg >= 12.0) or max_ppg >= 14.5 or (a_len + b_len >= 4 and max_ppg >= 11.0):
             trade_tier = "Blockbuster Trade"
-        elif best_rank <= 20 or max_ppg >= 9.5:
+        elif max_ppg >= 9.5:
             trade_tier = "Starter-Level Trade"
         else:
             trade_tier = "Depth / Role-Player Swap (NOT a blockbuster — pragmatic spot-start / injury coverage deal)"

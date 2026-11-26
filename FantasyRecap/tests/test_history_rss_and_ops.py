@@ -218,16 +218,19 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
         import wave
 
         raw = (
-            "**Chris:** Let us look at Saagar, Dino, AMO, and rej hoxha chasing the Jabroni Trophy! [laughs]\n"
-            "**Dave:** I am telling you, Lukose and Kruszewski traded Perine and Tyler Shough for 9. points in Mykonos!"
+            "**Chris:** Let us look at Saagar, Dino, Nael, AMO, and rej hoxha chasing the Jabroni Trophy! [laughs]\n"
+            "**Dave:** I am telling you, Lukose and Kruszewski traded Perine, Jeanty, and Tyler Shough for 9. points in Mykonos!\n"
+            "Chris: Quick shoutout to the wire before we move on, with Lukose grabbing"
         )
         cleaned = _sanitize_script(raw)
         self.assertIn("Let's", cleaned)
         self.assertIn("I'm", cleaned)
         self.assertIn("Sah-gar", cleaned)
         self.assertIn("Dee-no", cleaned)
+        self.assertIn("Nyle", cleaned)
         self.assertIn("AMO", cleaned)  # AMO ("Ammo") stays untouched!
         self.assertIn("Pee-rine", cleaned)
+        self.assertIn("Jen-tee", cleaned)
         self.assertIn("Shuck", cleaned)
         self.assertIn("9 points", cleaned)
         self.assertIn("Ray Hozha", cleaned)
@@ -237,6 +240,8 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
         self.assertIn("Mee-ko-nos", cleaned)
         self.assertNotIn("[laughs]", cleaned)
         self.assertNotIn("**", cleaned)
+        # Incomplete trailing fragment without terminal punctuation must be dropped
+        self.assertNotIn("grabbing", cleaned)
 
         chunks = split_script_into_tts_chunks(cleaned, max_words=12)
         self.assertEqual(len(chunks), 2)
@@ -362,6 +367,8 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
         self.assertIn("Tony Pollard", an["owner_b_why"])
 
     def test_packaged_episode_assembly_produces_valid_stereo_mp3(self):
+        import io
+        import wave
         import numpy as np
 
         assets = get_packaging_assets()
@@ -371,8 +378,17 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
         sr = 24000
         t = np.arange(sr, dtype=np.float32) / sr
         tone = (np.sin(2 * np.pi * 220.0 * t) * 4000.0).astype(np.int16).tobytes()
-        cleaned = _clean_pcm_chunk(tone, sample_rate=sr)
-        self.assertLess(len(cleaned), len(tone))  # 12ms trailing pop trimmed on >0.5s chunk
+
+        # Wrap tone in a RIFF/WAVE container with trailing IPTC metadata garbage (like gemini-3.8-flash-tts)
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(tone)
+        wav_with_trailer = wav_buf.getvalue() + b"JUNK" + b"\xff" * 4000
+        cleaned = _clean_pcm_chunk(wav_with_trailer, sample_rate=sr)
+        self.assertEqual(len(cleaned), len(tone))  # Exact audio samples extracted; header + trailer stripped!
 
         with tempfile.TemporaryDirectory() as tmp:
             mp3_out = Path(tmp) / "packaged.mp3"

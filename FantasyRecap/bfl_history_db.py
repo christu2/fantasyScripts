@@ -1233,7 +1233,7 @@ def _call_gemini(
         for model in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
-            gen_cfg = {"temperature": float(temperature)}
+            gen_cfg = {"temperature": float(temperature), "maxOutputTokens": 4096}
             if response_mime == "application/json":
                 gen_cfg["responseMimeType"] = "application/json"
             # Only legacy 2.5-flash supports numeric thinkingBudget; 3.x models reject it with HTTP 400

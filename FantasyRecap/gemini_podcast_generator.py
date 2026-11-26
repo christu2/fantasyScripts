@@ -33,6 +33,7 @@ Usage:
 
 import argparse
 import base64
+import io
 import json
 import os
 import re
@@ -72,13 +73,14 @@ PHONETIC_REPLACEMENTS = [
     (r"\bDino\b", "Dee-no"),
     (r"\bLukose\b", "Luke-ose"),
     (r"\bMykonos\b", "Mee-ko-nos"),
-    (r"\bNael\b", "Nile"),
+    (r"\bNael\b", "Nyle"),
     (r"\bSamran\b", "Sum-rahn"),
     (r"\bKruszewski\b", "Kroo-sheff-skee"),
     (r"\bJabroni\b", "Jah-bronee"),
     (r"\bSkattebo\b", "Skat-uh-bo"),
     (r"\bPerine\b", "Pee-rine"),
     (r"\bShough\b", "Shuck"),
+    (r"\bJeanty\b", "Jen-tee"),
 ]
 
 # Deterministic spoken-English contractions so TTS never sounds stiff ("Let us", "I am", "That is")
@@ -323,23 +325,34 @@ CRITICAL WRITING RULES FOR LIFELIKE SPORTS-RADIO BANTER:
 
     if length_mode == "sample":
         headline = _trim_matchup_for_script(pick_headline_matchup(sections["matchups"]))
-        act1_snip = sections["act1"][:2500]
-        prompt = f"""{base_rules}
+        act1_snip = sections["act1"][:3000]
+        p_s1 = f"""{base_rules}
 
-TASK: Write a killer ~420–490 word (~2.5 minute) SAMPLE HIGHLIGHT SEGMENT (aim for 22–28 rapid-fire turns!):
-- Punchy 15-second cold open ("Welcome back to the Week {week} Tuesday Morning Hangover, I'm Chris alongside Dave...") + quick 25-second debate on this week's trade (skip boring waiver cuts!).
-- Dive straight into this headline matchup—don't announce "Matchup X of 8", just hook us with the best storyline, react to the funniest real Discord quotes & trash talk, debate the biggest player eruptions, and hit the playoff odds!
-- Close with a brisk 1-line tease ("Stick around—we've got seven more matchups and the full playoff picture coming up next!").
+TASK (SAMPLE PART 1 OF 2 — COLD OPEN & TRADE DESK, ~130–170 words, 8–10 snappy turns):
+- Energetic SportsCenter-style cold open welcoming BFL listeners to Week {week} of the Tuesday Morning Hangover (NO game score or post-week record spoilers yet!).
+- Quickly break down this week's trade using ONLY each team's **entering-Week-{week}** record, explain the REAL roster/injury crunch behind each side, and calibrate your tone strictly to `Trade Magnitude` (never call a `Depth / Role-Player Swap` a "blockbuster"!).
+- End cleanly on one crisp handoff line into our headline game ("Alright, let's jump straight into our marquee matchup of the week.").
 
 --- ACT 1 (TRADES) ---
 {act1_snip}
+"""
+        p_s2 = f"""{base_rules}
+
+TASK (SAMPLE PART 2 OF 2 — HEADLINE MATCHUP SHOWCASE, ~340–400 words, 18–24 dynamic turns):
+- Jump STRAIGHT into this headline matchup after the act bumper—do NOT re-introduce the show and do NOT say "Matchup X of 8".
+- Frame both managers with their **entering-Week-{week}** records before revealing the final score and updated records!
+- React to the funniest real Discord quotes & trash talk, debate the biggest player eruptions / draft steals, and hit the updated playoff odds.
+- Close with a brisk 1-line broadcast tease ("Stick around—we've got seven more matchups and the full playoff picture coming up next on the Hangover!").
 
 --- HEADLINE MATCHUP ---
 {headline}
 """
-        print("✍️  Writing 2–3 minute sample highlight script (Chris & Dave)...")
-        raw_script = _call_gemini(prompt, api_key, response_mime="text/plain", temperature=0.8)
-        segments.append(("sample_highlight", _sanitize_script(raw_script)))
+        print("✍️  [1/2] Writing Sample Cold Open & Trade Desk (Chris & Dave)...")
+        s1 = _sanitize_script(_call_gemini(p_s1, api_key, response_mime="text/plain", temperature=0.8))
+        print("✍️  [2/2] Writing Sample Headline Matchup Showcase (Chris & Dave)...")
+        s2 = _sanitize_script(_call_gemini(p_s2, api_key, response_mime="text/plain", temperature=0.8))
+        segments.append(("sample_intro_trades", s1))
+        segments.append(("sample_headline_matchup", s2))
         return segments
 
     def _continuity_hint(prev_label: str) -> str:
@@ -480,6 +493,9 @@ def _sanitize_script(raw_text: str) -> str:
             clean = re.sub(r"\[[^\]]{1,40}\]", "", clean)
             clean = re.sub(r"\s{2,}", " ", clean).strip()
             lines.append(apply_phonetics(clean))
+    # Guard against LLM output truncation mid-sentence: drop any final line lacking terminal punctuation
+    while len(lines) > 1 and not re.search(r"[.!?\"'”’]\s*$", lines[-1]):
+        lines.pop()
     return "\n".join(lines)
 
 
@@ -622,7 +638,7 @@ def synthesize_multispeaker_pcm(
                             mime = inline.get("mimeType", "audio/L16;codec=pcm;rate=24000")
                             rate_match = re.search(r"rate=(\d+)", mime)
                             sample_rate = int(rate_match.group(1)) if rate_match else 24000
-                            return base64.b64decode(b64), sample_rate
+                            return _unwrap_wav_if_needed(base64.b64decode(b64), fallback_sr=sample_rate)
                     errs.append(f"{model}: 200 OK but no inlineData audio returned")
                     break
                 if resp.status_code in (429, 503) and attempt < 2:
@@ -641,30 +657,45 @@ def synthesize_multispeaker_pcm(
     raise RuntimeError("Gemini Native TTS failed: " + " | ".join(errs))
 
 
+def _unwrap_wav_if_needed(raw_bytes: bytes, fallback_sr: int = 24000) -> Tuple[bytes, int]:
+    """
+    `gemini-3.8-flash-tts` returns a complete RIFF/WAVE container (including a
+    trailing IPTC/C2PA metadata chunk after the audio `data` chunk), whereas
+    `gemini-2.5-flash-preview-tts` returns raw headerless 16-bit PCM.
+    Unwrapping RIFF/WAVE via `wave.open()` extracts ONLY the exact audio samples,
+    completely eliminating the ~160ms trailing static pop!
+    """
+    if len(raw_bytes) >= 44 and raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
+                sr = wf.getframerate() or fallback_sr
+                pcm = wf.readframes(wf.getnframes())
+                if pcm:
+                    return pcm, sr
+        except Exception:
+            pass
+    return raw_bytes, fallback_sr
+
+
 def _clean_pcm_chunk(
     pcm_bytes: bytes,
     sample_rate: int = 24000,
-    fade_in_ms: int = 15,
-    fade_out_ms: int = 35,
-    trim_tail_ms: int = 20,
+    fade_in_ms: int = 12,
+    fade_out_ms: int = 25,
 ) -> bytes:
     """
-    Conditions a raw 16-bit mono PCM TTS chunk:
-    - Trims any 12ms trailing end-of-stream pop/click (seen on some 3.8-tts buffers)
+    Conditions a 16-bit mono PCM TTS chunk:
+    - Unwraps RIFF/WAVE header & trailing metadata chunks if present
     - Removes DC offset
     - Applies smooth cosine fade-in / fade-out so chunk edges never click
     """
+    pcm_bytes, sample_rate = _unwrap_wav_if_needed(pcm_bytes, fallback_sr=sample_rate)
     if len(pcm_bytes) < 4:
         return pcm_bytes
     usable = (len(pcm_bytes) // 2) * 2
     arr = np.frombuffer(pcm_bytes[:usable], dtype=np.int16).astype(np.float32)
     if len(arr) == 0:
         return pcm_bytes
-
-    # Only trim trailing codec click if the clip is > 0.5s
-    trim_n = int(sample_rate * (trim_tail_ms / 1000.0))
-    if len(arr) > int(sample_rate * 0.5) and trim_n > 0:
-        arr = arr[:-trim_n]
 
     # Remove DC offset
     arr = arr - float(np.mean(arr))
