@@ -75,6 +75,7 @@ PHONETIC_REPLACEMENTS = [
     (r"\bMykonos\b", "Mee-ko-nos"),
     (r"\bNael\b", "Nyle"),
     (r"\bSamran\b", "Sum-rahn"),
+    (r"\bChristus\b", "Kris-tus"),
     (r"\bKruszewski\b", "Kroo-sheff-skee"),
     (r"\bJabroni\b", "Jah-bronee"),
     (r"\bSkattebo\b", "Skat-uh-bo"),
@@ -123,10 +124,10 @@ DEFAULT_CHRIS_VOICE = "Charon"
 DEFAULT_DAVE_VOICE = "Puck"
 
 STYLE_DIRECTIVE = (
-    "Perform this as a fast-paced, genuinely funny fantasy football sports-talk podcast "
-    "between lifelong buddies Chris and Dave (Bill Simmons / Dan Le Batard / SportsCenter energy). "
-    "Deliver short reactions with real punch, playful sarcasm, natural emphasis, and warm conversational flow—"
-    "like two friends riffing live at a studio desk, never reading off a teleprompter."
+    "Perform this as a natural, upbeat, studio-recorded fantasy football podcast between two close friends, "
+    "Chris and Dave. Speak at an even, lively conversational pace with warm, authentic voices, crisp articulation, "
+    "playful banter, and smooth transitions between speakers—like two buddies chatting comfortably into studio "
+    "microphones, never shouting, never rushing, and never sounding like a teleprompter."
 )
 
 
@@ -611,13 +612,14 @@ def synthesize_multispeaker_pcm(
         models = [m.strip() for m in env_tts.split(",") if m.strip()]
     else:
         # Verified live free-tier multi-speaker TTS models (separate RPD pools!).
-        # `gemini-3.8-flash-tts` is primary: ~14 dB cleaner noise floor (-50 dB vs -35 dB)
-        # and eliminates the "old record player" cold-start warble seen on 2.5-flash-preview-tts.
+        # `gemini-3.1-flash-tts-preview` is primary: single-pass continuous conversation
+        # (zero choppy per-turn `parts[]` seams like 3.8-tts) + clean -47.6 dB studio noise floor
+        # (12 dB cleaner than 2.5-flash-preview-tts).
         models = [
+            "gemini-3.1-flash-tts-preview",
             "gemini-3.8-flash-tts",
             "gemini-3.8-flash-lite-tts",
             "gemini-2.5-flash-preview-tts",
-            "gemini-3.1-flash-tts-preview",
         ]
 
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}

@@ -218,7 +218,7 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
         import wave
 
         raw = (
-            "**Chris:** Let us look at Saagar, Dino, Nael, AMO, and rej hoxha chasing the Jabroni Trophy! [laughs]\n"
+            "**Chris:** Let us look at Nick Christus, Saagar, Dino, Nael, AMO, and rej hoxha chasing the Jabroni Trophy! [laughs]\n"
             "**Dave:** I am telling you, Lukose and Kruszewski traded Perine, Jeanty, and Tyler Shough for 9. points in Mykonos!\n"
             "Chris: Quick shoutout to the wire before we move on, with Lukose grabbing"
         )
@@ -236,6 +236,7 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
         self.assertIn("Ray Hozha", cleaned)
         self.assertIn("Jah-bronee", cleaned)
         self.assertIn("Luke-ose", cleaned)
+        self.assertIn("Kris-tus", cleaned)
         self.assertIn("Kroo-sheff-skee", cleaned)
         self.assertIn("Mee-ko-nos", cleaned)
         self.assertNotIn("[laughs]", cleaned)
