@@ -236,6 +236,29 @@ def compute_weekly_awards(
                 "body": lev_quip,
             })
 
+        # 7. Late-Season Playoff Clinch & Elimination Watch (fires automatically when any team clinches or is eliminated)
+        clinch_bye = [v["owner"] for v in playoff_odds.values() if float(v.get("bye_pct", 0.0)) >= 99.95]
+        clinch_div = [v["owner"] for v in playoff_odds.values() if float(v.get("div_title_pct", 0.0)) >= 99.95 and v["owner"] not in clinch_bye]
+        clinch_po = [v["owner"] for v in playoff_odds.values() if float(v.get("playoff_pct", 0.0)) >= 99.95 and v["owner"] not in clinch_bye and v["owner"] not in clinch_div]
+        eliminated = [v["owner"] for v in playoff_odds.values() if "playoff_pct" in v and float(v.get("playoff_pct", 100.0)) <= 0.05]
+        if clinch_bye or clinch_div or clinch_po or eliminated:
+            lines = []
+            if clinch_bye:
+                lines.append(f"**Clinched #1 Bye:** {', '.join(clinch_bye)}")
+            if clinch_div:
+                lines.append(f"**Clinched Division:** {', '.join(clinch_div)}")
+            if clinch_po:
+                lines.append(f"**Clinched Playoff Berth:** {', '.join(clinch_po)}")
+            if eliminated:
+                lines.append(f"**Eliminated:** {', '.join(eliminated)}")
+            awards.append({
+                "key": "clinch_watch",
+                "title": "Playoff Clinch & Elimination Watch",
+                "winner": (clinch_bye or clinch_div or clinch_po or eliminated)[0],
+                "metric": f"{len(clinch_bye) + len(clinch_div) + len(clinch_po)} In • {len(eliminated)} Out",
+                "body": "\n".join(lines),
+            })
+
     avg_score = round(sum(x["pts"] for x in all_sides) / len(all_sides), 2)
     return {
         "season": season,

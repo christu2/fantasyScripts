@@ -330,6 +330,160 @@ def build_draft_steals_report(season: Optional[int] = None, owner_query: str = "
     }
 
 
+def build_trades_report(owner_query: str = "", era: str = "all_time", db_path: Path = DB_PATH) -> dict:
+    """
+    Instant zero-LLM BFL Trade Vault report powered by SQLite + 16-team Started VORP.
+    `era`: "all_time" (2018–2025 completed seasons) or "live" (active season tracker).
+    """
+    from FantasyRecap.trade_vault_engine import evaluate_all_trades
+
+    if not db_path.exists():
+        raise ValueError("Historical database not initialized yet.")
+
+    owner_filter = resolve_owner_name(owner_query) if owner_query else None
+    if owner_query and not owner_filter:
+        raise ValueError(f"Could not match BFL manager '{owner_query}'.")
+
+    eff_season = int(os.getenv("SEASON_YEAR") or CURRENT_YEAR)
+    vault = evaluate_all_trades(db_path, current_season=eff_season)
+    bucket = vault["live"] if era == "live" else vault["all_time"]
+    scope_lbl = f"{eff_season} Live Tracker" if era == "live" else "All-Time Vault (2018–2025)"
+
+    def _short(own: str) -> str:
+        if own == "Shawn Lukose": return "Lukose"
+        if own == "Shawn Ullenbrauck": return "Thor"
+        if own == "Adam Olen": return "AMO"
+        if own.lower() == "rej hoxha": return "Rej"
+        return own.split()[0]
+
+    if owner_filter:
+        cards = bucket.get("owner_cards", {}).get("started", [])
+        card = next((c for c in cards if c["owner"].lower() == owner_filter.lower()), None)
+        if not card or card["trades"] == 0:
+            raise ValueError(f"No verified trades found for {owner_filter} in {scope_lbl}.")
+
+        desc = (
+            f"**Record:** `{card['wins']}–{card['losses']}{'-' + str(card['pushes']) if card['pushes'] else ''}` "
+            f"({card['win_pct']}%) across **{card['trades']}** deals\n"
+            f"**Net Started VORP:** `{card['net_vorp']:+.1f}` (`{card['avg_swing']:+.1f}` avg/deal)"
+        )
+        if card.get("favorite_partner"):
+            fp = card["favorite_partner"]
+            desc += f"\n**Favorite Partner:** {_short(fp['owner'])} (`{fp['count']}` deals, `{fp['net_vorp']:+.1f}` VORP)"
+        if card.get("biggest_mark"):
+            bm = card["biggest_mark"]
+            desc += f"\n**Biggest Mark:** {_short(bm['owner'])} (`{bm['net_vorp']:+.1f}` VORP)"
+        if card.get("worst_nemesis"):
+            wn = card["worst_nemesis"]
+            desc += f"\n**Worst Nemesis:** {_short(wn['owner'])} (`{wn['net_vorp']:+.1f}` VORP)"
+
+        def _fmt_ext(ext: Optional[dict]) -> str:
+            if not ext:
+                return "None in this view."
+            return (
+                f"**{ext['season']} Wk {ext['week']}** vs. {_short(ext['partner'])} (`{ext['swing']:+.1f}` VORP)\n"
+                f"Got: {', '.join(ext['received'])}\nSent: {', '.join(ext['sent'])}"
+            )
+
+        return {
+            "title": f"BFL Trade Report Card — {owner_filter} ({scope_lbl})",
+            "description": desc,
+            "fields": [
+                {"name": "Best Trade (Biggest Fleece)", "value": _fmt_ext(card.get("best_trade")), "inline": False},
+                {"name": "Worst Trade (Biggest Regret)", "value": _fmt_ext(card.get("worst_trade")), "inline": False},
+            ],
+            "color": 0x1ABC9C,
+        }
+
+    trades = bucket.get("trades", [])[:5]
+    top_lines = []
+    for idx, t in enumerate(trades, 1):
+        st = t["started"]
+        a_nm = ", ".join(p["name"] for p in t["a_received"][:2])
+        b_nm = ", ".join(p["name"] for p in t["b_received"][:2])
+        win_nm = _short(st["winner"]) if st["winner"] != "PUSH" else "Push"
+        lose_nm = _short(st["loser"]) if st["loser"] != "PUSH" else "Push"
+        tags_str = f" • `{' · '.join(st['tags'][:2])}`" if st["tags"] else ""
+        top_lines.append(
+            f"**{idx}. {t['season']} Wk {t['trade_week']}:** **{win_nm}** over {lose_nm} (`+{st['abs_swing']:.1f}` VORP){tags_str}\n"
+            f"   _{_short(t['owner_a'])} got {a_nm} | {_short(t['owner_b'])} got {b_nm}_"
+        )
+
+    cards = bucket.get("owner_cards", {}).get("started", [])
+    sharks = "\n".join(
+        f"**{i}. {_short(c['owner'])}** — `{c['net_vorp']:+.1f}` VORP ({c['wins']}-{c['losses']} in {c['trades']})"
+        for i, c in enumerate(cards[:4], 1)
+    ) or "None"
+    marks = "\n".join(
+        f"• **{_short(c['owner'])}** — `{c['net_vorp']:+.1f}` VORP ({c['wins']}-{c['losses']} in {c['trades']})"
+        for c in reversed(cards[-4:]) if c["trades"] > 0
+    ) or "None"
+
+    return {
+        "title": f"BFL Trade Vault — {scope_lbl}",
+        "description": f"Graded on **Actual Lineup Impact** (16-team Started VORP, `1.5x` Championship Playoff weight).",
+        "fields": [
+            {"name": "Most Lopsided Deals", "value": "\n".join(top_lines) or "No trades recorded.", "inline": False},
+            {"name": "Top Trade Sharks", "value": sharks, "inline": True},
+            {"name": "Biggest Trade Marks", "value": marks, "inline": True},
+        ],
+        "color": 0x1ABC9C,
+    }
+
+
+def build_luck_report(season: Optional[int] = None, db_path: Path = DB_PATH) -> dict:
+    """
+    Instant zero-LLM All-Play Schedule Luck & Era-Normalized PF+/PA+ report.
+    Pass `season=0` for All-Time (2008–present), or omit for active season.
+    """
+    from FantasyRecap.analytics_lab_engine import compute_all_play_luck
+
+    if not db_path.exists():
+        raise ValueError("Historical database not initialized yet.")
+
+    eff_season = int(os.getenv("SEASON_YEAR") or CURRENT_YEAR) if season is None else int(season)
+    res = compute_all_play_luck(db_path, season=eff_season if eff_season > 0 else None)
+    rows = res["rows"]
+    if not rows:
+        raise ValueError(f"No completed games found for season {eff_season}.")
+
+    scope = f"{eff_season} Season" if eff_season > 0 else "All-Time (2008–Present)"
+
+    def _short(own: str) -> str:
+        if own == "Shawn Lukose": return "Lukose"
+        if own == "Shawn Ullenbrauck": return "Thor"
+        if own == "Adam Olen": return "AMO"
+        if own.lower() == "rej hoxha": return "Rej"
+        return own.split()[0]
+
+    top_true = "\n".join(
+        f"**{r['true_rank']}. {_short(r['owner'])}** — `{r['ap_pct']}%` All-Play • `PF+ {r['pf_plus']:.1f}` ({r['wins']}-{r['losses']})"
+        for r in rows[:5]
+    )
+    luckiest = sorted(rows, key=lambda x: -x["luck_delta"])[:4]
+    cursed = sorted(rows, key=lambda x: x["luck_delta"])[:4]
+
+    lucky_txt = "\n".join(
+        f"• **{_short(r['owner'])}** `{r['luck_delta']:+.2f} W` ({r['wins']}-{r['losses']} vs `{r['expected_wins']:.1f}` exp • PA+ `{r['pa_plus']:.1f}`)"
+        for r in luckiest
+    )
+    cursed_txt = "\n".join(
+        f"• **{_short(r['owner'])}** `{r['luck_delta']:+.2f} W` ({r['wins']}-{r['losses']} vs `{r['expected_wins']:.1f}` exp • PA+ `{r['pa_plus']:.1f}`)"
+        for r in cursed
+    )
+
+    return {
+        "title": f"BFL Schedule Luck & True Strength — {scope}",
+        "description": "**All-Play** = record vs. all 15 managers weekly. **PF+ / PA+** = era-adjusted (`100` = season league avg).",
+        "fields": [
+            {"name": "True Strength Top 5 (All-Play %)", "value": top_true, "inline": False},
+            {"name": "Schedule Blessed (Luckiest)", "value": lucky_txt, "inline": True},
+            {"name": "Schedule Cursed (Unluckiest)", "value": cursed_txt, "inline": True},
+        ],
+        "color": 0x3498DB,
+    }
+
+
 def build_playoff_odds_report(week: int = 0, season: Optional[int] = None) -> dict:
     """Runs the 5,000-sim BFL Monte Carlo Playoff Engine live from ESPN for `/playoffodds`."""
     from FantasyRecap.league_recap_generator import (
@@ -597,6 +751,46 @@ def run_discord_bot() -> None:
         except Exception as exc:
             log.error("/draftsteals failed: %s", exc)
             await interaction.response.send_message("❌ Failed to query draft steals.", ephemeral=True)
+
+    @bot.tree.command(name="trades", description="BFL Trade Vault — Most lopsided trades & owner trade report cards (VORP)")
+    @app_commands.describe(
+        owner="Optional: inspect a specific manager's career or 2026 trade report card",
+        era="All-Time Vault (2018–2025) or Live current season tracker",
+    )
+    @app_commands.choices(era=[
+        app_commands.Choice(name="All-Time Vault (2018–2025)", value="all_time"),
+        app_commands.Choice(name="2026 Live Tracker", value="live"),
+    ])
+    @app_commands.autocomplete(owner=_owner_autocomplete)
+    async def trades_slash(interaction: discord.Interaction, owner: str = "", era: str = "all_time"):
+        try:
+            card = build_trades_report(owner_query=owner, era=era)
+            embed = discord.Embed(title=card["title"], description=card["description"], color=card["color"])
+            for f in card["fields"]:
+                embed.add_field(name=f["name"], value=f["value"], inline=f["inline"])
+            embed.set_footer(text="BFL Trade Vault • 16-Team Started VORP (1.5x Playoffs)")
+            await interaction.response.send_message(embed=embed)
+        except ValueError as exc:
+            await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
+        except Exception as exc:
+            log.error("/trades failed: %s", exc)
+            await interaction.response.send_message("❌ Failed to load Trade Vault data.", ephemeral=True)
+
+    @bot.tree.command(name="luck", description="BFL Schedule Luck (All-Play vs Actual Wins) & Era-Adjusted PF+/PA+")
+    @app_commands.describe(season="Season year (e.g. 2026; pass 0 for All-Time 2008–present)")
+    async def luck_slash(interaction: discord.Interaction, season: Optional[int] = None):
+        try:
+            card = build_luck_report(season=season)
+            embed = discord.Embed(title=card["title"], description=card["description"], color=card["color"])
+            for f in card["fields"]:
+                embed.add_field(name=f["name"], value=f["value"], inline=f["inline"])
+            embed.set_footer(text="BFL Analytics Lab • Instant SQLite Lookup")
+            await interaction.response.send_message(embed=embed)
+        except ValueError as exc:
+            await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
+        except Exception as exc:
+            log.error("/luck failed: %s", exc)
+            await interaction.response.send_message("❌ Failed to compute Schedule Luck.", ephemeral=True)
 
     @bot.tree.command(name="playoffodds", description="Live 5,000-sim BFL Monte Carlo Playoff Odds, Bye Race & Next-Week Leverage")
     @app_commands.describe(week="Completed week to simulate through (defaults to latest synced week)")

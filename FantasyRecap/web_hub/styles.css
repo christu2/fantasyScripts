@@ -638,6 +638,75 @@ body {
 }
 .hm-sub { display: block; font-size: 0.67rem; font-weight: 500; opacity: 0.8; }
 
+/* ---------- FRANCHISE DOSSIERS ---------- */
+.dossier-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 16px;
+}
+.dossier-btn {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 12px;
+  font-size: 0.81rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.13s ease;
+}
+.dossier-btn:hover { border-color: var(--accent); }
+.dossier-btn.active {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: var(--accent);
+  color: #fff;
+}
+.ring-mini { color: var(--gold); font-size: 0.72rem; }
+
+.dossier-hero {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(245, 158, 11, 0.08));
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 14px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+.dossier-hero-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.trophy-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.trophy-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 13px;
+  text-align: center;
+  min-width: 82px;
+}
+.trophy-box.gold { border-color: rgba(245, 158, 11, 0.55); background: rgba(245, 158, 11, 0.1); }
+.trophy-num { font-size: 1.25rem; font-weight: 800; line-height: 1.1; }
+.trophy-lbl { font-size: 0.68rem; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+
+.dossier-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+@media (max-width: 960px) { .dossier-cards-grid { grid-template-columns: 1fr; } }
+
 .footer {
   max-width: 1260px;
   margin: 0 auto;

@@ -495,3 +495,249 @@ def build_analytics_lab_bundle(
         "trends": trends,
         "heatmap": heatmap,
     }
+
+
+def export_franchise_dossiers(
+    db_path: Path = DB_PATH,
+    *,
+    trades_pack: Optional[dict] = None,
+    luck_all_time_rows: Optional[List[dict]] = None,
+    current_season: int = int(CURRENT_YEAR),
+) -> List[dict]:
+    """
+    Builds unified 18-year Franchise Dossiers for all 16 active BFL managers:
+      - Trophy case (rings, runner-ups, division titles, playoff appearances)
+      - Career W-L, Playoff W-L, All-Play %, PF+/PA+, Luck Delta, High/Low single-week scores
+      - Auto-computed Franchise Archetype Badges (data-driven!)
+      - H2H Nemesis & Favorite Victim
+      - Best/Worst Career Draft Pick (Draft VORP, 2018–present)
+      - Career Trade Record, Net VORP, Best Fleece & Worst Regret (2018–present)
+      - Complete Season-by-Season Timeline (2008–present)
+    """
+    from FantasyRecap.bfl_history_db import compute_position_normalized_draft_value
+
+    manifest = load_manifest()
+    teams = manifest.get("teams", [])
+    active_owners = [t["owner"] for t in teams]
+    active_set = {o.lower() for o in active_owners}
+    team_meta = {t["owner"]: t for t in teams}
+
+    if not db_path.exists():
+        return []
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    cur = conn.cursor()
+
+    # 1. Career regular + playoff totals & extreme single-week scores
+    game_rows = cur.execute(
+        """
+        SELECT season, week, owner, opp_owner, score, opp_score, win, is_regular, is_playoffs, is_consolation
+        FROM games
+        ORDER BY season ASC, week ASC
+        """
+    ).fetchall()
+
+    # Identify completed weeks to avoid in-progress Thursday 0.0-pt lows
+    wk_scores_map: Dict[tuple, List[float]] = defaultdict(list)
+    for r in game_rows:
+        wk_scores_map[(int(r[0]), int(r[1]))].append(float(r[4] or 0.0))
+    valid_sw = {k for k, v in wk_scores_map.items() if v and (sum(v) / len(v)) >= 40.0}
+
+    career_g: Dict[str, dict] = {}
+    h2h_rec: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    for r in game_rows:
+        s_yr, wk, own_raw, opp_raw, sc, _osc, win, is_reg, is_po, is_con = r
+        if (int(s_yr), int(wk)) not in valid_sw:
+            continue
+        own = _canon_owner(own_raw)
+        opp = _canon_owner(opp_raw)
+        if own.lower() not in active_set:
+            continue
+        sc_f = float(sc or 0.0)
+        st = career_g.setdefault(own, {
+            "reg_w": 0, "reg_l": 0, "po_w": 0, "po_l": 0,
+            "high": None, "low": None, "first_season": int(s_yr),
+        })
+        st["first_season"] = min(st["first_season"], int(s_yr))
+        if int(is_reg) == 1:
+            st["reg_w"] += 1 if int(win) == 1 else 0
+            st["reg_l"] += 0 if int(win) == 1 else 1
+        elif int(is_po) == 1:
+            st["po_w"] += 1 if int(win) == 1 else 0
+            st["po_l"] += 0 if int(win) == 1 else 1
+
+        if int(is_con) == 0 and sc_f > 0:
+            if st["high"] is None or sc_f > st["high"]["score"]:
+                st["high"] = {"score": round(sc_f, 2), "season": int(s_yr), "week": int(wk), "opp": opp}
+            if st["low"] is None or sc_f < st["low"]["score"]:
+                st["low"] = {"score": round(sc_f, 2), "season": int(s_yr), "week": int(wk), "opp": opp}
+
+        if opp.lower() in active_set and opp != own:
+            if int(win) == 1:
+                h2h_rec[own][opp][0] += 1
+            else:
+                h2h_rec[own][opp][1] += 1
+
+    # 2. Season-by-season timeline from team_seasons
+    ts_rows = cur.execute(
+        """
+        SELECT season, owner, team_name, division_name, wins, losses, points_for,
+               division_rank, final_rank, made_playoffs, won_division, won_championship,
+               runner_up, is_season_complete
+        FROM team_seasons
+        ORDER BY season DESC
+        """
+    ).fetchall()
+    conn.close()
+
+    timelines: Dict[str, List[dict]] = defaultdict(list)
+    for r in ts_rows:
+        own = _canon_owner(r[1])
+        if own.lower() not in active_set:
+            continue
+        is_done = bool(r[13])
+        timelines[own].append({
+            "season": int(r[0]),
+            "team_name": r[2] or "",
+            "division": r[3] or "",
+            "wins": int(r[4]),
+            "losses": int(r[5]),
+            "pf": round(float(r[6] or 0.0), 1),
+            "div_rank": int(r[7] or 0),
+            "final_rank": int(r[8] or 0) if is_done else 0,
+            "made_playoffs": bool(r[9]) if is_done else False,
+            "won_division": bool(r[10]) if is_done else False,
+            "won_champ": bool(r[11]) if is_done else False,
+            "runner_up": bool(r[12]) if is_done else False,
+            "is_complete": is_done,
+        })
+
+    # 3. All-time Luck/PF+/PA+ lookup
+    if luck_all_time_rows is None:
+        luck_all_time_rows = compute_all_play_luck(db_path, season=None)["rows"]
+    luck_map = {r["owner"]: r for r in luck_all_time_rows}
+
+    # 4. Trade report card lookup (All-Time Actual Lineup VORP)
+    trade_card_map: Dict[str, dict] = {}
+    if trades_pack and trades_pack.get("all_time"):
+        for c in trades_pack["all_time"].get("owner_cards", {}).get("started", []):
+            trade_card_map[c["owner"]] = c
+
+    # 5. Per-owner career Draft VORP highlights (2018–present)
+    draft_highlights: Dict[str, dict] = {}
+    for own in active_owners:
+        dp = compute_position_normalized_draft_value(db_path, season=None, owner=own, limit=50)
+        best_steal = dp["steals"][0] if dp["steals"] else None
+        worst_bust = dp["busts"][0] if dp["busts"] else None
+        net_top = round(
+            sum(s["delta"] for s in dp["steals"][:5]) + sum(b["delta"] for b in dp["busts"][:5]),
+            1,
+        )
+        draft_highlights[own] = {
+            "best_steal": best_steal,
+            "worst_bust": worst_bust,
+            "top5_net_vorp": net_top,
+        }
+
+    dossiers = []
+    for own in active_owners:
+        meta = team_meta[own]
+        prof = meta.get("profile", {})
+        cg = career_g.get(own, {"reg_w": 0, "reg_l": 0, "po_w": 0, "po_l": 0, "high": None, "low": None, "first_season": current_season})
+        tl = timelines.get(own, [])
+        lk = luck_map.get(own, {})
+        tc = trade_card_map.get(own, {})
+        dh = draft_highlights.get(own, {})
+
+        rings = int(prof.get("rings", 0))
+        champ_years = prof.get("champ_years", [])
+        ru_years = prof.get("runner_up_years", [])
+        div_titles = sum(1 for x in tl if x["won_division"])
+        po_apps = sum(1 for x in tl if x["made_playoffs"])
+        completed_seasons = sum(1 for x in tl if x["is_complete"])
+        po_gp = cg["po_w"] + cg["po_l"]
+        po_pct = round((cg["po_w"] / po_gp) * 100.0, 1) if po_gp > 0 else 0.0
+
+        # H2H Nemesis & Favorite Victim (prefer opponents with >= 6 meetings, fallback to >= 2)
+        opps = [(opp, wl[0], wl[1], wl[0] + wl[1]) for opp, wl in h2h_rec.get(own, {}).items()]
+        min_m = 6 if any(x[3] >= 6 for x in opps) else 2
+        elig = [x for x in opps if x[3] >= min_m]
+        nemesis = None
+        victim = None
+        if elig:
+            nem = min(elig, key=lambda x: (x[1] / x[3], -x[3]))
+            vic = max(elig, key=lambda x: (x[1] / x[3], x[3]))
+            if nem[1] < nem[2]:
+                nemesis = {"owner": nem[0], "w": nem[1], "l": nem[2], "pct": round((nem[1] / nem[3]) * 100.0, 1)}
+            if vic[1] > vic[2]:
+                victim = {"owner": vic[0], "w": vic[1], "l": vic[2], "pct": round((vic[1] / vic[3]) * 100.0, 1)}
+
+        # Auto-computed Franchise Archetype Badges
+        badges: List[str] = []
+        if rings >= 2:
+            badges.append("Dynasty Royalty")
+        elif rings == 1:
+            badges.append("BFL Champion")
+        if cg["first_season"] == 2008:
+            badges.append("2008 Original")
+        if tc.get("net_vorp", 0.0) >= 75.0:
+            badges.append("Trade Shark")
+        elif tc.get("net_vorp", 0.0) <= -75.0:
+            badges.append("Trade Mark")
+        if (lk.get("pf_plus") or 100.0) >= 103.0:
+            badges.append("Era Scorer")
+        if po_gp >= 6 and po_pct >= 55.0:
+            badges.append("Playoff Closer")
+        if (lk.get("luck_delta") or 0.0) <= -5.0:
+            badges.append("Schedule Cursed")
+        elif (lk.get("luck_delta") or 0.0) >= 5.0:
+            badges.append("Schedule Blessed")
+        if dh.get("best_steal") and dh["best_steal"]["delta"] >= 140.0:
+            badges.append("Draft Wizard")
+        if not badges:
+            badges.append("BFL Contender")
+
+        dossiers.append({
+            "owner": own,
+            "code": meta.get("code", own.split()[0]),
+            "division": meta.get("division", ""),
+            "team_name": meta.get("team_name", ""),
+            "first_season": cg["first_season"],
+            "seasons_played": len(tl),
+            "completed_seasons": completed_seasons,
+            "rings": rings,
+            "champ_years": champ_years,
+            "runner_up_years": ru_years,
+            "div_titles": div_titles,
+            "po_apps": po_apps,
+            "reg_w": cg["reg_w"],
+            "reg_l": cg["reg_l"],
+            "reg_pct": round((cg["reg_w"] / max(1, cg["reg_w"] + cg["reg_l"])) * 100.0, 1),
+            "po_w": cg["po_w"],
+            "po_l": cg["po_l"],
+            "po_pct": po_pct,
+            "ap_pct": lk.get("ap_pct", 50.0),
+            "luck_delta": lk.get("luck_delta", 0.0),
+            "pf_plus": lk.get("pf_plus", 100.0),
+            "pa_plus": lk.get("pa_plus", 100.0),
+            "sos_rank": lk.get("sos_rank", 8),
+            "high_game": cg["high"],
+            "low_game": cg["low"],
+            "badges": badges[:5],
+            "nemesis": nemesis,
+            "victim": victim,
+            "draft": dh,
+            "trade": {
+                "deals": tc.get("trades", 0),
+                "wins": tc.get("wins", 0),
+                "losses": tc.get("losses", 0),
+                "pushes": tc.get("pushes", 0),
+                "net_vorp": tc.get("net_vorp", 0.0),
+                "best_trade": tc.get("best_trade"),
+                "worst_trade": tc.get("worst_trade"),
+            },
+            "timeline": tl,
+        })
+
+    dossiers.sort(key=lambda d: (-d["rings"], -d["reg_pct"], -d["reg_w"]))
+    return dossiers

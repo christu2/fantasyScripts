@@ -1389,6 +1389,152 @@ function renderAnalyticsLabTab() {
   }
 }
 
+/* ---------- RENDER FRANCHISE DOSSIERS ---------- */
+
+let ACTIVE_DOSSIER = "Nick Christus";
+
+function renderDossiersTab() {
+  const list = HUB.dossiers || [];
+  if (!list.length) return;
+  if (!list.some(d => d.owner === ACTIVE_DOSSIER)) {
+    ACTIVE_DOSSIER = list[0].owner;
+  }
+
+  const badgeCls = (b) => {
+    if (b.includes("Dynasty") || b.includes("Champion") || b.includes("Blessed")) return "tag-gold";
+    if (b.includes("Shark") || b.includes("Wizard") || b.includes("Closer") || b.includes("Scorer")) return "tag-green";
+    if (b.includes("Cursed") || b.includes("Mark")) return "tag-red";
+    if (b.includes("Original")) return "tag-purple";
+    return "tag-blue";
+  };
+
+  const draw = () => {
+    const picker = document.getElementById("dossierPicker");
+    picker.innerHTML = list.map(d => {
+      const act = d.owner === ACTIVE_DOSSIER ? "active" : "";
+      const ringsHtml = d.rings > 0 ? `<span class="ring-mini">${d.rings}&#9733;</span>` : "";
+      return `<button class="dossier-btn ${act}" data-own="${d.owner}">${shortName(d.owner)}${ringsHtml}</button>`;
+    }).join("");
+    picker.querySelectorAll(".dossier-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        ACTIVE_DOSSIER = btn.dataset.own;
+        draw();
+      });
+    });
+
+    const d = list.find(x => x.owner === ACTIVE_DOSSIER) || list[0];
+    const badgesHtml = (d.badges || []).map(b => `<span class="tag-pill ${badgeCls(b)}">${b}</span>`).join("");
+    const champSub = d.champ_years && d.champ_years.length ? ` (${d.champ_years.join(", ")})` : "";
+    const luckCol = d.luck_delta >= 2 ? "var(--gold)" : (d.luck_delta <= -2 ? "var(--red)" : "var(--text)");
+    const trCol = d.trade.net_vorp >= 0 ? "var(--green)" : "var(--red)";
+    const hiTxt = d.high_game ? `${d.high_game.score} (${d.high_game.season} Wk ${d.high_game.week})` : "—";
+    const loTxt = d.low_game ? `${d.low_game.score} (${d.low_game.season} Wk ${d.low_game.week})` : "—";
+
+    const nemHtml = d.nemesis
+      ? `<strong>${displayName(d.nemesis.owner)}</strong> — <span style="color:var(--red)">${d.nemesis.w}–${d.nemesis.l} (${d.nemesis.pct}%)</span>`
+      : `<span class="muted">No losing H2H rival</span>`;
+    const vicHtml = d.victim
+      ? `<strong>${displayName(d.victim.owner)}</strong> — <span style="color:var(--green)">${d.victim.w}–${d.victim.l} (${d.victim.pct}%)</span>`
+      : `<span class="muted">No dominant H2H series</span>`;
+
+    const bs = d.draft && d.draft.best_steal;
+    const wb = d.draft && d.draft.worst_bust;
+    const bestDraftHtml = bs
+      ? `<strong>${bs.player}</strong> (${bs.season}, Rd ${bs.round})<span class="tie-note">${bs.pos}${bs.pos_draft_rank} &rarr; ${bs.pos}${bs.pos_finish_rank} &bull; <strong style="color:var(--green)">+${bs.delta} VORP</strong></span>`
+      : `<span class="muted">No qualifying steals</span>`;
+    const worstDraftHtml = wb
+      ? `<strong>${wb.player}</strong> (${wb.season}, Rd ${wb.round})<span class="tie-note">${wb.pos}${wb.pos_draft_rank} &rarr; ${wb.pos}${wb.pos_finish_rank} &bull; <strong style="color:var(--red)">${wb.delta} VORP</strong></span>`
+      : `<span class="muted">No qualifying busts</span>`;
+
+    const bt = d.trade && d.trade.best_trade;
+    const wt = d.trade && d.trade.worst_trade;
+    const bestTradeHtml = bt
+      ? `<strong>${bt.season} Wk ${bt.week} vs ${shortName(bt.partner)}</strong> <strong style="color:var(--green)">(${bt.swing > 0 ? "+" : ""}${bt.swing} VORP)</strong><span class="tie-note">Got: ${bt.received.join(", ")}</span>`
+      : `<span class="muted">No winning trades recorded</span>`;
+    const worstTradeHtml = wt
+      ? `<strong>${wt.season} Wk ${wt.week} vs ${shortName(wt.partner)}</strong> <strong style="color:var(--red)">(${wt.swing} VORP)</strong><span class="tie-note">Got: ${wt.received.join(", ")}</span>`
+      : `<span class="muted">No losing trades recorded</span>`;
+
+    const tlRows = (d.timeline || []).map(s => {
+      let badge = `<span class="muted small">${s.is_complete ? (s.final_rank ? `#${s.final_rank}` : "—") : "In Progress"}</span>`;
+      if (s.won_champ) badge = `<span class="tag-pill tag-gold">Champion</span>`;
+      else if (s.runner_up) badge = `<span class="tag-pill tag-blue">Runner-Up</span>`;
+      else if (s.won_division) badge = `<span class="tag-pill tag-green">Div Champ (#${s.final_rank})</span>`;
+      else if (s.made_playoffs) badge = `<span class="tag-pill tag-green">Playoffs (#${s.final_rank})</span>`;
+      return `
+        <tr>
+          <td><strong>${s.season}</strong></td>
+          <td>${s.team_name}</td>
+          <td>${s.division}</td>
+          <td><strong>${s.wins}-${s.losses}</strong></td>
+          <td>${s.pf.toFixed(1)}</td>
+          <td>${badge}</td>
+        </tr>
+      `;
+    }).join("");
+
+    document.getElementById("dossierBody").innerHTML = `
+      <div class="dossier-hero">
+        <div class="dossier-hero-top">
+          <div>
+            <h3 style="font-size:1.35rem;font-weight:800">${displayName(d.owner)}</h3>
+            <p class="muted small">${d.team_name} &bull; ${d.division} Division &bull; Est. ${d.first_season} (${d.seasons_played} ${d.seasons_played === 1 ? "season" : "seasons"})${champSub}</p>
+            <div class="trade-tags" style="margin-top:8px;margin-bottom:0">${badgesHtml}</div>
+          </div>
+          <div class="trophy-strip">
+            <div class="trophy-box ${d.rings > 0 ? "gold" : ""}"><div class="trophy-num" style="color:${d.rings > 0 ? "var(--gold)" : "var(--muted)"}">${d.rings}</div><div class="trophy-lbl">Rings</div></div>
+            <div class="trophy-box"><div class="trophy-num">${(d.runner_up_years || []).length}</div><div class="trophy-lbl">Runner-Up</div></div>
+            <div class="trophy-box"><div class="trophy-num">${d.div_titles}</div><div class="trophy-lbl">Div Titles</div></div>
+            <div class="trophy-box"><div class="trophy-num">${d.po_apps}</div><div class="trophy-lbl">Playoffs</div></div>
+          </div>
+        </div>
+        <div class="owner-report-grid">
+          <div class="stat-box"><div class="lbl">Regular Season</div><div class="val">${d.reg_w}–${d.reg_l} (${d.reg_pct}%)</div></div>
+          <div class="stat-box"><div class="lbl">Playoffs Record</div><div class="val">${d.po_w}–${d.po_l} (${d.po_pct}%)</div></div>
+          <div class="stat-box"><div class="lbl">All-Play &amp; Luck</div><div class="val">${d.ap_pct}% <span style="color:${luckCol};font-size:0.85rem">(${d.luck_delta > 0 ? "+" : ""}${d.luck_delta.toFixed(1)}W)</span></div></div>
+          <div class="stat-box"><div class="lbl">Era PF+ / PA+</div><div class="val">${d.pf_plus.toFixed(1)} / ${d.pa_plus.toFixed(1)} <span class="muted small">(#${d.sos_rank} SOS)</span></div></div>
+          <div class="stat-box"><div class="lbl">Career High / Low</div><div class="val" style="font-size:0.82rem">${hiTxt}<span class="tie-note">Low: ${loTxt}</span></div></div>
+          <div class="stat-box"><div class="lbl">Career Trade VORP</div><div class="val" style="color:${trCol}">${d.trade.net_vorp > 0 ? "+" : ""}${d.trade.net_vorp.toFixed(1)} <span class="muted small">(${d.trade.wins}-${d.trade.losses})</span></div></div>
+        </div>
+      </div>
+
+      <div class="dossier-cards-grid">
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head"><h3>Head-to-Head Extremes</h3></div>
+          <div class="extreme-box best" style="margin-bottom:8px"><div class="muted small">Favorite Victim</div><div style="margin-top:3px">${vicHtml}</div></div>
+          <div class="extreme-box worst"><div class="muted small">Biggest Nemesis</div><div style="margin-top:3px">${nemHtml}</div></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head"><h3>Draft Hall (2018–Present)</h3></div>
+          <div class="extreme-box best" style="margin-bottom:8px"><div class="muted small">Best Draft Steal</div><div style="margin-top:3px">${bestDraftHtml}</div></div>
+          <div class="extreme-box worst"><div class="muted small">Worst Draft Bust</div><div style="margin-top:3px">${worstDraftHtml}</div></div>
+        </div>
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head"><h3>Trade Vault (2018–2025)</h3></div>
+          <div class="extreme-box best" style="margin-bottom:8px"><div class="muted small">Best Trade Ever</div><div style="margin-top:3px">${bestTradeHtml}</div></div>
+          <div class="extreme-box worst"><div class="muted small">Worst Trade Regret</div><div style="margin-top:3px">${worstTradeHtml}</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>Season-by-Season Franchise Timeline</h3>
+          <span class="pill">${d.seasons_played} Seasons</span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table compact">
+            <thead>
+              <tr><th>Year</th><th>Team Name</th><th>Division</th><th>Record</th><th>Points For</th><th>Finish</th></tr>
+            </thead>
+            <tbody>${tlRows}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  };
+  draw();
+}
+
 /* ---------- RENDER PODCAST & AWARDS ---------- */
 
 function renderPodcastAndAwards() {
@@ -1487,6 +1633,7 @@ async function init() {
 
   renderPlayoffMachine();
   renderAnalyticsLabTab();
+  renderDossiersTab();
   renderHistoryTab();
   renderDraftsTab();
   renderTradesTab();

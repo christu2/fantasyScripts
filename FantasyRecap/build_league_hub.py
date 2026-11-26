@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from FantasyRecap.core.manifest import get_divisions, get_owner_to_division, load_manifest, load_project_env
 load_project_env()
 
-from FantasyRecap.analytics_lab_engine import build_analytics_lab_bundle
+from FantasyRecap.analytics_lab_engine import build_analytics_lab_bundle, export_franchise_dossiers
 from FantasyRecap.bfl_history_db import DB_PATH, compute_position_normalized_draft_value
 from FantasyRecap.config import CURRENT_YEAR
 from FantasyRecap.league_history_intelligence import BFL_CHAMPIONSHIPS, standardize_name
@@ -313,6 +313,12 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         completed_week=completed_week,
         final_week_odds=baseline_odds,
     )
+    dossiers_pack = export_franchise_dossiers(
+        DB_PATH,
+        trades_pack=trades_pack,
+        luck_all_time_rows=analytics_pack["luck"]["by_season"].get("all"),
+        current_season=season,
+    )
     episodes = fetch_rss_episodes()
 
     hub_data = {
@@ -337,6 +343,7 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         "history": history_pack,
         "trades": trades_pack,
         "analytics": analytics_pack,
+        "dossiers": dossiers_pack,
         "podcast": {
             "rss_url": DEFAULT_RSS_URL,
             "episodes": episodes,

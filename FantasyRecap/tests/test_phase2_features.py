@@ -409,9 +409,55 @@ class TestAnalyticsLabAndPlayoffPush(unittest.TestCase):
         idx_html = (WEB_HUB_DIR / "index.html").read_text(encoding="utf-8")
         app_js = (WEB_HUB_DIR / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="tab-analytics"', idx_html)
+        self.assertIn('id="tab-dossiers"', idx_html)
         self.assertIn('id="rootingGuideCard"', idx_html)
         self.assertIn("function renderRootingGuide(", app_js)
         self.assertIn("function renderAnalyticsLabTab()", app_js)
+        self.assertIn("function renderDossiersTab()", app_js)
+
+    def test_franchise_dossiers_discord_commands_and_clinch_watch(self):
+        from FantasyRecap.analytics_lab_engine import export_franchise_dossiers
+        from FantasyRecap.bfl_historian_bot import build_luck_report, build_trades_report
+        from FantasyRecap.trade_vault_engine import evaluate_all_trades
+        from FantasyRecap.weekly_awards_engine import compute_weekly_awards
+
+        # Clinch/Elimination Watch triggers cleanly when teams hit 100% or 0% PO odds
+        matchups = [
+            {
+                "winner": {"id": 1, "owner": "Team A", "name": "Alpha"},
+                "loser": {"id": 2, "owner": "Team B", "name": "Beta"},
+                "away_score": 120.0, "home_score": 90.0, "margin": 30.0,
+            }
+        ]
+        perfs = {
+            1: {"starters": [{"name": "WR1", "pts": 25.0, "proj": 15.0}], "blunders": []},
+            2: {"starters": [{"name": "WR2", "pts": 10.0, "proj": 11.0}], "blunders": []},
+        }
+        po = {
+            "Team A": {"owner": "Team A", "record": "11-1", "next_opp": "Team B", "playoff_pct": 100.0, "div_title_pct": 100.0, "bye_pct": 100.0, "leverage_swing": 0.0},
+            "Team B": {"owner": "Team B", "record": "1-11", "next_opp": "Team A", "playoff_pct": 0.0, "div_title_pct": 0.0, "bye_pct": 0.0, "leverage_swing": 0.0},
+        }
+        aw = compute_weekly_awards(matchups, perfs, week_num=12, season=2026, playoff_odds=po)
+        keys = {a["key"] for a in aw["awards"]}
+        self.assertIn("clinch_watch", keys)
+
+        if DB_PATH.exists():
+            vault = evaluate_all_trades(DB_PATH, current_season=2026)
+            dossiers = export_franchise_dossiers(DB_PATH, trades_pack=vault, current_season=2026)
+            self.assertEqual(len(dossiers), 16)
+            nick = next(d for d in dossiers if d["owner"] == "Nick Christus")
+            self.assertGreaterEqual(nick["seasons_played"], 18)
+            self.assertTrue(len(nick["badges"]) >= 2)
+            self.assertIsNotNone(nick["high_game"])
+
+            tr_card = build_trades_report(owner_query="nick", era="all_time", db_path=DB_PATH)
+            self.assertIn("Nick Christus", tr_card["title"])
+            tr_all = build_trades_report(era="live", db_path=DB_PATH)
+            self.assertIn("Live Tracker", tr_all["title"])
+
+            lk_card = build_luck_report(season=0, db_path=DB_PATH)
+            self.assertIn("All-Time", lk_card["title"])
+            self.assertEqual(len(lk_card["fields"]), 3)
 
 
 if __name__ == "__main__":
