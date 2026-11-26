@@ -112,8 +112,11 @@ def compute_all_play_luck(
             continue
         by_sw[(s_yr, wk)].append((_canon_owner(r[2]), float(r[3]), float(r[4]), int(r[5])))
 
-    stats: Dict[str, dict] = {}
-    for (_s, _w), entries in by_sw.items():
+    # First pass: keep only completed weeks and compute each season's exact League Avg PPG
+    # so cross-era PF+ and PA+ (100 = league avg that year) normalize 2008 Standard vs 2026 Half-PPR!
+    valid_weeks = []
+    season_scores: Dict[int, List[float]] = defaultdict(list)
+    for (s_yr, wk), entries in by_sw.items():
         n_teams = len(entries)
         if n_teams < 2:
             continue
@@ -121,6 +124,19 @@ def compute_all_play_luck(
         # Skip in-progress / unplayed weeks (e.g. Thursday kickoff with 0-0 games or <40 avg score)
         if (sum(scores) / n_teams) < 40.0 or any(e[1] == 0.0 and e[2] == 0.0 for e in entries):
             continue
+        valid_weeks.append((s_yr, wk, entries, scores))
+        season_scores[s_yr].extend(scores)
+
+    season_avg = {
+        s_yr: (sum(vals) / len(vals))
+        for s_yr, vals in season_scores.items()
+        if vals
+    }
+
+    stats: Dict[str, dict] = {}
+    for s_yr, _wk, entries, scores in valid_weeks:
+        n_teams = len(entries)
+        s_mean = season_avg.get(s_yr, 90.0) or 90.0
         for own, sc, opp_sc, win in entries:
             if active_only and own.lower() not in active_set:
                 continue
@@ -134,6 +150,8 @@ def compute_all_play_luck(
                 "ap_games": 0,
                 "pf": 0.0,
                 "pa": 0.0,
+                "pf_plus_sum": 0.0,
+                "pa_plus_sum": 0.0,
             })
             beat = sum(1 for x in scores if sc > x)
             tied = sum(1 for x in scores if sc == x) - 1  # exclude self
@@ -144,6 +162,8 @@ def compute_all_play_luck(
             st["ap_games"] += (n_teams - 1)
             st["pf"] += sc
             st["pa"] += opp_sc
+            st["pf_plus_sum"] += (100.0 * sc / s_mean)
+            st["pa_plus_sum"] += (100.0 * opp_sc / s_mean)
 
     out_rows = []
     is_all_time = season is None
@@ -153,6 +173,8 @@ def compute_all_play_luck(
         ap_pct = st["ap_wins"] / ap_g
         exp_wins = ap_pct * st["games"]
         luck_delta = st["wins"] - exp_wins
+        pf_plus = round(st["pf_plus_sum"] / gp, 1)
+        pa_plus = round(st["pa_plus_sum"] / gp, 1)
         out_rows.append({
             "owner": own,
             "division": st["division"],
@@ -167,11 +189,13 @@ def compute_all_play_luck(
             "luck_delta": round(luck_delta, 2),
             "avg_pf": round(st["pf"] / gp, 1),
             "avg_pa": round(st["pa"] / gp, 1),
+            "pf_plus": pf_plus,
+            "pa_plus": pa_plus,
             "verdict": _luck_verdict(luck_delta, is_all_time=is_all_time),
         })
 
-    # Rank schedule difficulty (1 = toughest / highest Avg PA)
-    by_pa = sorted(out_rows, key=lambda x: -x["avg_pa"])
+    # Rank schedule difficulty by Era-Normalized PA+ (1 = toughest schedule relative to each season's scoring)
+    by_pa = sorted(out_rows, key=lambda x: (-x["pa_plus"], -x["avg_pa"]))
     for idx, row in enumerate(by_pa, 1):
         row["sos_rank"] = idx
 

@@ -1317,7 +1317,7 @@ function renderAnalyticsLabTab() {
     const rows = [...(luckPack.by_season[key] || [])];
     if (mode === "luck_desc") rows.sort((a, b) => b.luck_delta - a.luck_delta);
     else if (mode === "luck_asc") rows.sort((a, b) => a.luck_delta - b.luck_delta);
-    else if (mode === "sos") rows.sort((a, b) => b.avg_pa - a.avg_pa);
+    else if (mode === "sos") rows.sort((a, b) => (b.pa_plus - a.pa_plus) || (b.avg_pa - a.avg_pa));
     else rows.sort((a, b) => a.true_rank - b.true_rank);
 
     const vCls = (v) => {
@@ -1328,6 +1328,10 @@ function renderAnalyticsLabTab() {
 
     document.querySelector("#luckTable tbody").innerHTML = rows.map(r => {
       const lCol = r.luck_delta >= 0.7 ? "var(--gold)" : (r.luck_delta <= -0.7 ? "var(--red)" : "var(--muted)");
+      const pfPlus = r.pf_plus != null ? r.pf_plus.toFixed(1) : "100.0";
+      const paPlus = r.pa_plus != null ? r.pa_plus.toFixed(1) : "100.0";
+      const pfCol = (r.pf_plus || 100) >= 103 ? "var(--green)" : ((r.pf_plus || 100) <= 97 ? "var(--red)" : "var(--text)");
+      const paCol = (r.pa_plus || 100) >= 102 ? "var(--red)" : ((r.pa_plus || 100) <= 98 ? "var(--green)" : "var(--text)");
       return `
         <tr>
           <td><strong>#${r.true_rank}</strong></td>
@@ -1336,8 +1340,8 @@ function renderAnalyticsLabTab() {
           <td><strong>${r.ap_pct}%</strong> <span class="muted small">(${Math.round(r.ap_wins)}-${Math.round(r.ap_losses)})</span></td>
           <td>${r.expected_wins.toFixed(1)}</td>
           <td style="color:${lCol};font-weight:800">${r.luck_delta > 0 ? "+" : ""}${r.luck_delta.toFixed(2)} W</td>
-          <td>${r.avg_pf.toFixed(1)}</td>
-          <td>${r.avg_pa.toFixed(1)} <span class="muted small">(#${r.sos_rank})</span></td>
+          <td><strong style="color:${pfCol}">${pfPlus}</strong> <span class="muted small">(${r.avg_pf.toFixed(1)})</span></td>
+          <td><strong style="color:${paCol}">${paPlus}</strong> <span class="muted small">(#${r.sos_rank} · ${r.avg_pa.toFixed(1)})</span></td>
           <td><span class="tag-pill ${vCls(r.verdict)}">${r.verdict}</span></td>
         </tr>
       `;

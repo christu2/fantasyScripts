@@ -392,6 +392,11 @@ class TestAnalyticsLabAndPlayoffPush(unittest.TestCase):
         # All-Play Win % across all 16 teams must average 50.0%
         avg_ap = sum(r["ap_pct"] for r in luck_2026["rows"]) / 16.0
         self.assertAlmostEqual(avg_ap, 50.0, delta=0.2)
+        # Era-normalized PF+ and PA+ must average ~100.0 across all 16 teams
+        avg_pf_plus = sum(r["pf_plus"] for r in luck_2026["rows"]) / 16.0
+        avg_pa_plus = sum(r["pa_plus"] for r in luck_2026["rows"]) / 16.0
+        self.assertAlmostEqual(avg_pf_plus, 100.0, delta=0.3)
+        self.assertAlmostEqual(avg_pa_plus, 100.0, delta=0.3)
 
         hm = compute_positional_strength_heatmap(DB_PATH, season=2026)
         self.assertEqual(len(hm["rows"]), 16)

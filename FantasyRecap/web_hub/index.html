@@ -170,7 +170,7 @@
           <div>
             <h3>All-Play Record &amp; Schedule Luck ("Fraud Detector")</h3>
             <p class="muted small">
-              <strong>All-Play</strong> = your record if you played all 15 other managers every single week. <strong>Luck</strong> = Actual Wins minus Expected Wins.
+              <strong>All-Play</strong> = your record vs all 15 opponents every week. <strong>PF+ / PA+</strong> = era-adjusted scoring indexed to <code>100</code> = each season's exact league average (normalizing 2008 Standard vs. 2026 Half-PPR).
             </p>
           </div>
           <div class="controls">
@@ -179,7 +179,7 @@
               <option value="true_rank">Sort: True Strength (All-Play %)</option>
               <option value="luck_desc">Sort: Luckiest (Biggest Frauds)</option>
               <option value="luck_asc">Sort: Most Cursed (Unluckiest)</option>
-              <option value="sos">Sort: Hardest Schedule (Avg PA)</option>
+              <option value="sos">Sort: Hardest Schedule (Era PA+)</option>
             </select>
           </div>
         </div>
@@ -193,8 +193,8 @@
                 <th>All-Play</th>
                 <th>Exp W</th>
                 <th>Luck (&Delta;W)</th>
-                <th>Avg PF</th>
-                <th>Avg PA (SOS)</th>
+                <th>PF+ (PPG)</th>
+                <th>PA+ (SOS)</th>
                 <th>Verdict</th>
               </tr>
             </thead>
