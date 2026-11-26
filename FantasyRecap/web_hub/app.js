@@ -649,7 +649,7 @@ function renderTradesTab() {
     const blurb = document.getElementById("tradeMethodologyBlurb");
     blurb.innerHTML = lens === "started"
       ? `<strong>Actual Lineup Impact:</strong> Counts only weeks the acquiring manager <em>started</em> the player above 16-team positional replacement (QB16, RB36, WR38, TE16), with <strong>1.5&times; Championship Playoff weighting</strong> (consolation = 0&times;).`
-      : `<strong>Pure Player Outcome:</strong> Counts all rest-of-season weeks above 16-team positional replacement from the trade week onward (even if benched, dropped, or flipped), with <strong>1.5&times; Playoff-week weighting</strong>.`;
+      : `<strong>Pure Player Outcome:</strong> Sums unfloored weekly points minus 16-team replacement across all active post-trade games (duds offset booms; floored at 0 per player so bench throw-ins equal waiver value), with <strong>1.5&times; Playoff-week weighting</strong>.`;
 
     // 1. Render Sharks vs Marks Leaderboard
     const cards = (bucket.owner_cards && bucket.owner_cards[lens]) || [];

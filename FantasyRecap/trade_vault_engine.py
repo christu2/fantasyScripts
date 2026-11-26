@@ -966,8 +966,8 @@ def evaluate_all_trades(db_path: Path = DB_PATH, current_season: int = int(CURRE
                 po_st_vorp = 0.0
                 st_pts = 0.0
                 st_wks = 0
-                ros_vorp = 0.0
-                po_ros_vorp = 0.0
+                ros_vorp_raw = 0.0
+                po_ros_vorp_raw = 0.0
                 ros_pts = 0.0
                 ros_wks = 0
                 rostered_wks = 0
@@ -994,13 +994,17 @@ def evaluate_all_trades(db_path: Path = DB_PATH, current_season: int = int(CURRE
                         seen_ros_wks.add(wk)
                         if pts > 0 or row["is_starter"]:
                             w_mult_ros = PLAYOFF_WEIGHT if wk >= po_start else 1.0
-                            pos_delta = max(0.0, pts - repl)
-                            w_pos_delta = w_mult_ros * pos_delta
-                            ros_vorp += w_pos_delta
+                            # Unfloored weekly delta so dud games offset boom games!
+                            w_ros_delta = w_mult_ros * (pts - repl)
+                            ros_vorp_raw += w_ros_delta
                             if wk >= po_start:
-                                po_ros_vorp += w_pos_delta
+                                po_ros_vorp_raw += w_ros_delta
                             ros_pts += pts
                             ros_wks += 1
+
+                # Floor at the player ROS total (true VORP: waiver-level or worse player = 0.0)
+                ros_vorp = max(0.0, ros_vorp_raw)
+                po_ros_vorp = max(0.0, po_ros_vorp_raw)
 
                 dropped_fast = (rostered_wks <= 3 and eff_wk <= 10 and flipped_info is None)
                 if dropped_fast:

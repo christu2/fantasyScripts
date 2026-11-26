@@ -322,6 +322,42 @@ class TestTradeVaultEngine(unittest.TestCase):
             self.assertEqual(tr1["b_received"][0]["flipped"]["week"], 12)
             self.assertEqual(tr1["b_received"][0]["flipped"]["to"], "Shawn Lukose")
 
+    def test_pure_ros_vorp_does_not_floor_individual_dud_weeks(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from FantasyRecap.bfl_history_db import init_db
+        from FantasyRecap.trade_vault_engine import evaluate_all_trades
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test_boom_bust.db"
+            conn = sqlite3.connect(db)
+            init_db(conn)
+            cur = conn.cursor()
+            cur.execute("INSERT INTO trades VALUES ('2025_w05_bb',2025,5,5,1,'Nick Christus',2,'Daniel Kruszewski',0,'espn_tx')")
+            cur.execute("INSERT INTO trade_items VALUES ('2025_w05_bb',2025,2,'Daniel Kruszewski',1,'Nick Christus',501,'BoomBust WR','WR')")
+            cur.execute("INSERT INTO trade_items VALUES ('2025_w05_bb',2025,1,'Nick Christus',2,'Daniel Kruszewski',502,'Steady WR','WR')")
+            # BoomBust WR drops 20, 2, 2, 2 vs WR replacement 8.0 -> raw sum = +12 - 6 - 6 - 6 = -6.0 -> floored at 0.0 (NOT +12.0!)
+            for wk, pts in [(5, 20.0), (6, 2.0), (7, 2.0), (8, 2.0)]:
+                cur.execute(
+                    "INSERT INTO player_boxscores VALUES (2025,?,1,1,'Team A','Nick Christus','Nick Christus',2,'Daniel Kruszewski','NONE',1,0,0,501,'BoomBust WR','NYJ','WR',20,'Bench',0,?,10.0)",
+                    (wk, pts),
+                )
+            # Steady WR drops 14, 14, 14, 14 vs WR replacement 8.0 -> +24.0 Pure ROS VORP
+            for wk, pts in [(5, 14.0), (6, 14.0), (7, 14.0), (8, 14.0)]:
+                cur.execute(
+                    "INSERT INTO player_boxscores VALUES (2025,?,1,2,'Team B','Daniel Kruszewski','Daniel Kruszewski',1,'Nick Christus','NONE',1,0,0,502,'Steady WR','CIN','WR',20,'Bench',0,?,12.0)",
+                    (wk, pts),
+                )
+            conn.commit()
+            conn.close()
+
+            vault = evaluate_all_trades(db, current_season=2026)
+            tr = vault["all_time"]["trades"][0]
+            self.assertAlmostEqual(tr["ros"]["a_vorp"], 0.0, places=1)
+            self.assertAlmostEqual(tr["ros"]["b_vorp"], 24.0, places=1)
+            self.assertEqual(tr["ros"]["winner"], "Daniel Kruszewski")
+
     def test_live_db_trade_vault_and_web_hub_ui(self):
         from FantasyRecap.trade_vault_engine import evaluate_all_trades
 
