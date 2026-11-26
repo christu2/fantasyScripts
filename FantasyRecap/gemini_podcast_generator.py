@@ -121,7 +121,7 @@ CONTRACTION_REPLACEMENTS = [
 
 # Default expressive voices for Chris (lead sports desk anchor) & Dave (sharp, punchy co-host)
 DEFAULT_CHRIS_VOICE = "Charon"
-DEFAULT_DAVE_VOICE = "Puck"
+DEFAULT_DAVE_VOICE = "Iapetus"
 
 STYLE_DIRECTIVE = (
     "Perform this as a natural, upbeat, studio-recorded fantasy football podcast between two close friends, "
