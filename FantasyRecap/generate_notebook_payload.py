@@ -666,8 +666,115 @@ def calculate_season_trajectories(raw_data: dict, current_week: int, teams: dict
 
     return records
 
-def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: dict = None, entering_week: int = None) -> dict:
-    """Generates deep strategic explanations for why each manager made the move."""
+def _summarize_manager_position_need(
+    owner: str,
+    acquired_players: list,
+    raw_data: dict,
+    teams: dict,
+    player_context: dict,
+    week_num: int,
+) -> str:
+    """
+    Inspects `owner`'s roster in `raw_data` at the position(s) of `acquired_players`
+    to surface the REAL reason they made the trade (e.g., incumbent starter on IR /
+    Questionable-turned-inactive / bye week leaving 0-1 healthy starters at that position).
+    """
+    if not raw_data or not teams or not acquired_players:
+        return ""
+    pos_map = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
+    required_starters = {'QB': 1, 'RB': 2, 'WR': 2, 'TE': 1}
+
+    target_tid = None
+    for tid, t_info in teams.items():
+        if t_info.get('owner') == owner:
+            target_tid = tid
+            break
+    if target_tid is None:
+        return ""
+
+    acquired_names = {
+        (p['name'] if isinstance(p, dict) else str(p)).lower()
+        for p in acquired_players
+    }
+    acquired_positions = []
+    for p in acquired_players:
+        pos = p.get('pos', 'FLEX') if isinstance(p, dict) else 'FLEX'
+        if pos in required_starters and pos not in acquired_positions:
+            acquired_positions.append(pos)
+    if not acquired_positions:
+        return ""
+
+    entries = []
+    for t in raw_data.get('teams', []):
+        if t.get('id') == target_tid:
+            entries = t.get('roster', {}).get('entries', [])
+            break
+    if not entries:
+        return ""
+
+    notes = []
+    for pos in acquired_positions:
+        other_active = []
+        other_sidelined = []
+        for e in entries:
+            pe = e.get('playerPoolEntry', {})
+            p = pe.get('player', {})
+            pid = p.get('id')
+            pname = p.get('fullName', '')
+            if not pname or pname.lower() in acquired_names:
+                continue
+            if pos_map.get(p.get('defaultPositionId', 0)) != pos:
+                continue
+
+            slot = e.get('lineupSlotId', 20)
+            ctx = (player_context or {}).get(pid, {})
+            inj = ctx.get('injury', p.get('injuryStatus', 'ACTIVE'))
+            wk_pts, wk_proj = 0.0, 0.0
+            for s in p.get('stats', []):
+                if s.get('statSourceId') == 0 and s.get('scoringPeriodId') == week_num:
+                    wk_pts = float(s.get('appliedTotal', 0.0) or 0.0)
+                elif s.get('statSourceId') == 1 and s.get('scoringPeriodId') == week_num:
+                    wk_proj = float(s.get('appliedTotal', 0.0) or 0.0)
+
+            is_ir = (slot == 21) or (inj in ('INJURY_RESERVE', 'IR'))
+            is_out_or_inactive = (
+                is_ir
+                or inj in ('OUT', 'DOUBTFUL', 'SUSPENSION')
+                or (wk_pts == 0.0 and wk_proj == 0.0)
+            )
+            if is_out_or_inactive:
+                reason = "IR" if is_ir else (inj.title() if inj not in ('ACTIVE', 'NORMAL', '') else "inactive/bye")
+                other_sidelined.append(f"{pname} ({reason})")
+            else:
+                other_active.append(pname)
+
+        req = required_starters.get(pos, 1)
+        if other_sidelined and len(other_active) < req:
+            sidelined_str = ", ".join(other_sidelined[:3])
+            active_str = (
+                f"only {len(other_active)} other active {pos} ({', '.join(other_active)})"
+                if other_active
+                else f"0 other active {pos}s"
+            )
+            notes.append(f"with {sidelined_str} unavailable, {owner} had {active_str} on the roster")
+        elif other_sidelined:
+            notes.append(f"{', '.join(other_sidelined[:2])} sidelined at {pos}")
+        elif len(other_active) < req:
+            notes.append(f"thin {pos} room (only {len(other_active)} other active {pos})")
+
+    return "; ".join(notes)
+
+
+def analyze_trade_strategic_motives(
+    tr: dict,
+    teams: dict = None,
+    trajectories: dict = None,
+    entering_week: int = None,
+    raw_data: dict = None,
+    player_context: dict = None,
+    week_num: int = None,
+) -> dict:
+    """Generates calibrated, roster-aware strategic explanations for why each manager made the move."""
     a = tr['owner_a']
     b = tr['owner_b']
     a_sends = tr['a_sends']
@@ -676,13 +783,39 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
     a_names = [p['name'] if isinstance(p, dict) else p for p in a_sends]
     b_names = [p['name'] if isinstance(p, dict) else p for p in b_sends]
     all_names_str = ' '.join(a_names + b_names)
-    
-    a_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in a_sends])
-    b_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in b_sends])
+
+    # Index player_context by lowercase full name for caliber calibration
+    ctx_by_name = {}
+    if raw_data and player_context:
+        for t in raw_data.get('teams', []):
+            for e in t.get('roster', {}).get('entries', []):
+                p = e.get('playerPoolEntry', {}).get('player', {})
+                pid = p.get('id')
+                nm = (p.get('fullName') or '').lower()
+                if nm and pid in player_context:
+                    ctx_by_name[nm] = player_context[pid]
+
+    def _fmt_player_with_caliber(p) -> str:
+        if not isinstance(p, dict):
+            return str(p)
+        nm = p['name']
+        pos = p.get('pos', 'FLEX')
+        c = ctx_by_name.get(nm.lower(), {})
+        avg = c.get('season_avg', 0.0)
+        pr = c.get('pos_rank', 999)
+        if avg > 0 and pr <= 100 and pos in ('QB', 'RB', 'WR', 'TE'):
+            return f"{nm} ({pos}{pr}, {avg} PPG)"
+        if avg > 0:
+            return f"{nm} ({pos}, {avg} PPG)"
+        return f"{nm} ({pos})"
+
+    a_str = ', '.join([_fmt_player_with_caliber(p) for p in a_sends])
+    b_str = ', '.join([_fmt_player_with_caliber(p) for p in b_sends])
     
     # Specific verified league trade narratives & strategic motives
     if 'Brenton Strange' in all_names_str and 'Hockenson' in all_names_str:
         return {
+            'tier': 'Starter / IR Stash Swap',
             'theme': 'Win-Now Emergency Starter vs. Injured IR Playoff Stash',
             'owner_a_why': f"{a} flipped active TE Brenton Strange to Daniel Kruszewski for T.J. Hockenson. Shawn U had the standings cushion and luxury to stash injured Pro-Bowl TE Hockenson on IR as an elite TE1 lottery ticket for the fantasy playoffs, trading immediate production for championship ceiling.",
             'owner_b_why': f"{b} desperately needed live, healthy starting fantasy points at tight end right now to stop a losing skid and stay afloat in the playoff race. Daniel could not afford an empty roster spot or waiting on Hockenson's return, opting for Brenton Strange as an immediate plug-and-play starter.",
@@ -690,6 +823,7 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
         }
     if 'Caleb Williams' in all_names_str and ('Aaron Rodgers' in all_names_str or 'Colston Loveland' in all_names_str):
         return {
+            'tier': 'Blockbuster Trade',
             'theme': 'Blockbuster Franchise Overhaul: Youth & Elite Ceilings vs. Veteran Depth',
             'owner_a_why': f"{a} went all-in on dynamic youth and explosive ceiling! Shipped out veteran QB Aaron Rodgers, RB depth piece Justice Hill, and WR Keon Coleman to acquire 3rd-year franchise QB Caleb Williams and 2nd-year athletic phenom TE Colston Loveland, locking in two high-ceiling positional centerpieces.",
             'owner_b_why': f"{b} prioritized multi-position depth and starting stability. Nitesh absorbed veteran QB Aaron Rodgers to stabilize his signal-caller floor while adding Justice Hill (immediate backfield touches) and Keon Coleman to patch multiple lineup holes and cover upcoming bye weeks.",
@@ -697,6 +831,7 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
         }
     if 'Tyler Warren' in all_names_str and ('Rachaad White' in all_names_str or 'Dallas Goedert' in all_names_str):
         return {
+            'tier': 'Starter-Level Trade',
             'theme': '2-for-1 Elite TE Consolidation vs. Multi-Position Roster Refuel',
             'owner_a_why': f"{a} executed a textbook 2-for-1 consolidation! Shawn packaged starting RB2 Rachaad White and veteran TE Dallas Goedert to land breakout sophomore TE Tyler Warren, securing an every-week mismatch at tight end while trimming excess depth.",
             'owner_b_why': f"{b} was bleeding in the standings and desperately needed to turn a single star into multiple starting pieces. rej received starting RB Rachaad White and proven veteran TE Dallas Goedert to instantly raise his weekly scoring floor and fill two starting vacancies.",
@@ -704,6 +839,7 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
         }
     if 'Ladd McConkey' in all_names_str and 'Marvin Harrison' in all_names_str:
         return {
+            'tier': 'Blockbuster Trade',
             'theme': 'The 3-for-1 Mega-Consolidation Blockbuster',
             'owner_a_why': f"{a} targeted Ladd McConkey aggressively, paying a massive depth toll (Marvin Harrison Jr., Emmett Johnson, and MarShawn Lloyd) to consolidate his roster and secure McConkey as his preferred WR anchor.",
             'owner_b_why': f"{b} capitalized on an aggressive buyer to restock his entire roster with three high-upside weapons, adding massive insulation across multiple positions.",
@@ -711,6 +847,7 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
         }
     if 'Jakobi Meyers' in all_names_str and 'Matthew Golden' in all_names_str:
         return {
+            'tier': 'Depth / Role-Player Swap',
             'theme': 'Youth / Upside Flyer for Proven Veteran Floor',
             'owner_a_why': f"{a} acquired young talent to take a flyer on upside.",
             'owner_b_why': f"{b} acquired proven veteran Jakobi Meyers to provide reliable weekly PPR targets.",
@@ -718,6 +855,7 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
         }
     if 'James Cook' in all_names_str and 'Achane' in all_names_str:
         return {
+            'tier': 'Blockbuster Trade',
             'theme': 'RB Bellcow Consolidation vs. Explosive 2-for-1 Upside',
             'owner_a_why': f"{a} traded De'Von Achane and Jadarian Price to secure James Cook III as a true workhorse RB1.",
             'owner_b_why': f"{b} took on two explosive backs in Achane and Price to diversify his backfield depth and upside.",
@@ -727,7 +865,22 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
     # Dynamic Heuristic Engine for automated analysis
     a_len = len(a_sends)
     b_len = len(b_sends)
-    
+
+    # Calibrate Trade Magnitude Tier from actual player production & positional rank
+    all_traded_ctx = [ctx_by_name.get(nm.lower(), {}) for nm in (a_names + b_names)]
+    max_ppg = max((float(c.get('season_avg', 0.0) or 0.0) for c in all_traded_ctx), default=0.0)
+    best_rank = min((int(c.get('pos_rank', 999) or 999) for c in all_traded_ctx), default=999)
+    has_caliber_data = any(bool(c) for c in all_traded_ctx)
+    if has_caliber_data:
+        if best_rank <= 10 or max_ppg >= 14.5 or (a_len + b_len >= 4 and max_ppg >= 11.0):
+            trade_tier = "Blockbuster Trade"
+        elif best_rank <= 20 or max_ppg >= 9.5:
+            trade_tier = "Starter-Level Trade"
+        else:
+            trade_tier = "Depth / Role-Player Swap (NOT a blockbuster — pragmatic spot-start / injury coverage deal)"
+    else:
+        trade_tier = "Starter-Level Trade" if (a_len + b_len) >= 3 else "Depth / Role-Player Swap"
+
     # Lookup ENTERING-THE-WEEK records & scoring profiles (never post-week spoilers!)
     a_rec_str, b_rec_str = "", ""
     wk_prefix = f"entering Week {entering_week} at " if entering_week else "entering at "
@@ -740,36 +893,49 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
                 tr_b = trajectories[tid]
                 b_rec_str = f" ({wk_prefix}{tr_b['overall_w']}-{tr_b['overall_l']}, #{tr_b['pf_rank']} scoring)"
 
+    # Inspect each manager's actual positional depth & sidelined/injured incumbents
+    eff_wk = week_num or entering_week or tr.get('week') or 1
+    a_need = _summarize_manager_position_need(a, b_sends, raw_data, teams, player_context, eff_wk)
+    b_need = _summarize_manager_position_need(b, a_sends, raw_data, teams, player_context, eff_wk)
+
     a_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR', 'DOUBTFUL'] for p in a_sends)
     b_has_inj = any(isinstance(p, dict) and p.get('injury') in ['OUT', 'INJURY_RESERVE', 'IR', 'DOUBTFUL'] for p in b_sends)
     
     if a_has_inj and not b_has_inj:
         theme = "Win-Now Rental / Starter Acquisition vs. Injured Playoff Stash"
-        a_why = f"{a}{a_rec_str} moved an injured asset ({a_str}) to acquire healthy, active talent ({b_str}) to score immediate points and survive a must-win stretch."
-        b_why = f"{b}{b_rec_str} took on an injured player ({a_str}) at a discount to stash on IR for the late-season playoff push, sacrificing current production for high-ceiling playoff upside."
-        debate = f"Can {a} stay alive in the playoff race with {b_str}, or will {b}'s injured stash pay off in a championship run?"
+        a_why = f"{a}{a_rec_str} moved an injured asset ({a_str}) to acquire healthy, active talent ({b_str})" + (f" — {a_need}." if a_need else " to score immediate points and survive a must-win stretch.")
+        b_why = f"{b}{b_rec_str} took on an injured player ({a_str}) at a discount to stash on IR for the late-season playoff push, sacrificing current production for playoff upside."
+        debate = f"Can {a} stay afloat with {b_str}, or will {b}'s injured stash pay off in the playoffs?"
     elif b_has_inj and not a_has_inj:
         theme = "Injured Playoff Stash vs. Win-Now Rental / Starter Acquisition"
         a_why = f"{a}{a_rec_str} took on an injured player ({b_str}) to stash for a late-season playoff push, using current roster depth to absorb the downtime."
-        b_why = f"{b}{b_rec_str} moved injured {b_str} to land healthy, immediate starting points ({a_str}) to plug lineup holes."
-        debate = f"Did {b} give away an elite playoff asset too cheaply to survive the regular season?"
+        b_why = f"{b}{b_rec_str} moved injured {b_str} to land healthy, immediate starting points ({a_str})" + (f" — {b_need}." if b_need else " to plug lineup holes.")
+        debate = f"Did {b} give away a playoff asset too cheaply to survive the regular season?"
     elif a_len > b_len:
         theme = f"Consolidation Trade ({a_len}-for-{b_len} Upgrade)"
-        a_why = f"{a}{a_rec_str} bundled multiple depth assets ({a_str}) to consolidate into an upgraded, higher-tier starter ({b_str}) to maximize starting lineup firepower."
-        b_why = f"{b}{b_rec_str} parted with a marquee piece ({b_str}) to restock bench depth and patch multiple starting vacancies with {a_str}."
-        debate = f"Did {a} sacrifice too much roster depth, or did {b} give up the best player in the deal?"
+        a_why = f"{a}{a_rec_str} bundled multiple depth assets ({a_str}) to consolidate into an upgraded starter ({b_str})" + (f" ({a_need})." if a_need else " to boost starting lineup firepower.")
+        b_why = f"{b}{b_rec_str} parted with {b_str} to restock depth and patch lineup holes with {a_str}" + (f" ({b_need})." if b_need else ".")
+        debate = f"Did {a} sacrifice too much depth, or did {b} give up the best player in the deal?"
     elif b_len > a_len:
         theme = f"Depth Replenishment ({b_len}-for-{a_len} Multi-Asset Haul)"
-        a_why = f"{a}{a_rec_str} traded a key starter ({a_str}) to acquire multiple starting-caliber pieces ({b_str}) to patch lineup holes and survive bye weeks."
-        b_why = f"{b}{b_rec_str} packaged multiple bench pieces ({b_str}) to target a single premium centerpiece ({a_str})."
+        a_why = f"{a}{a_rec_str} traded {a_str} to acquire multiple pieces ({b_str})" + (f" — {a_need}." if a_need else " to patch lineup holes and survive bye weeks.")
+        b_why = f"{b}{b_rec_str} packaged multiple pieces ({b_str}) to target {a_str}" + (f" ({b_need})." if b_need else ".")
         debate = f"Did {b} consolidate successfully, or does {a}'s multi-piece haul provide better weekly floor?"
     else:
-        theme = "Positional Need & Lineup Realignment"
-        a_why = f"{a}{a_rec_str} acquired {b_str} to address a specific starting positional deficit or bye-week scheduling crunch."
-        b_why = f"{b}{b_rec_str} acquired {a_str} to rebalance roster depth and fit preferred weekly matchups."
-        debate = f"A classic one-for-one positional challenge: which manager got the bigger immediate upgrade?"
+        is_depth_deal = trade_tier.startswith("Depth / Role-Player")
+        theme = "Mutual Emergency Depth & Spot-Start Swap" if (is_depth_deal and (a_need or b_need)) else (
+            "Role-Player Depth Swap" if is_depth_deal else "Positional Need & Lineup Realignment"
+        )
+        a_why = f"{a}{a_rec_str} acquired {b_str}" + (f" as emergency coverage: {a_need}." if a_need else " to address a positional depth need or bye-week crunch.")
+        b_why = f"{b}{b_rec_str} acquired {a_str}" + (f" as emergency coverage: {b_need}." if b_need else " to rebalance roster depth and cover weekly matchups.")
+        debate = (
+            "Pragmatic role-player swap driven by real roster crunches—who got the better immediate fill-in without overpaying?"
+            if is_depth_deal
+            else "A classic one-for-one positional swap: which manager got the bigger immediate upgrade?"
+        )
 
     return {
+        'tier': trade_tier,
         'theme': theme,
         'owner_a_why': a_why,
         'owner_b_why': b_why,
@@ -777,23 +943,34 @@ def analyze_trade_strategic_motives(tr: dict, teams: dict = None, trajectories: 
     }
 
 def format_in_depth_trade(tr: dict) -> str:
-    """Formats an individual trade into an analytical, debate-sparking segment for Act 1."""
+    """Formats an individual trade into an analytical, calibrated segment for Act 1."""
     a = tr['owner_a']
     b = tr['owner_b']
     wk = tr.get('week', '?')
     a_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in tr['a_sends']])
     b_str = ', '.join([f"{p['name']} ({p.get('pos', 'FLEX')})" if isinstance(p, dict) else p for p in tr['b_sends']])
     an = tr.get('analysis', {})
+    tier = an.get('tier', 'Positional Swap')
     
-    out = f"#### 🔄 Trade (Week {wk}): {a} <---> {b} [{an.get('theme', 'Blockbuster Swap')}]\n"
+    out = f"#### 🔄 Trade (Week {wk}): {a} <---> {b} [{an.get('theme', 'Positional Swap')}]\n"
+    out += f"- **Trade Magnitude:** {tier}\n"
     out += f"- **{a} acquired:** {b_str} (from {b})\n"
     out += f"- **{b} acquired:** {a_str} (from {a})\n"
-    out += f"- **Why {a} made the move:** {an.get('owner_a_why', 'Upgraded starting lineup.')}\n"
+    out += f"- **Why {a} made the move:** {an.get('owner_a_why', 'Addressed positional depth.')}\n"
     out += f"- **Why {b} made the move:** {an.get('owner_b_why', 'Acquired roster depth.')}\n"
     out += f"- **Host Debate & Trade Grade:** {an.get('debate', 'Debate who won!')}\n\n"
     return out
 
-def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies: dict, teams: dict, trajectories: dict = None, entering_week: int = None) -> list:
+def fetch_league_trades(
+    raw_data: dict,
+    current_week: int,
+    season: int,
+    cookies: dict,
+    teams: dict,
+    trajectories: dict = None,
+    entering_week: int = None,
+    player_context: dict = None,
+) -> list:
     """Pulls verified trades via multi-week roster reconciliation diffing with disk caching and strategic motive analysis."""
     cache_path = Path(__file__).resolve().parent / f"trade_history_{season}.json"
     cached_trades = []
@@ -873,9 +1050,17 @@ def fetch_league_trades(raw_data: dict, current_week: int, season: int, cookies:
             except Exception:
                 pass
 
-    # Enrich each trade with strategic motives (using ENTERING-THE-WEEK records to avoid spoiling this week!)
+    # Enrich each trade with roster-aware strategic motives (using ENTERING-THE-WEEK records & live roster depth!)
     for tr in cached_trades:
-        tr['analysis'] = analyze_trade_strategic_motives(tr, teams, trajectories, entering_week=entering_week)
+        tr['analysis'] = analyze_trade_strategic_motives(
+            tr,
+            teams,
+            trajectories,
+            entering_week=entering_week,
+            raw_data=raw_data,
+            player_context=player_context,
+            week_num=current_week,
+        )
 
     return cached_trades
 
@@ -1924,7 +2109,70 @@ def generate_payload(season: int, week_num: int):
             for tid in teams
         }
     trajectories = calculate_season_trajectories(raw_data, week_num, teams)
-    trades = fetch_league_trades(raw_data, week_num, season, cookies, teams, entering_trajectories, entering_week=week_num)
+    # Build fast player_context BEFORE trade analysis so Act 1 knows exact player caliber (PPG/pos_rank)
+    # and injured/inactive incumbents on each manager's roster!
+    pos_map_ctx = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
+    rem_reg_weeks = max(1, 14 - week_num)
+    bfl_draft_map = fetch_league_draft_context(season, cookies)
+    has_bfl_draft = bool(bfl_draft_map)
+    player_context = {}
+    for t in raw_data.get('teams', []):
+        for entry in t.get('roster', {}).get('entries', []):
+            pe = entry.get('playerPoolEntry', {})
+            p_data = pe.get('player', {})
+            pid = p_data.get('id')
+            if pid:
+                outlook = p_data.get('seasonOutlook', '')
+                pos_id = p_data.get('defaultPositionId', 0)
+                pos_name = pos_map_ctx.get(pos_id, 'FLEX')
+                rat_0 = pe.get('ratings', {}).get('0', {})
+                pos_rank = rat_0.get('positionalRanking', 999)
+                total_rank = rat_0.get('totalRanking', 999)
+                season_avg = 0.0
+                season_pts = 0.0
+                ros_avg = 0.0
+                preseason_proj_avg = 0.0
+                wk_prev_pts = 0.0
+                ppr_draft_rank = (p_data.get('draftRanksByRankType') or {}).get('PPR', {}).get('rank', 999)
+                for s in p_data.get('stats', []):
+                    sid_str = str(s.get('id', ''))
+                    if s.get('statSourceId') == 0 and s.get('scoringPeriodId') == 0 and s.get('seasonId') == season:
+                        season_avg = round(s.get('appliedAverage', 0.0), 1)
+                        season_pts = round(s.get('appliedTotal', 0.0), 1)
+                    elif sid_str == f"12{season}" and s.get('statSourceId') == 1 and s.get('scoringPeriodId') == 0:
+                        preseason_proj_avg = round(s.get('appliedAverage', 0.0), 1)
+                    elif sid_str == f"10{season}" and s.get('statSourceId') == 1 and s.get('scoringPeriodId') == 0:
+                        if s.get('appliedAverage', 0.0) > 0:
+                            ros_avg = round(s.get('appliedAverage', 0.0), 1)
+                    elif s.get('statSourceId') == 0 and s.get('scoringPeriodId') == week_num - 1 and s.get('seasonId') == season:
+                        wk_prev_pts = round(s.get('appliedTotal', 0.0), 2)
+                eff_avg = max(season_avg, ros_avg)
+                d_info = bfl_draft_map.get(int(pid), {})
+                player_context[pid] = {
+                    'injury': p_data.get('injuryStatus', 'ACTIVE'),
+                    'outlook': outlook,
+                    'adp': p_data.get('ownership', {}).get('averageDraftPosition', 200.0),
+                    'ppr_draft_rank': ppr_draft_rank,
+                    'has_bfl_draft': has_bfl_draft,
+                    'draft_pick': d_info.get('draft_pick'),
+                    'draft_round': d_info.get('draft_round'),
+                    'pos_draft_rank': d_info.get('pos_draft_rank'),
+                    'preseason_proj_avg': preseason_proj_avg,
+                    'wk_prev_pts': wk_prev_pts,
+                    'season_avg': season_avg,
+                    'season_pts': season_pts,
+                    'ros_avg': ros_avg or season_avg,
+                    'expected_rem_pts': round(eff_avg * rem_reg_weeks, 1),
+                    'pos_name': pos_name,
+                    'pos_rank': pos_rank,
+                    'total_rank': total_rank,
+                    'tenure': ''
+                }
+
+    trades = fetch_league_trades(
+        raw_data, week_num, season, cookies, teams, entering_trajectories,
+        entering_week=week_num, player_context=player_context,
+    )
     playoff_odds = simulate_league_playoff_odds_from_espn(raw_data, week_num, n_sims=5000) if week_num <= 14 else {}
     h2h_through_week, _ = compile_all_time_h2h(ESPN_LEAGUE_ID, ESPN_S2, ESPN_SWID, current_season=season, up_to_week=week_num + 1)
 
@@ -2116,66 +2364,8 @@ def generate_payload(season: int, week_num: int):
                 payload += f"- {rm}\n"
             payload += "\n"
 
-    # --- BUILD RICH PLAYER CONTEXT ---
-    pos_map_ctx = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
-    rem_reg_weeks = max(1, 14 - week_num)
-    bfl_draft_map = fetch_league_draft_context(season, cookies)
-    has_bfl_draft = bool(bfl_draft_map)
-    player_context = {}
-    for t in raw_data.get('teams', []):
-        for entry in t.get('roster', {}).get('entries', []):
-            pe = entry.get('playerPoolEntry', {})
-            p_data = pe.get('player', {})
-            pid = p_data.get('id')
-            if pid:
-                outlook = p_data.get('seasonOutlook', '')
-                pos_id = p_data.get('defaultPositionId', 0)
-                pos_name = pos_map_ctx.get(pos_id, 'FLEX')
-                rat_0 = pe.get('ratings', {}).get('0', {})
-                pos_rank = rat_0.get('positionalRanking', 999)
-                total_rank = rat_0.get('totalRanking', 999)
-                season_avg = 0.0
-                season_pts = 0.0
-                ros_avg = 0.0
-                preseason_proj_avg = 0.0
-                wk_prev_pts = 0.0
-                ppr_draft_rank = (p_data.get('draftRanksByRankType') or {}).get('PPR', {}).get('rank', 999)
-                for s in p_data.get('stats', []):
-                    sid_str = str(s.get('id', ''))
-                    if s.get('statSourceId') == 0 and s.get('scoringPeriodId') == 0 and s.get('seasonId') == season:
-                        season_avg = round(s.get('appliedAverage', 0.0), 1)
-                        season_pts = round(s.get('appliedTotal', 0.0), 1)
-                    elif sid_str == f"12{season}" and s.get('statSourceId') == 1 and s.get('scoringPeriodId') == 0:
-                        preseason_proj_avg = round(s.get('appliedAverage', 0.0), 1)
-                    elif sid_str == f"10{season}" and s.get('statSourceId') == 1 and s.get('scoringPeriodId') == 0:
-                        if s.get('appliedAverage', 0.0) > 0:
-                            ros_avg = round(s.get('appliedAverage', 0.0), 1)
-                    elif s.get('statSourceId') == 0 and s.get('scoringPeriodId') == week_num - 1 and s.get('seasonId') == season:
-                        wk_prev_pts = round(s.get('appliedTotal', 0.0), 2)
-                eff_avg = max(season_avg, ros_avg)
-                d_info = bfl_draft_map.get(int(pid), {})
-                player_context[pid] = {
-                    'injury': p_data.get('injuryStatus', 'ACTIVE'),
-                    'outlook': outlook,
-                    'adp': p_data.get('ownership', {}).get('averageDraftPosition', 200.0),
-                    'ppr_draft_rank': ppr_draft_rank,
-                    'has_bfl_draft': has_bfl_draft,
-                    'draft_pick': d_info.get('draft_pick'),
-                    'draft_round': d_info.get('draft_round'),
-                    'pos_draft_rank': d_info.get('pos_draft_rank'),
-                    'preseason_proj_avg': preseason_proj_avg,
-                    'wk_prev_pts': wk_prev_pts,
-                    'season_avg': season_avg,
-                    'season_pts': season_pts,
-                    'ros_avg': ros_avg or season_avg,
-                    'expected_rem_pts': round(eff_avg * rem_reg_weeks, 1),
-                    'pos_name': pos_name,
-                    'pos_rank': pos_rank,
-                    'total_rank': total_rank,
-                    'tenure': ''
-                }
-
     # Fetch official NFL experience, draft tenure, and Rotowire news in parallel for all active players
+    # (core `player_context` dict was already built above for roster-aware Act 1 trade analysis)
     from concurrent.futures import ThreadPoolExecutor
     all_pids = list(player_context.keys())
     with ThreadPoolExecutor(max_workers=12) as executor:

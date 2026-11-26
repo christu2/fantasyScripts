@@ -366,7 +366,7 @@ TASK: Write a killer ~420–490 word (~2.5 minute) SAMPLE HIGHLIGHT SEGMENT (aim
 
 TASK (SEGMENT 1 OF {total_segs} — COLD OPEN & TRADE DESK, {act1_words}):
 - Energetic SportsCenter-style cold open welcoming BFL listeners to Week {week} of the Tuesday Morning Hangover (NO game score or post-week record spoilers yet!).
-- Debate this week's trade(s): break down BOTH sides' roster strategy using ONLY their **entering-Week-{week}** records (NEVER mention their post-Week-{week} records here!), and give quick letter grades. Skip minor waiver cuts unless hilarious.
+- Debate this week's trade(s): break down BOTH sides' roster strategy using ONLY their **entering-Week-{week}** records (NEVER mention their post-Week-{week} records here!), explain the REAL positional/injury/bye-week crunch behind each manager's move, and calibrate your tone strictly to `Trade Magnitude` (if it's a `Depth / Role-Player Swap`, treat it as a savvy, practical spot-start/depth move—NEVER call a role-player swap a "blockbuster"!). Skip minor waiver cuts unless hilarious.
 - End crisply on a single short handoff line ("Alright, let's crack open our first game.") — do NOT pad extra filler lines!
 
 --- ACT 1 ---
@@ -423,7 +423,7 @@ TASK (FINAL SEGMENT {total_segs} OF {total_segs} — STANDINGS, ALL 4 DIVISION R
 
 TASK (SEGMENT 1 OF {total_segs} — COLD OPEN & TRADES, ~180–260 words, 10–14 rapid turns):
 - Clean, energetic broadcast open welcoming listeners to Week {week} of the Tuesday Morning Hangover (NO game score or post-week record spoilers yet!).
-- Debate this week's trades using ONLY each team's **entering-Week-{week}** record and grade who won/lost the deal (skip minor cuts unless hilarious; ZERO generic filler!).
+- Debate this week's trades using ONLY each team's **entering-Week-{week}** record, highlight the real roster/injury need behind each move, and calibrate your tone strictly to `Trade Magnitude` (never hype a `Depth / Role-Player Swap` as a "blockbuster"!). Skip minor cuts unless hilarious; ZERO generic filler!
 - End on one crisp handoff line into the first matchup.
 
 --- ACT 1 ---

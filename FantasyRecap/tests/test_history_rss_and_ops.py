@@ -286,9 +286,80 @@ class TestProcessLockAndRSSBuilder(unittest.TestCase):
             1: {"overall_w": 4, "overall_l": 6, "pf_rank": 9},
             2: {"overall_w": 6, "overall_l": 4, "pf_rank": 6},
         }
-        an = analyze_trade_strategic_motives(tr, teams, entering, entering_week=11)
+        raw_data = {
+            "teams": [
+                {
+                    "id": 1,
+                    "roster": {
+                        "entries": [
+                            {
+                                "lineupSlotId": 6,
+                                "playerPoolEntry": {
+                                    "player": {"id": 10, "fullName": "Brenton Strange", "defaultPositionId": 4, "injuryStatus": "ACTIVE", "stats": [{"statSourceId": 1, "scoringPeriodId": 11, "appliedTotal": 6.4}]}
+                                },
+                            },
+                            {
+                                "lineupSlotId": 20,
+                                "playerPoolEntry": {
+                                    "player": {"id": 11, "fullName": "Brock Bowers", "defaultPositionId": 4, "injuryStatus": "OUT", "stats": [{"statSourceId": 0, "scoringPeriodId": 11, "appliedTotal": 0.0}]}
+                                },
+                            },
+                        ]
+                    },
+                },
+                {
+                    "id": 2,
+                    "roster": {
+                        "entries": [
+                            {
+                                "lineupSlotId": 2,
+                                "playerPoolEntry": {
+                                    "player": {"id": 20, "fullName": "Samaje Perine", "defaultPositionId": 2, "injuryStatus": "ACTIVE", "stats": [{"statSourceId": 1, "scoringPeriodId": 11, "appliedTotal": 6.9}]}
+                                },
+                            },
+                            {
+                                "lineupSlotId": 2,
+                                "playerPoolEntry": {
+                                    "player": {"id": 21, "fullName": "Tony Pollard", "defaultPositionId": 2, "injuryStatus": "ACTIVE", "stats": [{"statSourceId": 1, "scoringPeriodId": 11, "appliedTotal": 14.0}]}
+                                },
+                            },
+                            {
+                                "lineupSlotId": 21,
+                                "playerPoolEntry": {
+                                    "player": {"id": 22, "fullName": "Josh Jacobs", "defaultPositionId": 2, "injuryStatus": "INJURY_RESERVE", "stats": []}
+                                },
+                            },
+                            {
+                                "lineupSlotId": 20,
+                                "playerPoolEntry": {
+                                    "player": {"id": 23, "fullName": "Rhamondre Stevenson", "defaultPositionId": 2, "injuryStatus": "ACTIVE", "stats": [{"statSourceId": 0, "scoringPeriodId": 11, "appliedTotal": 0.0}, {"statSourceId": 1, "scoringPeriodId": 11, "appliedTotal": 0.0}]}
+                                },
+                            },
+                        ]
+                    },
+                },
+            ]
+        }
+        player_context = {
+            10: {"pos_rank": 22, "season_avg": 6.1, "injury": "ACTIVE"},
+            11: {"pos_rank": 4, "season_avg": 13.8, "injury": "OUT"},
+            20: {"pos_rank": 46, "season_avg": 5.8, "injury": "ACTIVE"},
+            21: {"pos_rank": 19, "season_avg": 12.1, "injury": "ACTIVE"},
+            22: {"pos_rank": 12, "season_avg": 14.5, "injury": "INJURY_RESERVE"},
+            23: {"pos_rank": 32, "season_avg": 8.4, "injury": "ACTIVE"},
+        }
+        an = analyze_trade_strategic_motives(
+            tr, teams, entering, entering_week=11, raw_data=raw_data, player_context=player_context, week_num=11
+        )
+        self.assertTrue(an["tier"].startswith("Depth / Role-Player Swap"))
+        self.assertEqual(an["theme"], "Mutual Emergency Depth & Spot-Start Swap")
         self.assertIn("entering Week 11 at 4-6", an["owner_a_why"])
+        self.assertIn("Brock Bowers (Out)", an["owner_a_why"])
+        self.assertIn("0 other active TEs", an["owner_a_why"])
         self.assertIn("entering Week 11 at 6-4", an["owner_b_why"])
+        self.assertIn("Josh Jacobs (IR)", an["owner_b_why"])
+        self.assertIn("Rhamondre Stevenson (inactive/bye)", an["owner_b_why"])
+        self.assertIn("Tony Pollard", an["owner_b_why"])
 
     def test_packaged_episode_assembly_produces_valid_stereo_mp3(self):
         import numpy as np
