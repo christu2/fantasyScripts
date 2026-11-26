@@ -131,28 +131,82 @@ def compute_in_season_standings(espn_data: dict, target_week: int):
             
     return standings_output
 
-def determine_game_stakes(a_stat: dict, h_stat: dict, m_type: str, target_week: int) -> str:
-    """Dynamically calculates the game's importance, stakes, and playoff implications."""
+def determine_game_stakes(
+    a_stat: dict,
+    h_stat: dict,
+    m_type: str,
+    target_week: int,
+    *,
+    a_po: dict = None,
+    h_po: dict = None,
+    sb_meetings: list = None,
+    a_owner: str = "",
+    h_owner: str = "",
+) -> str:
+    """
+    Calculates genuinely smart, data-driven game stakes using live Monte Carlo
+    playoff leverage, #1 bye races, elimination cutlines, division crowns, and
+    Super Bowl rematch pedigree (zero generic filler or emoji clutter!).
+    """
     if target_week == 1:
-        return "🌴 Division Grudge Match" if m_type == "Division" else "🚀 Season Kickoff Clash"
-        
-    a_w, a_l, a_rank = a_stat['wins'], a_stat['losses'], a_stat['div_rank']
-    h_w, h_l, h_rank = h_stat['wins'], h_stat['losses'], h_stat['div_rank']
-    
+        return "Season Opener — Division Grudge Match" if m_type == "Division" else "Season Opener"
+
+    a_w, a_rank = a_stat.get('wins', 0), a_stat.get('div_rank', 4)
+    h_w, h_rank = h_stat.get('wins', 0), h_stat.get('div_rank', 4)
+
+    a_po = a_po or {}
+    h_po = h_po or {}
+    a_pct = float(a_po.get('playoff_pct', 50.0))
+    h_pct = float(h_po.get('playoff_pct', 50.0))
+    a_lev = float(a_po.get('leverage_swing', 0.0))
+    h_lev = float(h_po.get('leverage_swing', 0.0))
+    max_lev = max(a_lev, h_lev)
+    a_bye = float(a_po.get('bye_pct', 0.0))
+    h_bye = float(h_po.get('bye_pct', 0.0))
+
+    sb_tag = f" • {sb_meetings[-1]['year']} Super Bowl Rematch" if sb_meetings else ""
+
+    # 1. #1 Seed First-Round Bye clash
+    if target_week >= 8 and a_bye >= 15.0 and h_bye >= 15.0:
+        return f"#1 Seed Bye Showdown ({a_bye:.0f}% vs {h_bye:.0f}% Bye Odds){sb_tag}"
+
+    # 2. Division Crown battle (1st vs 2nd within 1 game)
+    if m_type == 'Division' and a_rank in (1, 2) and h_rank in (1, 2) and abs(a_w - h_w) <= 1:
+        lev_bit = f" • ±{max_lev:.0f}% Playoff Swing" if max_lev >= 12.0 else ""
+        return f"Division Lead Showdown{lev_bit}{sb_tag}"
+
+    # 3. High-leverage Wild Card / Playoff Swing game (Monte Carlo >= 25% swing!)
+    if target_week >= 7 and max_lev >= 25.0:
+        if a_lev >= 20.0 and h_lev >= 20.0:
+            return f"Playoff Cutline Pivot (±{max_lev:.0f}% Leverage Swing){sb_tag}"
+        pressure_own = a_owner if a_lev >= h_lev else h_owner
+        who = f"{pressure_own.split()[0]} " if pressure_own else ""
+        return f"Must-Win for {who}(±{max_lev:.0f}% Playoff Swing){sb_tag}"
+
+    # 4. Elimination / Spoiler alert late in the season
+    if target_week >= 10:
+        if (a_pct < 5.0 and h_pct >= 20.0) or (h_pct < 5.0 and a_pct >= 20.0):
+            contender = h_owner if a_pct < 5.0 else a_owner
+            spoiler = a_owner if a_pct < 5.0 else h_owner
+            c_short = contender.split()[0] if contender else "Contender"
+            s_short = spoiler.split()[0] if spoiler else "Spoiler"
+            return f"Trap Game — {s_short} Playing Spoiler vs {c_short} ({max(a_pct, h_pct):.0f}% PO){sb_tag}"
+        if a_pct < 5.0 and h_pct < 5.0:
+            return f"Draft Lottery Positioning (Loser's Bracket Seed){sb_tag}"
+
+    # 5. Division tiebreaker clash
     if m_type == 'Division':
-        if a_rank in [1, 2] and h_rank in [1, 2] and abs(a_w - h_w) <= 1:
-            return "👑 1ST PLACE SHOWDOWN: Winner takes top spot in the division!"
-        elif a_rank in [3, 4] and h_rank in [3, 4]:
-            return "🚨 BASEMENT BRAWL: Crucial battle to climb out of the cellar!"
-        else:
-            return "⚔️ DIVISION CLASH: Critical matchup with divisional tiebreaker weight!"
-    else:
-        if a_w >= (target_week // 2) and h_w >= (target_week // 2):
-            return "💥 CONTENDER SHOWDOWN: Playoff contenders fighting for top overall seeding!"
-        elif abs(a_w - h_w) <= 1:
-            return "🔥 PLAYOFF BUBBLE: High-stakes battle with major postseason implications!"
-        else:
-            return "🏈 CROSS-DIVISION BATTLE"
+        lev_bit = f" (±{max_lev:.0f}% Swing)" if max_lev >= 10.0 else ""
+        return f"Division Tiebreaker Clash{lev_bit}{sb_tag}"
+
+    # 6. Contender / Bubble / Rematch
+    if sb_meetings:
+        return f"{sb_meetings[-1]['year']} Super Bowl Rematch" + (f" (±{max_lev:.0f}% Swing)" if max_lev >= 10.0 else "")
+    if a_w >= (target_week // 2) and h_w >= (target_week // 2):
+        return f"Contender Seeding Battle" + (f" (±{max_lev:.0f}% Swing)" if max_lev >= 10.0 else "")
+    if abs(a_w - h_w) <= 1:
+        return f"Mid-Pack Pivot" + (f" (±{max_lev:.0f}% Swing)" if max_lev >= 10.0 else "")
+    return "Cross-Division Measuring Stick"
 
 def parse_team_starting_lineup(roster_entries: list, week_num: int):
     """Parses starters, projections, and injury statuses for a roster."""
@@ -209,6 +263,15 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
     
     matchup_summaries = []
     standings = compute_in_season_standings(espn_data, target_week)
+
+    # Compute live Monte Carlo playoff odds entering target_week so stakes & leverage are 100% real
+    playoff_odds_map = {}
+    if espn_data and target_week >= 3 and target_week <= 14:
+        try:
+            from FantasyRecap.playoff_odds_simulator import simulate_league_playoff_odds_from_espn
+            playoff_odds_map = simulate_league_playoff_odds_from_espn(espn_data, target_week - 1, n_sims=3000)
+        except Exception as exc:
+            print(f"⚠️ Playoff odds preview lookup skipped: {exc}")
     
     # Map ESPN teams by owner name
     espn_lineups_by_owner = {}
@@ -263,7 +326,17 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
         
         a_stat = standings.get(a_owner, {'record': '0-0', 'rank_str': m['away_info']['division'], 'div_rank': 1, 'wins': 0, 'losses': 0})
         h_stat = standings.get(h_owner, {'record': '0-0', 'rank_str': m['home_info']['division'], 'div_rank': 1, 'wins': 0, 'losses': 0})
-        stakes_str = determine_game_stakes(a_stat, h_stat, m_type, target_week)
+        sb_meetings = [
+            sb for sb in BFL_CHAMPIONSHIPS
+            if {sb['champ'], sb['runner_up']} == {a_owner, h_owner}
+        ]
+        a_po = playoff_odds_map.get(a_owner) or playoff_odds_map.get(standardize_name(a_owner))
+        h_po = playoff_odds_map.get(h_owner) or playoff_odds_map.get(standardize_name(h_owner))
+        stakes_str = determine_game_stakes(
+            a_stat, h_stat, m_type, target_week,
+            a_po=a_po, h_po=h_po, sb_meetings=sb_meetings,
+            a_owner=a_owner, h_owner=h_owner,
+        )
         
         pair = tuple(sorted([a_owner, h_owner]))
         history = h2h.get(pair, [])
@@ -355,7 +428,7 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
         ]
 
         if total_meetings == 0:
-            narrative = f"🆕 Inaugural franchise showdown! {a_owner} and {h_owner} meet for the very first time in BFL history."
+            narrative = f"First-ever BFL meeting between {a_owner} and {h_owner}."
         elif in_season_games:
             ig = in_season_games[-1]
             rev_owner = a_owner if ig['winner'] == h_owner else h_owner
@@ -363,55 +436,52 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             ig_lo = min(ig['score_a'], ig['score_b'])
             extra_flav = ""
             if streak_len >= 3:
-                extra_flav = f" {streak_winner} has now won {streak_len} straight in this series!"
+                extra_flav = f" {streak_winner} has won {streak_len} straight in the series."
             elif a_wins == h_wins:
-                extra_flav = f" The victory knotted their all-time series at {a_wins}-{h_wins}!"
+                extra_flav = f" All-time series is knotted at {a_wins}-{h_wins}."
             narrative = (
-                f"🔁 **In-Season Division Rematch!** **{ig['winner']}** took their Week {ig['week']} clash earlier this season "
-                f"(`{ig_hi:.1f}` - `{ig_lo:.1f}`, +{ig['margin']:.2f} pts); **{rev_owner}** looks to even the {target_season} season series.{extra_flav}"
+                f"Season rematch: **{ig['winner']}** took Week {ig['week']} "
+                f"(`{ig_hi:.1f}`–`{ig_lo:.1f}`); **{rev_owner}** looks to split the year.{extra_flav}"
             )
         else:
             lg_hi = max(last_game['score_a'], last_game['score_b'])
             lg_lo = min(last_game['score_a'], last_game['score_b'])
-            lg_stage = " in the Championship Playoffs" if last_game.get('is_champ_playoff') else (" in Consolation play" if last_game.get('is_consolation') else "")
-            last_str = f"**{last_game['winner']}** won their last meeting in {last_game['year']} Week {last_game['week']}{lg_stage} (`{lg_hi:.1f}` - `{lg_lo:.1f}`, +{last_game['margin']:.2f} pts)."
+            lg_stage = " (Playoffs)" if last_game.get('is_champ_playoff') else ""
+            last_str = f"**{last_game['winner']}** won their last meeting in {last_game['year']} Wk {last_game['week']}{lg_stage} (`{lg_hi:.1f}`–`{lg_lo:.1f}`)."
 
             if sb_meetings:
                 sb = sb_meetings[-1]
                 narrative = (
-                    f"🏆 **Super Bowl Rematch Pedigree!** Faced off in the {sb['year']} BFL Championship (won by **{sb['champ']}**, {sb['score']}). "
-                    f"{last_str}"
+                    f"**{sb['year']} Super Bowl rematch** ({sb['champ']} won {sb['score']}). {last_str}"
                 )
             elif pair == ('Shawn Lukose', 'Shawn Ullenbrauck'):
-                narrative = f"👑 **The Battle of the Shawns ({total_meetings + 1}th Meeting):** {last_str}"
+                narrative = f"Battle of the Shawns (meeting #{total_meetings + 1}). {last_str}"
             elif streak_len >= 3:
                 loser_streak = h_owner if streak_winner == a_owner else a_owner
                 narrative = (
-                    f"🔥 **Series Dominance:** **{streak_winner}** has won **{streak_len} straight** against {loser_streak}! {last_str}"
+                    f"**{streak_winner}** owns a **{streak_len}-game streak** over {loser_streak}. {last_str}"
                 )
             elif a_wins == h_wins:
-                playoff_note = f" (including {len(champ_playoffs)} playoff clashes)" if champ_playoffs else ""
                 narrative = (
-                    f"⚖️ **All-Time Deadlock ({a_wins}-{h_wins}):** Perfectly tied across {total_meetings} lifetime meetings{playoff_note}—winner takes the series lead! {last_str}"
+                    f"Series deadlocked **{a_wins}-{h_wins}** across {total_meetings} meetings—winner takes the lead. {last_str}"
                 )
             elif last_game['margin'] <= 5.0:
                 narrative = (
-                    f"💓 **Cardiac Rivalry:** Their last clash ({last_game['year']} Week {last_game['week']}{lg_stage}) was decided by a razor-thin **{last_game['margin']:.2f} pts** "
-                    f"(`{lg_hi:.1f}` - `{lg_lo:.1f}` in favor of **{last_game['winner']}**)!"
+                    f"Their last clash ({last_game['year']} Wk {last_game['week']}) came down to **{last_game['margin']:.2f} pts** (`{lg_hi:.1f}`–`{lg_lo:.1f}` to {last_game['winner']})."
                 )
             elif champ_playoffs:
                 a_pw = sum(1 for g in champ_playoffs if g['winner'] == a_owner)
                 h_pw = sum(1 for g in champ_playoffs if g['winner'] == h_owner)
-                pw_str = f"{a_owner} {a_pw}-{h_pw} {h_owner}" if a_pw != h_pw else f"tied {a_pw}-{h_pw}"
-                m_word = "Meeting" if len(champ_playoffs) == 1 else "Meetings"
-                narrative = (
-                    f"⚔️ **Postseason History ({len(champ_playoffs)} Playoff {m_word}, {pw_str}):** {last_str}"
-                )
+                pw_str = f"{a_owner.split()[0]} {a_pw}-{h_pw} {h_owner.split()[0]}"
+                narrative = f"Postseason rivals ({len(champ_playoffs)} playoff clashes, {pw_str}). {last_str}"
             else:
-                narrative = f"📜 **Matchup # {total_meetings + 1} Since 2008:** {last_str}"
+                narrative = f"Meeting #{total_meetings + 1} since 2008. {last_str}"
             
-        lines.append(f"* ⚔️ **Key Storyline:** {narrative}\n")
-        
+        lines.append(f"* **Storyline:** {narrative}\n")
+
+        # Include live playoff odds & spread metadata for clean Discord cards
+        a_po_pct = a_po.get('playoff_pct') if a_po else None
+        h_po_pct = h_po.get('playoff_pct') if h_po else None
         matchup_summaries.append({
             'game_num': idx+1,
             'away': f"{a_team} ({a_owner})",
@@ -420,14 +490,17 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
             'home_owner': h_owner,
             'away_rec': f"{a_owner} ({a_stat['record']})",
             'home_rec': f"{h_owner} ({h_stat['record']})",
-            'standings': f"{a_stat['rank_str']} @ {h_stat['rank_str']}",
+            'standings': f"{a_stat['rank_str']} vs {h_stat['rank_str']}",
             'stakes': stakes_str,
-            'series': f"{a_owner} {a_wins}-{h_wins} {h_owner}" if total_meetings > 0 else "First Meeting",
+            'series': f"{lead_name.split()[0]} {max(a_wins, h_wins)}-{min(a_wins, h_wins)}" if (total_meetings > 0 and a_wins != h_wins) else (f"Tied {a_wins}-{h_wins}" if total_meetings > 0 else "First Meeting"),
             'type': m_type,
-            'spread': f"{fav} -{spread:.1f}" if has_live_rosters else "Pre-Draft",
+            'spread': f"{fav.split()[0]} -{spread:.1f}" if has_live_rosters else "Pre-Draft",
+            'ou': f"{(a_proj + h_proj):.1f}" if has_live_rosters else "",
             'spread_val': spread if has_live_rosters else 0.0,
             'fav_owner': fav if has_live_rosters else a_owner,
             'underdog_owner': (h_owner if fav == a_owner else a_owner) if has_live_rosters else h_owner,
+            'max_leverage': max(float((a_po or {}).get('leverage_swing', 0.0)), float((h_po or {}).get('leverage_swing', 0.0))),
+            'odds_str': f"{a_owner.split()[0]} {a_po_pct:.0f}% vs {h_owner.split()[0]} {h_po_pct:.0f}% PO" if (a_po_pct is not None and h_po_pct is not None) else "",
             'narrative': narrative
         })
         
@@ -441,27 +514,60 @@ def generate_thursday_preview_report(target_week: int, target_season: int, match
     return "\n".join(lines), matchup_summaries
 
 def post_thursday_preview_to_discord(summaries: list, week_num: int = 1, season: int = 2026):
-    """Broadcasts Thursday Lineup Preview & interactive 'Upset of the Week' Poll to #commissioner-desk."""
+    """
+    Broadcasts clean, readable, emoji-free Thursday Matchup Previews (sorted by
+    highest playoff leverage first!) plus the interactive 'Upset of the Week' Poll
+    to #commissioner-desk.
+    """
     from FantasyRecap.discord_channels import send_to_channel
-    
-    fields = []
-    for s in summaries:
-        fields.append({
-            "name": f"Game #{s['game_num']}: {s['away']} @ {s['home']}",
-            "value": f"📊 **Standings:** `{s['standings']}` | 🎯 **Stakes:** `{s['stakes']}`\n🎰 **Spread:** `{s['spread']}` | 📜 **H2H:** `{s['series']}`\n⚔️ **Storyline:** {s['narrative']}",
-            "inline": False
-        })
-        
-    payload = {
-        "username": "BFL Vegas & Lineup Desk",
-        "avatar_url": "https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png",
-        "embeds": [{
-            "title": f"🏈 BFL Week {week_num} Thursday Lineup Preview & Vegas Odds ({season})",
-            "description": f"**Pre-Game Tactical Matchup, Division Stakes & Lineup Projections**\nTNF is here! Standings, division implications, and 18-year storylines:",
-            "color": 0x27ae60,  # Emerald Green
+
+    # Sort marquee / highest-leverage games to the top of the board
+    ordered = sorted(summaries, key=lambda x: (x.get('max_leverage', 0.0), -x.get('spread_val', 0.0)), reverse=True)
+
+    # Split cleanly into 2 lightweight embeds (4 games each) so Discord mobile/desktop
+    # never turns into one cramped wall of text!
+    embeds = []
+    for chunk_idx, group in enumerate([ordered[:4], ordered[4:]], 1):
+        if not group:
+            continue
+        fields = []
+        for s in group:
+            meta_parts = [f"Line: `{s['spread']}`"]
+            if s.get('ou'):
+                meta_parts.append(f"O/U `{s['ou']}`")
+            meta_parts.append(f"H2H: `{s['series']}`")
+            if s.get('odds_str'):
+                meta_parts.append(s['odds_str'])
+
+            fields.append({
+                "name": f"{s['away_rec']} at {s['home_rec']}",
+                "value": (
+                    f"**{s['stakes']}**\n"
+                    f"{'  •  '.join(meta_parts)}\n"
+                    f"{s['narrative']}"
+                ),
+                "inline": False
+            })
+
+        title = (
+            f"BFL Week {week_num} Matchup Preview — Marquee & High-Leverage Games ({season})"
+            if chunk_idx == 1
+            else f"BFL Week {week_num} Matchup Preview — Rest of the Slate"
+        )
+        embeds.append({
+            "title": title,
+            "description": "Ordered by playoff leverage and division stakes." if chunk_idx == 1 else "",
+            "color": 0x1F8B4C if chunk_idx == 1 else 0x2C3E50,
             "fields": fields,
-            "footer": {"text": f"Beasts Football League • Thursday Lineup Preview • Week {week_num}"}
-        }]
+            "footer": {"text": f"Beasts Football League • Week {week_num} Preview"} if chunk_idx == 2 or len(ordered) <= 4 else None,
+        })
+        if embeds[-1]["footer"] is None:
+            del embeds[-1]["footer"]
+
+    payload = {
+        "username": "BFL Matchup Desk",
+        "avatar_url": "https://a.espncdn.com/combiner/i?img=/i/headshots/nfl/players/full/3918298.png",
+        "embeds": embeds,
     }
 
     # Build native Discord Poll for "Upset / Dog of the Week" from matchups with real spreads
@@ -479,13 +585,12 @@ def post_thursday_preview_to_discord(summaries: list, week_num: int = 1, season:
         poll_answers.append({
             "poll_media": {
                 "text": ans_text[:55],
-                "emoji": {"name": "🐶"}
             }
         })
 
     if len(poll_answers) >= 2:
         payload["poll"] = {
-            "question": {"text": f"🎰 BFL Week {week_num} Sportsbook: Which underdog pulls off the Upset of the Week?"},
+            "question": {"text": f"Week {week_num} Upset Watch: Which underdog pulls it off?"},
             "answers": poll_answers,
             "duration": 72,
             "allow_multiselect": True
@@ -493,7 +598,7 @@ def post_thursday_preview_to_discord(summaries: list, week_num: int = 1, season:
     
     success = send_to_channel('commish', payload)
     if success:
-        print("🚀 Successfully broadcasted Thursday Lineup Preview & Upset Poll to #commissioner-desk!")
+        print("🚀 Successfully broadcasted clean Thursday Matchup Preview & Upset Poll to #commissioner-desk!")
 
 def main():
     parser = argparse.ArgumentParser(description="Generate BFL Thursday Starting Lineup & Vegas Odds Preview")

@@ -43,19 +43,74 @@ DISCORD_WEBHOOK_LIVE_DESK = (
     or os.getenv("DISCORD_WEBHOOK_URL")
 )
 
+import hashlib
+
 STATE_DIR = Path(__file__).resolve().parent / "live_state"
 STATE_DIR.mkdir(exist_ok=True)
 POS_ABBR = {1: 'QB', 2: 'RB', 3: 'WR', 4: 'TE', 5: 'K', 16: 'D/ST'}
 
-# Position-specific Half-PPR Nuclear Eruption thresholds
+# Position-specific Half-PPR Nuclear Eruption thresholds (strictly league-breaking!)
+# Must clear BOTH the raw score floor AND the minimum points-over-projection floor
+# so routine 17-pt kickers or modest 22-pt outings never trigger a "Nuclear" siren.
 NUCLEAR_THRESHOLDS = {
-    1: 30.0,   # QB
-    2: 25.0,   # RB
-    3: 25.0,   # WR
-    4: 22.0,   # TE
-    5: 17.0,   # K
-    16: 17.0   # D/ST
+    1: (34.0, 12.0),   # QB: 34+ pts and +12 over proj
+    2: (28.0, 10.0),   # RB: 28+ pts and +10 over proj
+    3: (28.0, 10.0),   # WR: 28+ pts and +10 over proj
+    4: (24.0, 10.0),   # TE: 24+ pts and +10 over proj
+    5: (20.0, 10.0),   # K:  20+ pts and +10 over proj (true 6-FG monster day)
+    16: (22.0, 12.0),  # D/ST: 22+ pts and +12 over proj (multi-TD defensive clinic)
 }
+
+
+def _pick_live_copy(seed_key: str, variants: list) -> str:
+    """Deterministically picks a varied broadcast line per event so alerts never feel robotic."""
+    if not variants:
+        return ""
+    idx = int(hashlib.md5(seed_key.encode("utf-8")).hexdigest()[:8], 16) % len(variants)
+    return variants[idx]
+
+
+def format_catalyst_phrase(pname: str, pos: str, owner: str, delta: float, curr_pts: float) -> str:
+    """Calibrates play-by-play phrasing strictly to the actual point jump (never calls +2 pts an 'eruption'!)."""
+    seed = f"cat:{pname}:{int(curr_pts * 10)}:{int(delta * 10)}"
+    if delta >= 13.0:
+        verb = _pick_live_copy(seed, [
+            "detonated for",
+            "blew the game open with",
+            "torched the scoreboard for",
+            "unleashed a massive",
+        ])
+        return f"**{pname}** ({pos}, {owner}) {verb} **+{delta:.1f} pts** (now at `{curr_pts:.1f}`)"
+    if delta >= 8.0:
+        verb = _pick_live_copy(seed, [
+            "ripped off a huge",
+            "flipped momentum with",
+            "delivered a big-time",
+            "surged for",
+        ])
+        return f"**{pname}** ({pos}, {owner}) {verb} **+{delta:.1f} pts** (now at `{curr_pts:.1f}`)"
+    if delta >= 4.0:
+        verb = _pick_live_copy(seed, [
+            "answered with",
+            "came through with",
+            "tacked on",
+            "struck for",
+        ])
+        return f"**{pname}** ({pos}, {owner}) {verb} **+{delta:.1f} pts** (now at `{curr_pts:.1f}`)"
+    verb = _pick_live_copy(seed, [
+        "nudged the scoreboard with",
+        "chipped in",
+        "pushed ahead with",
+        "added",
+    ])
+    return f"**{pname}** ({pos}, {owner}) {verb} **+{delta:.1f} pts** (now at `{curr_pts:.1f}`)"
+
+
+def is_nuclear_performance(pos_id: int, curr_pts: float, baseline_proj: float) -> bool:
+    """Returns True only when a player clears BOTH the position's raw score floor and over-projection floor."""
+    min_pts, min_over_proj = NUCLEAR_THRESHOLDS.get(pos_id, (28.0, 10.0))
+    over_proj = curr_pts - float(baseline_proj or 0.0)
+    return curr_pts >= min_pts and over_proj >= min_over_proj
 
 def log_live_desk_event(season: int, week_num: int, event_type: str, status: str, match_id: str, details: dict):
     """Appends structured telemetry for every fired or suppressed alert to an audit JSONL file."""
@@ -326,7 +381,7 @@ def _find_swing_catalyst_player(prev_match: dict, curr_match: dict, min_delta: f
             delta = round(curr_pts - prev_pts, 2)
             if delta > best_delta and delta >= min_delta:
                 best_delta = delta
-                catalyst_str = f"🔥 **{pname}** ({s.get('pos', 'FLEX')} • {owner}) erupted for **`+{delta:.1f}` pts** (Now at `{curr_pts:.1f}` pts)!"
+                catalyst_str = format_catalyst_phrase(pname, s.get('pos', 'FLEX'), owner, delta, curr_pts)
     return catalyst_str, best_delta
 
 def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 0.25):
@@ -440,30 +495,64 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
             p_leader = p_m.get('leader')
             c_leader = c_m.get('leader')
             lead_flipped = bool(p_leader and c_leader and p_leader != 'TIED' and c_leader != 'TIED' and p_leader != c_leader)
+            margin_now = abs(alert['away_score'] - alert['home_score'])
+            sw_seed = f"sw:{mid}:{int(alert['swing_pct'])}:{int(c_m['away_score'] + c_m['home_score'])}"
 
-            title_prefix = "🚨 PROBABILITY SHOCKWAVE & LEAD CHANGE" if lead_flipped else "🚨 PROBABILITY SHOCKWAVE"
-            desc_extra = f"\n🔄 **LEAD CHANGE:** **{c_leader}** has also overtaken **{p_leader}** on the scoreboard!" if lead_flipped else ""
+            if lead_flipped:
+                title_prefix = _pick_live_copy(sw_seed + ":t", [
+                    "LEAD FLIP & PROBABILITY SWING",
+                    "MOMENTUM REVERSAL",
+                    "MASSIVE SWING & NEW LEADER",
+                ])
+                lead_desc = _pick_live_copy(sw_seed + ":d", [
+                    f"**{c_leader}** just snatched the lead from **{p_leader}** (`+{alert['swing_pct']:.1f}%` win-prob swing).",
+                    f"Everything just flipped—**{c_leader}** jumps ahead of **{p_leader}** on a `{alert['swing_pct']:.1f}%` odds swing.",
+                    f"Seismic shift on the scoreboard: **{c_leader}** overtakes **{p_leader}** behind a `{alert['swing_pct']:.1f}%` surge.",
+                ])
+            elif alert['swing_pct'] >= 35.0:
+                title_prefix = _pick_live_copy(sw_seed + ":t", [
+                    "MONSTER ODDS SWING",
+                    "GAME-CHANGING SURGE",
+                    "SHOCKWAVE ON THE DESK",
+                ])
+                lead_desc = _pick_live_copy(sw_seed + ":d", [
+                    f"**{alert['favored']}** just swung win probability by **`{alert['swing_pct']:.1f}%`** in a hurry.",
+                    f"The win-probability chart just went vertical—a **`{alert['swing_pct']:.1f}%`** swing toward **{alert['favored']}**.",
+                    f"Massive momentum swing (`{alert['swing_pct']:.1f}%`) tilting this matchup toward **{alert['favored']}**.",
+                ])
+            else:
+                title_prefix = _pick_live_copy(sw_seed + ":t", [
+                    "WIN PROBABILITY SWING",
+                    "MOMENTUM SHIFT",
+                    "LIVE DESK SWING",
+                ])
+                tight_note = f" Margin is down to `{margin_now:.2f}` pts." if margin_now <= 5.0 else ""
+                lead_desc = _pick_live_copy(sw_seed + ":d", [
+                    f"**{alert['favored']}** picks up a **`{alert['swing_pct']:.1f}%`** win-probability jump.{tight_note}",
+                    f"The odds board just moved **`{alert['swing_pct']:.1f}%`** in favor of **{alert['favored']}**.{tight_note}",
+                    f"Big swing in real time: **{alert['favored']}** climbs `{alert['swing_pct']:.1f}%` on the live model.{tight_note}",
+                ])
 
             print(f"🚨 SHOCKWAVE DETECTED: {alert['favored']} (+{alert['swing_pct']}% swing)!")
             fields = [
                 {
-                    "name": "📊 Live Scoreboard",
-                    "value": f"• **{alert['away_team']}** ({c_m['away_owner']}): `{alert['away_score']:.2f}` pts ({alert['curr_away_prob']*100:.1f}% Win Prob)\n• **{alert['home_team']}** ({c_m['home_owner']}): `{alert['home_score']:.2f}` pts ({alert['curr_home_prob']*100:.1f}% Win Prob)",
-                    "inline": False
-                },
-                {
-                    "name": "📈 Win Probability Shift",
-                    "value": f"**{alert['away_team']}**: `{alert['prev_away_prob']*100:.1f}%` ➡️ `{alert['curr_away_prob']*100:.1f}%`\n**{alert['home_team']}**: `{alert['prev_home_prob']*100:.1f}%` ➡️ `{alert['curr_home_prob']*100:.1f}%`",
+                    "name": "Scoreboard",
+                    "value": (
+                        f"**{alert['away_team']}** ({c_m['away_owner']}): `{alert['away_score']:.2f}`  •  "
+                        f"`{alert['prev_away_prob']*100:.1f}% → {alert['curr_away_prob']*100:.1f}%`\n"
+                        f"**{alert['home_team']}** ({c_m['home_owner']}): `{alert['home_score']:.2f}`  •  "
+                        f"`{alert['prev_home_prob']*100:.1f}% → {alert['curr_home_prob']*100:.1f}%`"
+                    ),
                     "inline": False
                 }
             ]
             if catalyst:
-                fields.append({"name": "⚡ Play-by-Play Catalyst", "value": catalyst, "inline": False})
+                fields.append({"name": "Key Play", "value": catalyst, "inline": False})
 
             post_live_desk_embed(
-                title=f"{title_prefix}: {alert['away_team']} @ {alert['home_team']}",
-                description=f"⚡ **Massive {alert['swing_pct']}% Win Probability Swing!**\nMomentum has violently shifted in this matchup.{desc_extra}",
-                color=0xe74c3c,
+                title=f"{title_prefix} — {alert['away_team']} at {alert['home_team']}",
+                description=lead_desc,
+                color=0xe74c3c if alert['swing_pct'] >= 35.0 or lead_flipped else 0xd35400,
                 fields=fields
             )
             now_ts = time.time()
@@ -537,18 +626,44 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                     })
                 else:
                     print(f"🔄 LEAD CHANGE: {c_leader} has taken the lead over {p_leader}!")
+                    lc_seed = f"lc:{mid}:{int(c_data['away_score']*10)}:{int(c_data['home_score']*10)}"
+                    if margin <= 2.5:
+                        lc_title = _pick_live_copy(lc_seed + ":t", [
+                            "RAZOR-THIN LEAD CHANGE",
+                            "NOSE IN FRONT",
+                            "SEESAW BATTLE",
+                        ])
+                        lc_desc = _pick_live_copy(lc_seed + ":d", [
+                            f"**{c_leader}** edges past **{p_leader}** by just **`{margin:.2f}` pts**.",
+                            f"New leader by a hair: **{c_leader}** slips ahead of **{p_leader}** (`+{margin:.2f}` pts).",
+                            f"**{c_leader}** grabs a paper-thin **`{margin:.2f}`-pt** lead over **{p_leader}**.",
+                        ])
+                    else:
+                        lc_title = _pick_live_copy(lc_seed + ":t", [
+                            "LEAD CHANGE",
+                            "NEW LEADER ON THE BOARD",
+                            "SCOREBOARD FLIP",
+                        ])
+                        lc_desc = _pick_live_copy(lc_seed + ":d", [
+                            f"**{c_leader}** overtakes **{p_leader}** and now leads by **`{margin:.2f}` pts**.",
+                            f"**{c_leader}** jumps in front of **{p_leader}** (`+{margin:.2f}` pt edge).",
+                            f"Tables turned—**{c_leader}** moves ahead of **{p_leader}** by **`{margin:.2f}` pts**.",
+                        ])
                     fields = [
                         {
-                            "name": "📊 Current Scoreboard",
-                            "value": f"• **{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` pts ({c_data['away_prob']*100:.1f}% Win Prob)\n• **{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` pts ({c_data['home_prob']*100:.1f}% Win Prob)",
+                            "name": "Scoreboard",
+                            "value": (
+                                f"**{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` (`{c_data['away_prob']*100:.1f}%` win prob)\n"
+                                f"**{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` (`{c_data['home_prob']*100:.1f}%` win prob)"
+                            ),
                             "inline": False
                         }
                     ]
                     if catalyst:
-                        fields.append({"name": "⚡ Key Play", "value": catalyst, "inline": False})
+                        fields.append({"name": "Go-Ahead Play", "value": catalyst, "inline": False})
                     post_live_desk_embed(
-                        title=f"🔄 LEAD CHANGE: {c_data['away_team']} vs {c_data['home_team']}",
-                        description=f"🔥 **{c_leader}** has officially overtaken the lead from **{p_leader}** (Leads by `{margin:.2f}` pts)!",
+                        title=f"{lc_title} — {c_data['away_team']} vs. {c_data['home_team']}",
+                        description=lc_desc,
                         color=0xf39c12,
                         fields=fields
                     )
@@ -579,27 +694,44 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                 for s in c_data.get(side_key, []):
                     pname = s['name']
                     pos_id = s.get('pos_id', 3)
-                    pos_thresh = NUCLEAR_THRESHOLDS.get(pos_id, 25.0)
                     curr_pts = float(s.get('current_score', 0.0))
+                    base_proj = float(s.get('baseline_proj', 0.0))
                     prev_s = prev_player_map.get(pname, {})
                     prev_pts = float(prev_s.get('current_score', 0.0))
 
-                    # Position-Aware Nuclear Player Alert (QB>=30, RB/WR>=25, TE>=22, K/DST>=17)
-                    if curr_pts >= pos_thresh and prev_pts < pos_thresh and pname not in nuclear_alerted:
-                        print(f"☢️ NUCLEAR ALERT: {pname} ({owner}) crossed {curr_pts:.1f} pts ({s.get('pos')} threshold: {pos_thresh})!")
+                    # Strict Position-Aware Nuclear Alert (clears BOTH raw score floor AND +over-proj floor!)
+                    was_nuclear = is_nuclear_performance(pos_id, prev_pts, base_proj)
+                    now_nuclear = is_nuclear_performance(pos_id, curr_pts, base_proj)
+                    if now_nuclear and not was_nuclear and pname not in nuclear_alerted:
+                        over_proj = curr_pts - base_proj
+                        nuc_seed = f"nuc:{season}:{week_num}:{pname}"
+                        nuc_title = _pick_live_copy(nuc_seed + ":t", [
+                            f"MONSTER PERFORMANCE — {pname} ({curr_pts:.1f} pts)",
+                            f"WEEK-WINNING EXPLOSION — {pname} ({curr_pts:.1f} pts)",
+                            f"NUCLEAR ALERT — {pname} ({curr_pts:.1f} pts)",
+                        ])
+                        nuc_desc = _pick_live_copy(nuc_seed + ":d", [
+                            f"**{pname}** ({s.get('pos', 'FLEX')}) is torching the slate for **{owner}** ({tname})—already **`+{over_proj:.1f}`** over pre-game projection.",
+                            f"Absolute clinic from **{pname}** ({s.get('pos', 'FLEX')}) for **{tname}** ({owner}), blowing past his `{base_proj:.1f}` projection by **`+{over_proj:.1f}` pts**.",
+                            f"**{owner}** is getting a week-breaking outburst from **{pname}** ({s.get('pos', 'FLEX')}): `{curr_pts:.1f}` live points and counting.",
+                        ])
+                        print(f"☢️ NUCLEAR ALERT: {pname} ({owner}) crossed {curr_pts:.1f} pts (+{over_proj:.1f} vs proj)!")
                         post_live_desk_embed(
-                            title=f"☢️ NUCLEAR PLAYER ERUPTION: {pname} ({curr_pts:.1f} PTS)!",
-                            description=f"💥 **{pname}** ({s.get('pos', 'FLEX')}) is single-handedly carrying **{tname}** ({owner}) with a monster performance!",
+                            title=nuc_title,
+                            description=nuc_desc,
                             color=0x9b59b6,
                             fields=[
                                 {
-                                    "name": "🔥 Player Statline vs Projection",
-                                    "value": f"**Live Score:** `{curr_pts:.2f}` pts (Pre-Game Proj: `{s.get('baseline_proj', 0.0):.1f}` pts • `+{curr_pts - s.get('baseline_proj', 0.0):.1f}` vs Proj)",
+                                    "name": "Statline vs. Projection",
+                                    "value": f"Live: `{curr_pts:.2f}` pts  •  Proj: `{base_proj:.1f}` pts  •  Delta: `+{over_proj:.1f}`",
                                     "inline": False
                                 },
                                 {
-                                    "name": "📊 Matchup Impact",
-                                    "value": f"• **{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` pts (`{c_data['away_prob']*100:.1f}%` Win Prob)\n• **{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` pts (`{c_data['home_prob']*100:.1f}%` Win Prob)",
+                                    "name": "Matchup Impact",
+                                    "value": (
+                                        f"**{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` (`{c_data['away_prob']*100:.1f}%`)\n"
+                                        f"**{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` (`{c_data['home_prob']*100:.1f}%`)"
+                                    ),
                                     "inline": False
                                 }
                             ]
@@ -611,7 +743,7 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                             "pos": s.get('pos', 'FLEX'),
                             "owner": owner,
                             "score": curr_pts,
-                            "proj": s.get('baseline_proj', 0.0)
+                            "proj": base_proj
                         })
 
                     # Live In-Game Injury Siren
@@ -623,20 +755,28 @@ def run_live_desk_tick(season: int, week_num: int, shockwave_threshold: float = 
                         and curr_inj in ['OUT', 'DOUBTFUL', 'QUESTIONABLE', 'INJURY_RESERVE']
                         and pname not in injury_alerted
                     ):
+                        inj_seed = f"inj:{season}:{week_num}:{pname}"
+                        inj_desc = _pick_live_copy(inj_seed, [
+                            f"Tough break for **{owner}** ({tname}): active starter **{pname}** ({s.get('pos', 'FLEX')}) was just tagged **{curr_inj}** mid-game.",
+                            f"Injury watch for **{tname}** ({owner})—**{pname}** ({s.get('pos', 'FLEX')}) just shifted to **{curr_inj}** during live action.",
+                        ])
                         print(f"🚑 IN-GAME INJURY SIREN: {pname} ({owner}) status changed to {curr_inj}!")
                         post_live_desk_embed(
-                            title=f"🚑 LIVE IN-GAME INJURY SIREN: {pname} ({curr_inj})",
-                            description=f"⚠️ Brutal break for **{owner}** ({tname})! Active starter **{pname}** ({s.get('pos', 'FLEX')}) has been tagged **{curr_inj}** during live action.",
+                            title=f"INJURY UPDATE — {pname} ({curr_inj})",
+                            description=inj_desc,
                             color=0xe67e22,
                             fields=[
                                 {
-                                    "name": "🩺 Player Status",
-                                    "value": f"**{pname}**: `{curr_pts:.2f}` pts scored before injury (Pre-Game Proj: `{s.get('baseline_proj', 0.0):.1f}` pts)",
+                                    "name": "Live Line",
+                                    "value": f"**{pname}**: `{curr_pts:.2f}` pts (Pre-Game Proj: `{base_proj:.1f}`)",
                                     "inline": False
                                 },
                                 {
-                                    "name": "📊 Updated Matchup Win Probability",
-                                    "value": f"• **{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` pts (`{c_data['away_prob']*100:.1f}%` Win Prob)\n• **{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` pts (`{c_data['home_prob']*100:.1f}%` Win Prob)",
+                                    "name": "Updated Matchup Odds",
+                                    "value": (
+                                        f"**{c_data['away_team']}** ({c_data['away_owner']}): `{c_data['away_score']:.2f}` (`{c_data['away_prob']*100:.1f}%`)\n"
+                                        f"**{c_data['home_team']}** ({c_data['home_owner']}): `{c_data['home_score']:.2f}` (`{c_data['home_prob']*100:.1f}%`)"
+                                    ),
                                     "inline": False
                                 }
                             ]

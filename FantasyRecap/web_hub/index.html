@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BFL League Hub — Beasts Football League</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-badge">BFL</span>
+        <div>
+          <h1>Beasts Football League Hub</h1>
+          <p id="hubSubtitle" class="subtitle">Loading league telemetry...</p>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab-btn active" data-tab="playoff" role="tab">Playoff Machine</button>
+        <button class="tab-btn" data-tab="history" role="tab">Record Book &amp; H2H</button>
+        <button class="tab-btn" data-tab="drafts" role="tab">Draft Hall</button>
+        <button class="tab-btn" data-tab="podcast" role="tab">Podcast &amp; Awards</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- TAB 1: INTERACTIVE PLAYOFF MACHINE -->
+    <section id="tab-playoff" class="tab-panel active">
+      <div class="hero-bar">
+        <div>
+          <h2>Interactive BFL Playoff Machine</h2>
+          <p class="muted" id="rulesBlurb">
+            4 Division Champions (#1–#4, Seed #1 earns First-Round Bye) + 3 Wild Cards (#5–#7).
+            Official BFL Tiebreakers: <strong>Overall Record &rarr; Head-to-Head &rarr; Total Points For (PF)</strong>.
+          </p>
+        </div>
+        <div class="controls">
+          <button id="btnResetPicks" class="btn btn-secondary">Reset Live</button>
+          <button id="btnPickFavs" class="btn btn-secondary">Pick Favorites</button>
+          <button id="btnPickDogs" class="btn btn-secondary">Chaos (Underdogs)</button>
+        </div>
+      </div>
+
+      <div id="pickStatusBanner" class="status-banner"></div>
+
+      <!-- Bracket + Projected Playoff Field -->
+      <div class="grid-two">
+        <div class="card">
+          <div class="card-head">
+            <h3>Projected 7-Team Playoff Field</h3>
+            <span class="pill" id="simModeBadge">2,000 Live Browser Sims</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="playoffTable">
+              <thead>
+                <tr>
+                  <th>Seed</th>
+                  <th>Manager</th>
+                  <th>Div</th>
+                  <th>Rec</th>
+                  <th>PF</th>
+                  <th>PO %</th>
+                  <th>Div %</th>
+                  <th>Bye %</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Week 15 Bracket Preview</h3>
+            <span class="pill pill-gold">NFL Dynamic Re-Seeding</span>
+          </div>
+          <div id="bracketPreview" class="bracket-grid"></div>
+
+          <h4 class="subhead">On The Bubble (#8 – #12)</h4>
+          <div class="table-wrap">
+            <table class="data-table compact" id="bubbleTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Manager</th>
+                  <th>Div</th>
+                  <th>Rec</th>
+                  <th>PF</th>
+                  <th>PO %</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive Remaining Schedule -->
+      <div class="card">
+        <div class="card-head">
+          <h3>Click Winners — Remaining Regular Season Schedule</h3>
+          <span class="muted small">Click a team to lock a win; click again to simulate via Monte Carlo.</span>
+        </div>
+        <div id="schedulePicker" class="schedule-weeks"></div>
+      </div>
+
+      <!-- 4 Division Standings -->
+      <div class="divisions-grid" id="divisionsGrid"></div>
+    </section>
+
+    <!-- TAB 2: 18-YEAR RECORD BOOK & H2H -->
+    <section id="tab-history" class="tab-panel">
+      <div class="card">
+        <div class="card-head">
+          <h3>Head-to-Head Rivalry Explorer (2008–Present)</h3>
+        </div>
+        <div class="rivalry-controls">
+          <select id="rivOwner1" class="select"></select>
+          <span class="vs-badge">VS</span>
+          <select id="rivOwner2" class="select"></select>
+        </div>
+        <div id="rivalryCard" class="rivalry-card"></div>
+      </div>
+
+      <div class="grid-two">
+        <div class="card">
+          <div class="card-head">
+            <h3>All-Time Franchise Leaderboard (2008–Present)</h3>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="careerTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Manager</th>
+                  <th>Rings</th>
+                  <th>W–L</th>
+                  <th>Win%</th>
+                  <th>PF/G</th>
+                  <th>High</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>The Jabroni Trophy — Championship Log</h3>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table compact" id="champsTable">
+              <thead>
+                <tr>
+                  <th>Year</th>
+                  <th>Champion</th>
+                  <th>Runner-Up</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: DRAFT HALL OF FAME & SHAME -->
+    <section id="tab-drafts" class="tab-panel">
+      <div class="card">
+        <div class="card-head">
+          <h3>Draft Steals &amp; Busts (2018–Present)</h3>
+          <div class="controls">
+            <select id="draftSeasonSelect" class="select"></select>
+            <select id="draftOwnerSelect" class="select"></select>
+          </div>
+        </div>
+        <p class="muted small">Ranked by season fantasy points above/below the average return of their draft round.</p>
+        <div class="grid-two mt-1">
+          <div>
+            <h4 class="subhead green">Biggest Draft Steals (Round 4+)</h4>
+            <div class="table-wrap">
+              <table class="data-table compact" id="stealsTable">
+                <thead>
+                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>vs Rd</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h4 class="subhead red">Biggest Draft Busts (Rounds 1–5)</h4>
+            <div class="table-wrap">
+              <table class="data-table compact" id="bustsTable">
+                <thead>
+                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>vs Rd</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: PODCAST STUDIO & WEEKLY AWARDS -->
+    <section id="tab-podcast" class="tab-panel">
+      <div class="grid-two">
+        <div class="card">
+          <div class="card-head">
+            <h3>Tuesday Morning Hangover — Episodes</h3>
+            <a id="rssLink" class="btn btn-secondary btn-sm" target="_blank" rel="noopener">Apple Podcasts RSS</a>
+          </div>
+          <div id="podcastList" class="podcast-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3 id="awardsTitle">Weekly Awards &amp; Briefing</h3>
+            <span class="pill" id="awardsAvg"></span>
+          </div>
+          <div id="awardsList" class="awards-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>Beasts Football League (Est. 2008) &bull; Hosted on Google Cloud Storage Free Tier</span>
+    <span id="footerTimestamp"></span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
