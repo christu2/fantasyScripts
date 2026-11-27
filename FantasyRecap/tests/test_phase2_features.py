@@ -492,6 +492,48 @@ class TestAnalyticsLabAndPlayoffPush(unittest.TestCase):
         self.assertEqual(r14["WR"], 33)
         self.assertEqual(r14["TE"], 14)
 
+    def test_generic_podcast_phonetics_fixed_bracket_and_live_gameday_window(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from FantasyRecap.game_day_hub_refresher import REGISTRY_PATH, is_nfl_live_window
+        from FantasyRecap.generic_podcast_generator import apply_generic_phonetics, load_or_default_podcast_config
+
+        # Universal + auto-initial + custom override phonetics & record formatting
+        spoken = apply_generic_phonetics(
+            "Scott WK and Ryan OHern enter at 6-5 while Nick Christus starts Achane at RB.",
+            custom_pronunciations={"Bosacki": "Boh-sack-ee"},
+        )
+        self.assertIn("Scott W K", spoken)
+        self.assertIn("Ryan O'Hern", spoken)
+        self.assertIn("6 and 5", spoken)
+        self.assertIn("Kris-tus", spoken)
+        self.assertIn("Ay-chan", spoken)
+        self.assertIn("running back", spoken)
+
+        # Default podcast config works zero-config for any league
+        cfg = load_or_default_podcast_config(
+            "jff",
+            {"league_config": {"name": "Just for Fun", "badge": "JFF"}},
+        )
+        self.assertEqual(cfg["show_title"], "Just for Fun — Weekly Fantasy Recap")
+
+        # Live NFL broadcast window checks (US Central Time)
+        ct = ZoneInfo("America/Chicago")
+        self.assertTrue(is_nfl_live_window(datetime(2026, 11, 29, 14, 0, tzinfo=ct)))   # Sunday 2pm CT
+        self.assertTrue(is_nfl_live_window(datetime(2026, 11, 26, 15, 0, tzinfo=ct)))   # Thanksgiving Thu 3pm CT
+        self.assertTrue(is_nfl_live_window(datetime(2026, 11, 30, 20, 30, tzinfo=ct)))  # Monday MNF 8:30pm CT
+        self.assertFalse(is_nfl_live_window(datetime(2026, 12, 1, 10, 0, tzinfo=ct)))   # Tuesday 10am CT
+
+        # Multi-league registry includes both BFL and JFF
+        reg = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+        slugs = {lg["slug"] for lg in reg["leagues"]}
+        self.assertTrue({"bfl", "jff"}.issubset(slugs))
+
+        # Verify Fixed Playoff Bracket support exists in web_hub/app.js
+        app_js = (WEB_HUB_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Fixed Playoff Bracket", app_js)
+        self.assertIn("meta.playoffReseed", app_js)
+
 
 if __name__ == "__main__":
     unittest.main()

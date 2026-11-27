@@ -15,6 +15,7 @@ function getLeagueMeta() {
   const poByes = rules.playoff_byes != null
     ? Number(rules.playoff_byes)
     : (poTeams === 6 ? 2 : (poTeams === 7 ? 1 : 0));
+  const poReseed = rules.playoff_reseed !== undefined ? Boolean(rules.playoff_reseed) : true;
   return {
     name: cfg.name || "Beasts Football League",
     badge: cfg.badge || "BFL",
@@ -24,6 +25,7 @@ function getLeagueMeta() {
     divOrder: hasDivs ? divKeys : [],
     playoffTeams: poTeams,
     playoffByes: poByes,
+    playoffReseed: poReseed,
     tiebreakerRule: rules.tiebreaker_rule || "H2H_RECORD",
     regularWeeks: Number((HUB && HUB.regular_season_weeks) || 14),
     isFirstYear: Boolean(cfg.is_first_year),
@@ -356,12 +358,19 @@ function runBrowserMonteCarlo(nSims = 4000) {
 
     let semiW1, semiW2;
     if (meta.playoffTeams === 6) {
-      // 6-team bracket: #1 & #2 Byes; R1: #3v#6, #4v#5; Semis: #1 vs lowest survivor, #2 vs other
+      // 6-team bracket: #1 & #2 Byes; R1: #3v#6, #4v#5
       const w36 = simMatch(poField[2], poField[5]) === poField[2] ? [3, poField[2]] : [6, poField[5]];
       const w45 = simMatch(poField[3], poField[4]) === poField[3] ? [4, poField[3]] : [5, poField[4]];
-      const surv = [w36, w45].sort((a, b) => a[0] - b[0]);
-      semiW1 = simMatch(poField[0], surv[1][1]);
-      semiW2 = simMatch(poField[1], surv[0][1]);
+      if (meta.playoffReseed) {
+        // Dynamic re-seeding: #1 plays lowest surviving seed, #2 plays higher survivor
+        const surv = [w36, w45].sort((a, b) => a[0] - b[0]);
+        semiW1 = simMatch(poField[0], surv[1][1]);
+        semiW2 = simMatch(poField[1], surv[0][1]);
+      } else {
+        // Fixed ESPN default bracket: #1 always plays #4/#5 winner; #2 always plays #3/#6 winner
+        semiW1 = simMatch(poField[0], w45[1]);
+        semiW2 = simMatch(poField[1], w36[1]);
+      }
     } else if (meta.playoffTeams === 4) {
       semiW1 = simMatch(poField[0], poField[3]);
       semiW2 = simMatch(poField[1], poField[2]);
@@ -373,16 +382,18 @@ function runBrowserMonteCarlo(nSims = 4000) {
       semiW1 = simMatch(q1, q2);
       semiW2 = simMatch(q3, q4);
     } else {
-      // 7-team bracket (BFL): #1 Bye; R1: #2v#7, #3v#6, #4v#5; Semis: NFL Dynamic Re-Seeding
-      const r1Pairs = [[2, 7], [3, 6], [4, 5]];
-      const r1Winners = [];
-      for (const [sHi, sLo] of r1Pairs) {
-        const tHi = poField[sHi - 1], tLo = poField[sLo - 1];
-        r1Winners.push(simMatch(tHi, tLo) === tHi ? [sHi, tHi] : [sLo, tLo]);
+      // 7-team bracket (BFL): #1 Bye; R1: #2v#7, #3v#6, #4v#5
+      const w27 = simMatch(poField[1], poField[6]) === poField[1] ? [2, poField[1]] : [7, poField[6]];
+      const w36 = simMatch(poField[2], poField[5]) === poField[2] ? [3, poField[2]] : [6, poField[5]];
+      const w45 = simMatch(poField[3], poField[4]) === poField[3] ? [4, poField[3]] : [5, poField[4]];
+      if (meta.playoffReseed) {
+        const r1Winners = [w27, w36, w45].sort((a, b) => a[0] - b[0]);
+        semiW1 = simMatch(poField[0], r1Winners[2][1]);
+        semiW2 = simMatch(r1Winners[0][1], r1Winners[1][1]);
+      } else {
+        semiW1 = simMatch(poField[0], w45[1]);
+        semiW2 = simMatch(w27[1], w36[1]);
       }
-      r1Winners.sort((a, b) => a[0] - b[0]);
-      semiW1 = simMatch(poField[0], r1Winners[2][1]);
-      semiW2 = simMatch(r1Winners[0][1], r1Winners[1][1]);
     }
 
     finalsCount[semiW1] += 1;
@@ -628,25 +639,34 @@ function renderPlayoffMachine() {
     });
   });
 
+  const reseedBadge = document.querySelector("#tab-playoff .pill-gold");
+  if (reseedBadge) {
+    reseedBadge.textContent = meta.playoffReseed ? "NFL Dynamic Re-Seeding" : "Fixed Playoff Bracket";
+  }
+
   // Rule-Aware Playoff Bracket Preview + Title Favorites
   const f = currentSeeding.fullSeeding;
   const topTitle = [...HUB.teams.map(t => t.owner)].sort((a, b) => parseFloat(odds[b].title) - parseFloat(odds[a].title));
   let bracketBoxes = "";
   const poWk = meta.regularWeeks + 1;
   if (meta.playoffTeams === 6) {
+    const byeNote = meta.playoffReseed
+      ? `Re-seeded in Wk ${poWk + 1}: #1 plays lowest survivor`
+      : `Fixed bracket: #1 vs #4/#5 winner &bull; #2 vs #3/#6 winner`;
     bracketBoxes = `
       <div class="bracket-box bye">
         <div class="bracket-lbl">First-Round Byes (Week ${poWk})</div>
         <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
         <div class="bracket-row"><span><strong>#2 ${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} &bull; Title ${odds[f[1]].title}%</span></div>
+        <div class="tie-note">${byeNote}</div>
       </div>
       <div class="bracket-box">
-        <div class="bracket-lbl">Quarterfinal 1</div>
+        <div class="bracket-lbl">Quarterfinal 1${meta.playoffReseed ? "" : " (Winner faces #2)"}</div>
         <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
         <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
       </div>
       <div class="bracket-box">
-        <div class="bracket-lbl">Quarterfinal 2</div>
+        <div class="bracket-lbl">Quarterfinal 2${meta.playoffReseed ? "" : " (Winner faces #1)"}</div>
         <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
         <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
       </div>

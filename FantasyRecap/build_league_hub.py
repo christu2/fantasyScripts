@@ -357,9 +357,12 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         "divisions": get_divisions(),
         "tiebreaker_rules": {
             "playoff_teams": 7,
+            "playoff_byes": 1,
+            "playoff_reseed": True,
             "division_champions": 4,
             "wild_cards": 3,
             "first_round_bye": "Seed #1 (top Division Champion)",
+            "tiebreaker_rule": "H2H_RECORD",
             "order": "Overall Record -> Head-to-Head Record -> Total Points For (PF)",
             "reseed": "NFL Dynamic Re-Seeding in Round 2 (#1 plays lowest surviving seed)",
         },

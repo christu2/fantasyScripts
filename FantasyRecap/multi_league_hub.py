@@ -129,6 +129,7 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
     reg_weeks = int(sched.get("matchupPeriodCount") or 14)
     po_teams = int(sched.get("playoffTeamCount") or 6)
     po_rule = str(sched.get("playoffSeedingRule") or "TOTAL_POINTS_SCORED")
+    po_reseed = bool(sched.get("playoffReseed", False))
     po_byes = (8 - po_teams) if po_teams in (6, 7) else 0
 
     raw_divs = sched.get("divisions") or []
@@ -213,6 +214,7 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
         "regular_season_weeks": reg_weeks,
         "playoff_teams": po_teams,
         "playoff_byes": po_byes,
+        "playoff_reseed": po_reseed,
         "tiebreaker_rule": po_rule,
         "has_divisions": has_divisions,
         "divisions": divisions_map,
@@ -1081,6 +1083,15 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     }
 
     tb_order = "Overall Record -> Total Points For (PF)" if config["tiebreaker_rule"] == "TOTAL_POINTS_SCORED" else "Overall Record -> Head-to-Head -> Total Points For (PF)"
+    # Auto-check if this league has an isolated per-league Podcast RSS feed on GCS
+    rss_url = f"https://storage.googleapis.com/bfl-podcast-7x9k2/{slug}/feed.xml"
+    episodes = []
+    try:
+        from FantasyRecap.build_league_hub import fetch_rss_episodes
+        episodes = fetch_rss_episodes(rss_url)
+    except Exception:
+        episodes = []
+
     hub_data = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "season": season,
@@ -1100,11 +1111,13 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         "tiebreaker_rules": {
             "playoff_teams": config["playoff_teams"],
             "playoff_byes": config["playoff_byes"],
+            "playoff_reseed": config["playoff_reseed"],
             "division_champions": len(config["divisions"]) if config["has_divisions"] else 0,
             "wild_cards": config["playoff_teams"] - (len(config["divisions"]) if config["has_divisions"] else 0),
             "first_round_bye": f"Seeds #1–#{config['playoff_byes']}" if config["playoff_byes"] > 1 else ("Seed #1" if config["playoff_byes"] == 1 else "None"),
             "tiebreaker_rule": config["tiebreaker_rule"],
             "order": tb_order,
+            "reseed": "NFL Dynamic Re-Seeding" if config["playoff_reseed"] else "Fixed Bracket (No Re-Seeding)",
         },
         "teams": teams_info,
         "completed_games": completed_games,
@@ -1122,7 +1135,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "heatmap": {"season": season, "positions": list(POSITIONS), "baselines": baselines, "bounds": hm_bounds, "rows": hm_rows},
         },
         "dossiers": dossiers,
-        "podcast": {"rss_url": "", "episodes": []},
+        "podcast": {"rss_url": rss_url if episodes else "", "episodes": episodes},
     }
 
     out_dir = WEB_HUB_DIR / "leagues" / slug

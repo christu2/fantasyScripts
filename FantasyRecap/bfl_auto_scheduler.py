@@ -329,14 +329,22 @@ def check_and_run_orchestrator(override_season: int = None, override_week: int =
                     save_scheduler_state(season, week, st)
 
             if not st.get("tuesday_hub_deployed"):
-                hub_bucket = os.getenv("GCS_HUB_BUCKET", "bfl-hub-7x9k2").strip()
-                hub_args = ["build_league_hub.py", "--season", str(season), "--week", str(week)]
-                if hub_bucket:
-                    hub_args.extend(["--deploy-gcs", hub_bucket])
-                ok_hub = run_py_script(hub_args, f"Week {week} BFL League Hub & Playoff Machine Refresh")
+                ok_hub = run_py_script(
+                    ["game_day_hub_refresher.py", "--season", str(season), "--force"],
+                    f"Week {week} Tuesday Multi-League Hub & Playoff Machine Refresh",
+                )
                 if ok_hub:
                     st["tuesday_hub_deployed"] = True
                     save_scheduler_state(season, week, st)
+
+    # -------------------------------------------------------------------------
+    # MILESTONE 6: Live NFL Game-Day Multi-League Hub Auto-Refresh (every ~20m)
+    # Updates live scores & real-time Playoff/Title odds across all leagues in `leagues_registry.json`!
+    # -------------------------------------------------------------------------
+    run_py_script(
+        ["game_day_hub_refresher.py", "--season", str(season)],
+        f"Week {week} Live Game-Day Multi-League Hub Refresh Check",
+    )
 
 
 def print_status(override_season: int = None, override_week: int = None):

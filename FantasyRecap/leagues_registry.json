@@ -1,0 +1,26 @@
+{
+  "gcp_project": "bfl-fantasy",
+  "hub_bucket": "bfl-hub-7x9k2",
+  "podcast_bucket": "bfl-podcast-7x9k2",
+  "live_refresh_interval_minutes": 20,
+  "leagues": [
+    {
+      "slug": "bfl",
+      "name": "Beasts Football League",
+      "espn_league_id": "157057",
+      "builder": "bfl",
+      "gcs_subpath": "",
+      "rss_url": "https://storage.googleapis.com/bfl-podcast-7x9k2/feed.xml",
+      "enabled": true
+    },
+    {
+      "slug": "jff",
+      "name": "Just for Fun",
+      "espn_league_id": "755112359",
+      "builder": "generic",
+      "gcs_subpath": "jff",
+      "rss_url": "https://storage.googleapis.com/bfl-podcast-7x9k2/jff/feed.xml",
+      "enabled": true
+    }
+  ]
+}
