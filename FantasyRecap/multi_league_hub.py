@@ -941,7 +941,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
 
     # Draft Hall (Multi-Format: Snake, Auction $, Keeper/Dynasty exclusion!)
     dp_rows = cur.execute(
-        "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, is_keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
+        "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
     ).fetchall()
     drafts, draft_seasons = score_draft_picks_multi_format(
         dp_rows,

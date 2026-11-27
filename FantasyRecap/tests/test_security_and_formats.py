@@ -121,6 +121,18 @@ class TestMultiFormatLeagueSupport(unittest.TestCase):
         self.assertEqual(ranks["LB"], 24)
         self.assertEqual(ranks["DB"], 24)
 
+    def test_draft_picks_schema_columns_match_multi_league_query(self):
+        import sqlite3
+        from FantasyRecap.bfl_history_db import init_db
+
+        conn = sqlite3.connect(":memory:")
+        init_db(conn)
+        rows = conn.execute(
+            "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
+        ).fetchall()
+        self.assertEqual(rows, [])
+        conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
