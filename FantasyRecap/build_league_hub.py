@@ -31,7 +31,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from FantasyRecap.core.manifest import get_divisions, get_owner_to_division, load_manifest, load_project_env
+from FantasyRecap.core.manifest import extract_credited_owners, get_divisions, get_owner_to_division, load_manifest, load_project_env
 load_project_env()
 
 from FantasyRecap.analytics_lab_engine import build_analytics_lab_bundle, export_franchise_dossiers
@@ -77,77 +77,102 @@ def export_history_and_drafts(db_path: Path = DB_PATH) -> dict:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     cur = conn.cursor()
 
-    # 1. Career franchise leaderboard (active 16 owners)
-    career_rows = cur.execute(
+    # 1. Career franchise leaderboard (active 16 owners, crediting distinct co-owners like Nael + Nitesh 2022-2025!)
+    all_game_rows = cur.execute(
         """
-        SELECT owner,
-               COUNT(*) AS games,
-               SUM(CASE WHEN win = 1 THEN 1 ELSE 0 END) AS wins,
-               SUM(CASE WHEN win = 0 THEN 1 ELSE 0 END) AS losses,
-               SUM(CASE WHEN is_playoffs = 1 AND win = 1 THEN 1 ELSE 0 END) AS po_wins,
-               SUM(CASE WHEN is_playoffs = 1 AND win = 0 THEN 1 ELSE 0 END) AS po_losses,
-               ROUND(AVG(score), 2) AS avg_pf,
-               ROUND(AVG(opp_score), 2) AS avg_pa,
-               ROUND(MAX(score), 2) AS high_score,
-               MIN(season) AS first_season,
-               COUNT(DISTINCT season) AS seasons
+        SELECT season, week, owner, co_owners, opp_owner, is_playoffs, score, opp_score, win, margin
         FROM games
-        GROUP BY owner
+        ORDER BY season ASC, week ASC
         """
     ).fetchall()
 
-    career = []
-    for r in career_rows:
-        own = _canon_owner(r[0])
-        if own.lower() not in active_set:
+    # Pre-index team co_owners per (season, primary_owner) so opp_co_owners can also be credited in H2H
+    season_co_map: Dict[tuple, List[str]] = {}
+    for r in all_game_rows:
+        s_yr = int(r[0])
+        p_own = _canon_owner(r[2])
+        if (s_yr, p_own) not in season_co_map:
+            season_co_map[(s_yr, p_own)] = extract_credited_owners(r[2], r[3] or "", canon_fn=_canon_owner)
+
+    career_agg: Dict[str, dict] = {}
+    pair_games: Dict[str, List[dict]] = {}
+    seen_pair_sw: Dict[str, set] = {}
+
+    for r in all_game_rows:
+        s_yr, wk, own_raw, co_raw, opp_raw, is_po, sc, opp_sc, win, margin = r
+        s_yr, wk = int(s_yr), int(wk)
+        sc_f, opp_sc_f = float(sc or 0.0), float(opp_sc or 0.0)
+        if sc_f == 0.0 and opp_sc_f == 0.0:
             continue
+        credited = extract_credited_owners(own_raw, co_raw or "", canon_fn=_canon_owner)
+        opp_p = _canon_owner(opp_raw)
+        opp_credited = season_co_map.get((s_yr, opp_p), [opp_p])
+
+        for own in credited:
+            if own.lower() not in active_set:
+                continue
+            ca = career_agg.setdefault(own, {
+                "wins": 0, "losses": 0, "po_wins": 0, "po_losses": 0,
+                "pf_sum": 0.0, "pa_sum": 0.0, "games": 0, "high": 0.0,
+                "first_season": s_yr, "seasons": set(),
+            })
+            ca["games"] += 1
+            ca["wins"] += 1 if int(win) == 1 else 0
+            ca["losses"] += 0 if int(win) == 1 else 1
+            if int(is_po) == 1:
+                ca["po_wins"] += 1 if int(win) == 1 else 0
+                ca["po_losses"] += 0 if int(win) == 1 else 1
+            ca["pf_sum"] += sc_f
+            ca["pa_sum"] += opp_sc_f
+            ca["high"] = max(ca["high"], sc_f)
+            ca["first_season"] = min(ca["first_season"], s_yr)
+            ca["seasons"].add(s_yr)
+
+            for opp_o in opp_credited:
+                if opp_o.lower() not in active_set or opp_o == own or opp_o in credited:
+                    continue
+                if own >= opp_o:
+                    continue
+                key = f"{own}|||{opp_o}"
+                seen_set = seen_pair_sw.setdefault(key, set())
+                if (s_yr, wk) in seen_set:
+                    continue
+                seen_set.add((s_yr, wk))
+                pair_games.setdefault(key, []).append({
+                    "season": s_yr,
+                    "week": wk,
+                    "is_playoffs": bool(is_po),
+                    "s1": round(sc_f, 2),
+                    "s2": round(opp_sc_f, 2),
+                    "w1": int(win) == 1,
+                    "margin": round(abs(float(margin)), 2),
+                })
+
+    career = []
+    for own, ca in career_agg.items():
         prof = team_meta.get(own, {}).get("profile", {})
-        wins, losses = int(r[2] or 0), int(r[3] or 0)
+        wins, losses = ca["wins"], ca["losses"]
         gp = max(1, wins + losses)
         career.append({
             "owner": own,
             "code": team_meta.get(own, {}).get("code", own.split()[0]),
             "division": team_meta.get(own, {}).get("division", ""),
             "team_name": team_meta.get(own, {}).get("team_name", ""),
-            "seasons": int(r[10] or 0),
-            "first_season": int(r[9] or 2008),
+            "seasons": len(ca["seasons"]),
+            "first_season": ca["first_season"],
             "wins": wins,
             "losses": losses,
             "win_pct": round((wins / gp) * 100.0, 1),
-            "po_wins": int(r[4] or 0),
-            "po_losses": int(r[5] or 0),
-            "avg_pf": float(r[6] or 0.0),
-            "avg_pa": float(r[7] or 0.0),
-            "high_score": float(r[8] or 0.0),
+            "po_wins": ca["po_wins"],
+            "po_losses": ca["po_losses"],
+            "avg_pf": round(ca["pf_sum"] / gp, 2),
+            "avg_pa": round(ca["pa_sum"] / gp, 2),
+            "high_score": round(ca["high"], 2),
             "rings": int(prof.get("rings", 0)),
             "champ_years": prof.get("champ_years", []),
             "runner_up_years": prof.get("runner_up_years", []),
         })
     career.sort(key=lambda x: (-x["rings"], -x["win_pct"], -x["wins"]))
-
-    # 2. All-time H2H matrix between active 16 owners
-    h2h_rows = cur.execute(
-        """
-        SELECT owner, opp_owner, season, week, is_playoffs, score, opp_score, win, margin
-        FROM games
-        ORDER BY season ASC, week ASC
-        """
-    ).fetchall()
-    pair_games: Dict[str, List[dict]] = {}
-    for r in h2h_rows:
-        o1, o2 = _canon_owner(r[0]), _canon_owner(r[1])
-        if o1.lower() not in active_set or o2.lower() not in active_set or o1 >= o2:
-            continue
-        key = f"{o1}|||{o2}"
-        pair_games.setdefault(key, []).append({
-            "season": int(r[2]),
-            "week": int(r[3]),
-            "is_playoffs": bool(r[4]),
-            "s1": round(float(r[5]), 2),
-            "s2": round(float(r[6]), 2),
-            "w1": int(r[7]) == 1,
-            "margin": round(abs(float(r[8])), 2),
-        })
 
     h2h_summary = {}
     for key, glist in pair_games.items():
@@ -287,12 +312,15 @@ def build_hub_data(season: int, completed_week: int) -> dict:
         })
 
     remaining_schedule = [g for g in full_schedule if g["week"] > completed_week]
-    # Compact weekly optimal projections for browser Playoff Machine
+    # Compact weekly optimal + live in-game projections for browser Playoff Machine
     weekly_proj_export = {
         str(wk): {
             own: {
                 "proj": info["optimal_proj"],
                 "fa_fills": info["fa_fills"],
+                "is_live": bool(info.get("is_live", False)),
+                "live_pts": float(info.get("live_pts", 0.0)),
+                "rem_frac": float(info.get("rem_frac", 1.0)),
             }
             for own, info in wk_map.items()
         }

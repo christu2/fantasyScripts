@@ -26,7 +26,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from FantasyRecap.core.manifest import load_manifest, load_project_env
+from FantasyRecap.core.manifest import extract_credited_owners, load_manifest, load_project_env
 load_project_env()
 
 from FantasyRecap.bfl_history_db import DB_PATH
@@ -89,7 +89,7 @@ def compute_all_play_luck(
     if season is not None:
         rows_raw = cur.execute(
             """
-            SELECT season, week, owner, score, opp_score, win
+            SELECT season, week, owner, co_owners, score, opp_score, win
             FROM games
             WHERE is_regular = 1 AND season = ?
             """,
@@ -98,7 +98,7 @@ def compute_all_play_luck(
     else:
         rows_raw = cur.execute(
             """
-            SELECT season, week, owner, score, opp_score, win
+            SELECT season, week, owner, co_owners, score, opp_score, win
             FROM games
             WHERE is_regular = 1
             """
@@ -110,7 +110,8 @@ def compute_all_play_luck(
         s_yr, wk = int(r[0]), int(r[1])
         if max_week is not None and season is not None and wk > int(max_week):
             continue
-        by_sw[(s_yr, wk)].append((_canon_owner(r[2]), float(r[3]), float(r[4]), int(r[5])))
+        credited = extract_credited_owners(r[2], r[3] or "", canon_fn=_canon_owner)
+        by_sw[(s_yr, wk)].append((_canon_owner(r[2]), credited, float(r[4]), float(r[5]), int(r[6])))
 
     # First pass: keep only completed weeks and compute each season's exact League Avg PPG
     # so cross-era PF+ and PA+ (100 = league avg that year) normalize 2008 Standard vs 2026 Half-PPR!
@@ -120,9 +121,9 @@ def compute_all_play_luck(
         n_teams = len(entries)
         if n_teams < 2:
             continue
-        scores = [e[1] for e in entries]
+        scores = [e[2] for e in entries]
         # Skip in-progress / unplayed weeks (e.g. Thursday kickoff with 0-0 games or <40 avg score)
-        if (sum(scores) / n_teams) < 40.0 or any(e[1] == 0.0 and e[2] == 0.0 for e in entries):
+        if (sum(scores) / n_teams) < 40.0 or any(e[2] == 0.0 and e[3] == 0.0 for e in entries):
             continue
         valid_weeks.append((s_yr, wk, entries, scores))
         season_scores[s_yr].extend(scores)
@@ -133,37 +134,42 @@ def compute_all_play_luck(
         if vals
     }
 
+    is_all_time = season is None
     stats: Dict[str, dict] = {}
     for s_yr, _wk, entries, scores in valid_weeks:
         n_teams = len(entries)
         s_mean = season_avg.get(s_yr, 90.0) or 90.0
-        for own, sc, opp_sc, win in entries:
-            if active_only and own.lower() not in active_set:
-                continue
-            st = stats.setdefault(own, {
-                "owner": own,
-                "division": div_map.get(own, ""),
-                "games": 0,
-                "wins": 0,
-                "losses": 0,
-                "ap_wins": 0.0,
-                "ap_games": 0,
-                "pf": 0.0,
-                "pa": 0.0,
-                "pf_plus_sum": 0.0,
-                "pa_plus_sum": 0.0,
-            })
+        for primary_own, credited_owners, sc, opp_sc, win in entries:
+            # Credit all distinct co-owners (e.g. Nael + Nitesh in 2022–2025) on All-Time view;
+            # on a single-season view credit the primary owner so 16 rows sum cleanly to 0 luck!
+            targets = credited_owners if is_all_time else [primary_own]
             beat = sum(1 for x in scores if sc > x)
             tied = sum(1 for x in scores if sc == x) - 1  # exclude self
-            st["games"] += 1
-            st["wins"] += 1 if win == 1 else 0
-            st["losses"] += 0 if win == 1 else 1
-            st["ap_wins"] += beat + 0.5 * max(0, tied)
-            st["ap_games"] += (n_teams - 1)
-            st["pf"] += sc
-            st["pa"] += opp_sc
-            st["pf_plus_sum"] += (100.0 * sc / s_mean)
-            st["pa_plus_sum"] += (100.0 * opp_sc / s_mean)
+            for own in targets:
+                if active_only and own.lower() not in active_set:
+                    continue
+                st = stats.setdefault(own, {
+                    "owner": own,
+                    "division": div_map.get(own, ""),
+                    "games": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "ap_wins": 0.0,
+                    "ap_games": 0,
+                    "pf": 0.0,
+                    "pa": 0.0,
+                    "pf_plus_sum": 0.0,
+                    "pa_plus_sum": 0.0,
+                })
+                st["games"] += 1
+                st["wins"] += 1 if win == 1 else 0
+                st["losses"] += 0 if win == 1 else 1
+                st["ap_wins"] += beat + 0.5 * max(0, tied)
+                st["ap_games"] += (n_teams - 1)
+                st["pf"] += sc
+                st["pa"] += opp_sc
+                st["pf_plus_sum"] += (100.0 * sc / s_mean)
+                st["pa_plus_sum"] += (100.0 * opp_sc / s_mean)
 
     out_rows = []
     is_all_time = season is None
@@ -277,18 +283,20 @@ def compute_weekly_trends(
                 cum_ap_wins[own] += beat + 0.5 * max(0, tied)
                 cum_ap_games[own] += (n_wk - 1)
 
-        # Build empirical power ratings through week `wk` (regressed cleanly in early weeks)
+        # Build empirical power ratings through week `wk` using James-Stein Bayesian shrinkage
+        # (prior_n = 10.0 pseudo-games at league avg: sigma^2 / tau^2 ~= 18^2 / 5.5^2)
+        # so Week 1 noise never drops an 0-1 team to an unrealistic ~10% playoff odds!
         all_pts_flat = [p for plist in cum_scores.values() for p in plist]
         lg_avg = statistics.mean(all_pts_flat) if all_pts_flat else 100.0
-        reg_weight = 4.0  # prior pseudo-games at league avg
+        reg_weight = 10.0
         team_power_w = {}
         for own in owners:
             pts_list = cum_scores[own]
             n = len(pts_list)
             raw_mean = statistics.mean(pts_list) if n else lg_avg
             reg_mean = ((sum(pts_list) + reg_weight * lg_avg) / (n + reg_weight))
-            std_val = statistics.stdev(pts_list) if n >= 3 else 15.5
-            std_val = max(11.0, min(22.0, std_val))
+            std_val = statistics.stdev(pts_list) if n >= 4 else 16.5
+            std_val = max(12.0, min(22.0, std_val))
             team_power_w[own] = {"mean": round(reg_mean, 2), "std": round(std_val, 2), "raw_avg": round(raw_mean, 2)}
 
         # Deterministic seeded Monte Carlo snapshot as of end of week `wk`.
@@ -528,10 +536,10 @@ def export_franchise_dossiers(
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     cur = conn.cursor()
 
-    # 1. Career regular + playoff totals & extreme single-week scores
+    # 1. Career regular + playoff totals & extreme single-week scores (crediting distinct co-owners!)
     game_rows = cur.execute(
         """
-        SELECT season, week, owner, opp_owner, score, opp_score, win, is_regular, is_playoffs, is_consolation
+        SELECT season, week, owner, co_owners, opp_owner, score, opp_score, win, is_regular, is_playoffs, is_consolation
         FROM games
         ORDER BY season ASC, week ASC
         """
@@ -540,48 +548,49 @@ def export_franchise_dossiers(
     # Identify completed weeks to avoid in-progress Thursday 0.0-pt lows
     wk_scores_map: Dict[tuple, List[float]] = defaultdict(list)
     for r in game_rows:
-        wk_scores_map[(int(r[0]), int(r[1]))].append(float(r[4] or 0.0))
+        wk_scores_map[(int(r[0]), int(r[1]))].append(float(r[5] or 0.0))
     valid_sw = {k for k, v in wk_scores_map.items() if v and (sum(v) / len(v)) >= 40.0}
 
     career_g: Dict[str, dict] = {}
     h2h_rec: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0]))
     for r in game_rows:
-        s_yr, wk, own_raw, opp_raw, sc, _osc, win, is_reg, is_po, is_con = r
+        s_yr, wk, own_raw, co_raw, opp_raw, sc, _osc, win, is_reg, is_po, is_con = r
         if (int(s_yr), int(wk)) not in valid_sw:
             continue
-        own = _canon_owner(own_raw)
+        credited = extract_credited_owners(own_raw, co_raw or "", canon_fn=_canon_owner)
         opp = _canon_owner(opp_raw)
-        if own.lower() not in active_set:
-            continue
         sc_f = float(sc or 0.0)
-        st = career_g.setdefault(own, {
-            "reg_w": 0, "reg_l": 0, "po_w": 0, "po_l": 0,
-            "high": None, "low": None, "first_season": int(s_yr),
-        })
-        st["first_season"] = min(st["first_season"], int(s_yr))
-        if int(is_reg) == 1:
-            st["reg_w"] += 1 if int(win) == 1 else 0
-            st["reg_l"] += 0 if int(win) == 1 else 1
-        elif int(is_po) == 1:
-            st["po_w"] += 1 if int(win) == 1 else 0
-            st["po_l"] += 0 if int(win) == 1 else 1
+        for own in credited:
+            if own.lower() not in active_set:
+                continue
+            st = career_g.setdefault(own, {
+                "reg_w": 0, "reg_l": 0, "po_w": 0, "po_l": 0,
+                "high": None, "low": None, "first_season": int(s_yr),
+            })
+            st["first_season"] = min(st["first_season"], int(s_yr))
+            if int(is_reg) == 1:
+                st["reg_w"] += 1 if int(win) == 1 else 0
+                st["reg_l"] += 0 if int(win) == 1 else 1
+            elif int(is_po) == 1:
+                st["po_w"] += 1 if int(win) == 1 else 0
+                st["po_l"] += 0 if int(win) == 1 else 1
 
-        if int(is_con) == 0 and sc_f > 0:
-            if st["high"] is None or sc_f > st["high"]["score"]:
-                st["high"] = {"score": round(sc_f, 2), "season": int(s_yr), "week": int(wk), "opp": opp}
-            if st["low"] is None or sc_f < st["low"]["score"]:
-                st["low"] = {"score": round(sc_f, 2), "season": int(s_yr), "week": int(wk), "opp": opp}
+            if int(is_con) == 0 and sc_f > 0:
+                if st["high"] is None or sc_f > st["high"]["score"]:
+                    st["high"] = {"score": round(sc_f, 2), "season": int(s_yr), "week": int(wk), "opp": opp}
+                if st["low"] is None or sc_f < st["low"]["score"]:
+                    st["low"] = {"score": round(sc_f, 2), "season": int(s_yr), "week": int(wk), "opp": opp}
 
-        if opp.lower() in active_set and opp != own:
-            if int(win) == 1:
-                h2h_rec[own][opp][0] += 1
-            else:
-                h2h_rec[own][opp][1] += 1
+            if opp.lower() in active_set and opp != own and opp not in credited:
+                if int(win) == 1:
+                    h2h_rec[own][opp][0] += 1
+                else:
+                    h2h_rec[own][opp][1] += 1
 
-    # 2. Season-by-season timeline from team_seasons
+    # 2. Season-by-season timeline from team_seasons (crediting distinct co-owners!)
     ts_rows = cur.execute(
         """
-        SELECT season, owner, team_name, division_name, wins, losses, points_for,
+        SELECT season, owner, co_owners, team_name, division_name, wins, losses, points_for,
                division_rank, final_rank, made_playoffs, won_division, won_championship,
                runner_up, is_season_complete
         FROM team_seasons
@@ -592,25 +601,32 @@ def export_franchise_dossiers(
 
     timelines: Dict[str, List[dict]] = defaultdict(list)
     for r in ts_rows:
-        own = _canon_owner(r[1])
-        if own.lower() not in active_set:
-            continue
-        is_done = bool(r[13])
-        timelines[own].append({
-            "season": int(r[0]),
-            "team_name": r[2] or "",
-            "division": r[3] or "",
-            "wins": int(r[4]),
-            "losses": int(r[5]),
-            "pf": round(float(r[6] or 0.0), 1),
-            "div_rank": int(r[7] or 0),
-            "final_rank": int(r[8] or 0) if is_done else 0,
-            "made_playoffs": bool(r[9]) if is_done else False,
-            "won_division": bool(r[10]) if is_done else False,
-            "won_champ": bool(r[11]) if is_done else False,
-            "runner_up": bool(r[12]) if is_done else False,
-            "is_complete": is_done,
-        })
+        primary_own = _canon_owner(r[1])
+        credited = extract_credited_owners(r[1], r[2] or "", canon_fn=_canon_owner)
+        is_done = bool(r[14])
+        for own in credited:
+            if own.lower() not in active_set:
+                continue
+            co_partner = [c for c in credited if c != own]
+            tname_disp = r[3] or ""
+            if co_partner:
+                tname_disp = f"{tname_disp} (w/ {co_partner[0].split()[0]})"
+            timelines[own].append({
+                "season": int(r[0]),
+                "team_name": tname_disp,
+                "division": r[4] or "",
+                "wins": int(r[5]),
+                "losses": int(r[6]),
+                "pf": round(float(r[7] or 0.0), 1),
+                "div_rank": int(r[8] or 0),
+                "final_rank": int(r[9] or 0) if is_done else 0,
+                "made_playoffs": bool(r[10]) if is_done else False,
+                "won_division": bool(r[11]) if is_done else False,
+                "won_champ": bool(r[12]) if is_done else False,
+                "runner_up": bool(r[13]) if is_done else False,
+                "is_complete": is_done,
+                "co_owned": bool(co_partner),
+            })
 
     # 3. All-time Luck/PF+/PA+ lookup
     if luck_all_time_rows is None:

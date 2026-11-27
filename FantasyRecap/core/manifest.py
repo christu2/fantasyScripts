@@ -170,3 +170,93 @@ def get_owner_mention_triggers() -> list:
 
 def get_podcast_metadata() -> dict:
     return dict(load_manifest().get("podcast", {}))
+
+
+_NICKNAME_GROUPS = [
+    {"tom", "tommy", "thomas"},
+    {"dan", "danny", "daniel"},
+    {"nick", "nicky", "nicholas"},
+    {"mike", "mikey", "michael"},
+    {"alex", "alexander", "alexandra"},
+    {"sam", "sammy", "samuel"},
+    {"chris", "christopher"},
+    {"matt", "matthew"},
+    {"rob", "robbie", "bob", "bobby", "robert"},
+    {"will", "bill", "billy", "william"},
+    {"joe", "joey", "joseph"},
+    {"dave", "david"},
+    {"steve", "steven", "stephen"},
+    {"jim", "jimmy", "james"},
+    {"ben", "benny", "benjamin"},
+    {"abe", "abraham"},
+    {"jon", "john", "jonathan"},
+    {"jake", "jacob"},
+    {"zach", "zack", "zachary"},
+    {"josh", "joshua"},
+    {"nate", "nathan", "nathaniel"},
+    {"tim", "timmy", "timothy"},
+    {"tony", "anthony"},
+    {"pat", "patrick"},
+    {"ed", "eddie", "edward"},
+    {"andy", "andrew"},
+]
+
+
+def _are_same_person(name_a: str, name_b: str) -> bool:
+    """
+    Detects duplicate ESPN accounts belonging to the same human
+    (e.g., 'Tom Ehrlich' vs 'Tommy Ehrlich', 'Dan Kruszewski' vs 'Daniel Kruszewski',
+    'Nick Christus' vs 'Nicholas Christus') while keeping distinct co-owners
+    (e.g., 'Nael Ahmed' vs 'Nitesh Patel', 'Sydney Miller' vs 'Emelie Lovasko') separate.
+    """
+    pa = [w for w in name_a.lower().strip().split() if w]
+    pb = [w for w in name_b.lower().strip().split() if w]
+    if not pa or not pb:
+        return False
+    if " ".join(pa) == " ".join(pb):
+        return True
+    # Must share the same last name (at least 2 tokens each)
+    if len(pa) < 2 or len(pb) < 2 or pa[-1] != pb[-1]:
+        return False
+    fa, fb = pa[0], pb[0]
+    if fa == fb:
+        return True
+    # Prefix match of >= 3 chars (e.g. "tom" in "tommy", "dan" in "daniel", "nick" in "nicholas")
+    if len(fa) >= 3 and len(fb) >= 3 and (fa.startswith(fb) or fb.startswith(fa)):
+        return True
+    for grp in _NICKNAME_GROUPS:
+        if fa in grp and fb in grp:
+            return True
+    return False
+
+
+def dedupe_co_owners(raw_names: list, *, canon_fn=None) -> list:
+    """
+    Normalizes a list of co-owner names and collapses duplicate ESPN accounts
+    belonging to the same person (preserving the first/canonical name).
+    """
+    out = []
+    for raw in raw_names:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        if canon_fn is not None:
+            s = canon_fn(s)
+        if not s:
+            continue
+        if any(_are_same_person(s, existing) for existing in out):
+            continue
+        out.append(s)
+    return out
+
+
+def extract_credited_owners(primary_owner: str, co_owners_str: str = "", *, canon_fn=None) -> list:
+    """
+    Returns all distinct people credited with owning a team in a given season/game
+    (e.g., ['Nael Ahmed', 'Nitesh Patel'] for 2022–2025 Team 39, while collapsing
+    duplicate accounts like 'Tommy Ehrlich, Tom Ehrlich' into ['Tommy Ehrlich']).
+    """
+    parts = [primary_owner]
+    if co_owners_str:
+        parts.extend(p.strip() for p in str(co_owners_str).split(",") if p.strip())
+    return dedupe_co_owners(parts, canon_fn=canon_fn)

@@ -459,6 +459,39 @@ class TestAnalyticsLabAndPlayoffPush(unittest.TestCase):
             self.assertIn("All-Time", lk_card["title"])
             self.assertEqual(len(lk_card["fields"]), 3)
 
+            # Dual-ownership attribution: Nitesh Patel co-owned Team 39 with Nael Ahmed (2022–2025)
+            nitesh = next(d for d in dossiers if d["owner"] == "Nitesh Patel")
+            self.assertGreaterEqual(nitesh["seasons_played"], 5)
+
+    def test_co_owner_deduplication_and_multi_league_generalization_helpers(self):
+        from FantasyRecap.core.manifest import dedupe_co_owners, extract_credited_owners
+        from FantasyRecap.multi_league_hub import (
+            compute_dynamic_replacement_ranks,
+            make_league_badge,
+            normalize_generic_owner_name,
+        )
+
+        # Duplicate accounts belonging to the same person MUST collapse into one
+        self.assertEqual(dedupe_co_owners(["Tommy Ehrlich", "Tom Ehrlich"]), ["Tommy Ehrlich"])
+        self.assertEqual(dedupe_co_owners(["Daniel Kruszewski", "Dan Kruszewski"]), ["Daniel Kruszewski"])
+        self.assertEqual(dedupe_co_owners(["Nick Christus", "Nicholas Christus"]), ["Nick Christus"])
+        # Distinct co-owners MUST both be credited
+        self.assertEqual(
+            extract_credited_owners("Nael Ahmed", "Nael Ahmed, Nitesh Patel"),
+            ["Nael Ahmed", "Nitesh Patel"],
+        )
+        # Generic name cleanup preserves mixed-case surnames & uppercase initials while fixing lowercase
+        self.assertEqual(normalize_generic_owner_name("cooper powell"), "Cooper Powell")
+        self.assertEqual(normalize_generic_owner_name("Scott WK"), "Scott WK")
+        self.assertEqual(normalize_generic_owner_name("Ryan OHern"), "Ryan OHern")
+        self.assertEqual(make_league_badge("Just for Fun", "jff"), "JFF")
+        # Dynamic 14-team VORP replacement ranks scale cleanly vs 16-team
+        r14 = compute_dynamic_replacement_ranks(14, {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1})
+        self.assertEqual(r14["QB"], 14)
+        self.assertEqual(r14["RB"], 32)
+        self.assertEqual(r14["WR"], 33)
+        self.assertEqual(r14["TE"], 14)
+
 
 if __name__ == "__main__":
     unittest.main()

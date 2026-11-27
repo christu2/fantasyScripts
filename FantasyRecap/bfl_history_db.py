@@ -31,7 +31,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from FantasyRecap.core.manifest import get_espn_credentials, load_project_env
+from FantasyRecap.core.manifest import dedupe_co_owners, extract_credited_owners, get_espn_credentials, load_project_env
 load_project_env()
 
 from FantasyRecap.config import CURRENT_YEAR, LEAGUE_ID
@@ -246,15 +246,12 @@ def _extract_teams_map(data: dict, season: int) -> dict:
         raw_primary = members.get(primary_oid, "") or tname
         std_primary = standardize_owner_for_season(raw_primary, season)
 
-        all_owners = []
+        raw_all = [std_primary] if std_primary else []
         for oid in t.get("owners", []):
             raw_o = members.get(oid, "")
             if raw_o:
-                so = standardize_owner_for_season(raw_o, season)
-                if so not in all_owners:
-                    all_owners.append(so)
-        if std_primary not in all_owners and std_primary:
-            all_owners.insert(0, std_primary)
+                raw_all.append(standardize_owner_for_season(raw_o, season))
+        all_owners = dedupe_co_owners(raw_all)
 
         teams[tid] = {
             "id": tid,
@@ -1342,7 +1339,7 @@ def compute_position_normalized_draft_value(
 
     rows = cur.execute(
         f"""
-        SELECT season, overall_pick, round_id, owner, player_name, position,
+        SELECT season, overall_pick, round_id, owner, co_owners, player_name, position,
                pos_draft_rank, pos_finish_rank, season_points
         FROM draft_picks
         WHERE {' AND '.join(where)}
@@ -1354,7 +1351,7 @@ def compute_position_normalized_draft_value(
     # Group by (season, position) to build each season's exact positional scoring curve & replacement threshold
     curves = {}
     for r in rows:
-        curves.setdefault((int(r[0]), r[5]), []).append(float(r[8] or 0.0))
+        curves.setdefault((int(r[0]), r[6]), []).append(float(r[9] or 0.0))
     repl_pts_map = {}
     for k, vals in curves.items():
         vals.sort(reverse=True)
@@ -1365,10 +1362,11 @@ def compute_position_normalized_draft_value(
 
     scored = []
     for r in rows:
-        yr, pick, rnd, own, pname, pos, pdr, pfr, pts = (
-            int(r[0]), int(r[1]), int(r[2]), r[3], r[4], r[5], int(r[6] or 0), int(r[7] or 0), float(r[8] or 0.0)
+        yr, pick, rnd, own, co_str, pname, pos, pdr, pfr, pts = (
+            int(r[0]), int(r[1]), int(r[2]), r[3], r[4] or "", r[5], r[6], int(r[7] or 0), int(r[8] or 0), float(r[9] or 0.0)
         )
-        if owner and own.lower() != owner.lower():
+        credited = extract_credited_owners(own, co_str, canon_fn=lambda s: standardize_owner_for_season(s, yr))
+        if owner and not any(c.lower() == owner.lower() for c in credited):
             continue
         curve = curves.get((yr, pos), [])
         if not curve or pdr <= 0:

@@ -46,7 +46,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from FantasyRecap.core.manifest import get_espn_credentials, load_manifest, load_project_env
+from FantasyRecap.core.manifest import extract_credited_owners, get_espn_credentials, load_manifest, load_project_env
 load_project_env()
 
 from FantasyRecap.bfl_history_db import DB_PATH, standardize_owner_for_season
@@ -677,10 +677,13 @@ def _build_owner_report_cards(
 
     for tr in trades_list:
         oa, ob = tr["owner_a"], tr["owner_b"]
+        a_credited = tr.get("a_owners") or [oa]
+        b_credited = tr.get("b_owners") or [ob]
         swing_a = float(tr[lens_key]["swing_a"])  # + favors A, - favors B
         swing_b = -swing_a
 
-        for own, opp, my_swing in ((oa, ob, swing_a), (ob, oa, swing_b)):
+        side_pairs = [(own, ob, swing_a, True) for own in a_credited] + [(own, oa, swing_b, False) for own in b_credited]
+        for own, opp, my_swing, _is_a in side_pairs:
             if own.lower() not in active_set:
                 continue
             st = stats[own]
@@ -847,22 +850,25 @@ def evaluate_all_trades(db_path: Path = DB_PATH, current_season: int = int(CURRE
         ).fetchone()[0]
         playoff_start_by_season[s] = int(po_min) if po_min else (14 if s <= 2020 else 15)
 
-    # Preload team_seasons outcomes (only finalized playoff/title badges for completed seasons)
+    # Preload team_seasons outcomes + co-owners (only finalized playoff/title badges for completed seasons)
     ts_outcomes: Dict[Tuple[int, int], dict] = {}
+    ts_co_owners: Dict[Tuple[int, int], List[str]] = {}
     for r in cur.execute(
         """
-        SELECT season, team_id, wins, losses, made_playoffs, won_championship, runner_up, final_rank, is_season_complete
+        SELECT season, team_id, owner, co_owners, wins, losses, made_playoffs, won_championship, runner_up, final_rank, is_season_complete
         FROM team_seasons
         """
     ).fetchall():
-        is_done = bool(r[8])
-        ts_outcomes[(int(r[0]), int(r[1]))] = {
-            "record": f"{int(r[2])}-{int(r[3])}",
+        s_yr, tid = int(r[0]), int(r[1])
+        is_done = bool(r[10])
+        ts_co_owners[(s_yr, tid)] = extract_credited_owners(r[2], r[3] or "", canon_fn=lambda s: _canon_owner(s, s_yr))
+        ts_outcomes[(s_yr, tid)] = {
+            "record": f"{int(r[4])}-{int(r[5])}",
             "is_complete": is_done,
-            "made_playoffs": bool(r[4]) if is_done else False,
-            "won_champ": bool(r[5]) if is_done else False,
-            "runner_up": bool(r[6]) if is_done else False,
-            "final_rank": int(r[7]) if is_done else 0,
+            "made_playoffs": bool(r[6]) if is_done else False,
+            "won_champ": bool(r[7]) if is_done else False,
+            "runner_up": bool(r[8]) if is_done else False,
+            "final_rank": int(r[9]) if is_done else 0,
         }
 
     # Preload non-consolation games for Matchups Flipped detection: (season, team_id, week) -> (win, margin, is_playoffs)
@@ -1140,6 +1146,8 @@ def evaluate_all_trades(db_path: Path = DB_PATH, current_season: int = int(CURRE
             "effective_week": eff_wk,
             "owner_a": own_a,
             "owner_b": own_b,
+            "a_owners": ts_co_owners.get((season, tid_a), [own_a]),
+            "b_owners": ts_co_owners.get((season, tid_b), [own_b]),
             "a_outcome": a_out,
             "b_outcome": b_out,
             "a_games_swung": a_sum["games_swung"],

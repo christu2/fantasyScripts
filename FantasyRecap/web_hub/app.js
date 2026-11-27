@@ -6,7 +6,29 @@ const CUSTOM_SCORES = {}; // key: `${week}|${away}|${home}` -> { away: number, h
 let MODEL_MODE = "optimal"; // "optimal" (weekly optimal healthy lineup + FA fill) | "season_avg"
 let EDIT_SCORES_OPEN = false;
 
-const DIV_ORDER = ["North", "South", "East", "West"];
+function getLeagueMeta() {
+  const cfg = (HUB && HUB.league_config) || {};
+  const rules = (HUB && HUB.tiebreaker_rules) || {};
+  const divKeys = Object.keys((HUB && HUB.divisions) || {});
+  const hasDivs = cfg.has_divisions !== undefined ? Boolean(cfg.has_divisions) : (divKeys.length > 1);
+  const poTeams = Number(rules.playoff_teams || 7);
+  const poByes = rules.playoff_byes != null
+    ? Number(rules.playoff_byes)
+    : (poTeams === 6 ? 2 : (poTeams === 7 ? 1 : 0));
+  return {
+    name: cfg.name || "Beasts Football League",
+    badge: cfg.badge || "BFL",
+    firstSeason: Number(cfg.first_season || 2008),
+    scoringLabel: cfg.scoring_label || "",
+    hasDivisions: hasDivs,
+    divOrder: hasDivs ? divKeys : [],
+    playoffTeams: poTeams,
+    playoffByes: poByes,
+    tiebreakerRule: rules.tiebreaker_rule || "H2H_RECORD",
+    regularWeeks: Number((HUB && HUB.regular_season_weeks) || 14),
+    isFirstYear: Boolean(cfg.is_first_year),
+  };
+}
 
 function gameKey(g) {
   return `${g.week}|${g.away}|${g.home}`;
@@ -24,7 +46,13 @@ function shortName(owner) {
   if (owner === "Shawn Ullenbrauck") return "Thor";
   if (owner === "Adam Olen") return "AMO";
   if (owner.toLowerCase() === "rej hoxha") return "Rej";
-  return owner.split(" ")[0];
+  const parts = owner.trim().split(/\s+/);
+  const first = parts[0] || owner;
+  if (HUB && Array.isArray(HUB.teams) && parts.length >= 2) {
+    const dupes = HUB.teams.filter(t => (t.owner || "").trim().split(/\s+/)[0].toLowerCase() === first.toLowerCase());
+    if (dupes.length > 1) return `${first} ${parts[parts.length - 1][0]}.`;
+  }
+  return first;
 }
 
 function normCdf(z) {
@@ -37,13 +65,28 @@ function normCdf(z) {
 
 function getProjectedMeanForWeek(owner, week, powerMap) {
   const base = powerMap[owner].mean;
-  if (MODEL_MODE === "optimal" && HUB.weekly_projections && HUB.weekly_projections[String(week)]) {
-    const info = HUB.weekly_projections[String(week)][owner];
-    if (info && info.proj > 0) {
-      return 0.75 * info.proj + 0.25 * base;
-    }
+  const info = HUB.weekly_projections && HUB.weekly_projections[String(week)] && HUB.weekly_projections[String(week)][owner];
+  // Live in-progress games ALWAYS use live ESPN totalProjectedPointsLive so mid-game scores move odds immediately!
+  if (info && info.is_live && info.proj > 0) {
+    return info.proj;
+  }
+  if (MODEL_MODE === "optimal" && info && info.proj > 0) {
+    return 0.75 * info.proj + 0.25 * base;
   }
   return base;
+}
+
+function getProjectedStdForWeek(owner, week, powerMap) {
+  const baseStd = powerMap[owner].std;
+  const info = HUB.weekly_projections && HUB.weekly_projections[String(week)] && HUB.weekly_projections[String(week)][owner];
+  if (info && info.is_live && info.rem_frac != null) {
+    return baseStd * Math.sqrt(Math.max(0.02, Math.min(1.0, Number(info.rem_frac))));
+  }
+  return baseStd;
+}
+
+function getLiveWeekInfo(owner, week) {
+  return (HUB.weekly_projections && HUB.weekly_projections[String(week)] && HUB.weekly_projections[String(week)][owner]) || null;
 }
 
 function getFaFillsForWeek(owner, week) {
@@ -118,30 +161,10 @@ function resolveWildcardTie(tied, records, h2h) {
 }
 
 function computeStandingsAndSeeding(records, h2h, divisions) {
-  const divTables = {};
-  const divChamps = [];
-  const wcPool = [];
+  const meta = getLeagueMeta();
+  const usePfOnly = meta.tiebreakerRule === "TOTAL_POINTS_SCORED";
 
-  for (const div of DIV_ORDER) {
-    const members = divisions[div] || [];
-    const byWins = {};
-    for (const m of members) {
-      const w = records[m].wins;
-      if (!byWins[w]) byWins[w] = [];
-      byWins[w].push(m);
-    }
-    const ordered = [];
-    for (const w of Object.keys(byWins).map(Number).sort((a, b) => b - a)) {
-      ordered.push(...resolveDivisionTie(byWins[w], records, h2h));
-    }
-    divTables[div] = ordered;
-    if (ordered.length) {
-      divChamps.push(ordered[0]);
-      wcPool.push(...ordered.slice(1));
-    }
-  }
-
-  const rankGroup = (list) => {
+  const rankGroup = (list, isDiv) => {
     const byWins = {};
     for (const m of list) {
       const w = records[m].wins;
@@ -150,13 +173,39 @@ function computeStandingsAndSeeding(records, h2h, divisions) {
     }
     const out = [];
     for (const w of Object.keys(byWins).map(Number).sort((a, b) => b - a)) {
-      out.push(...resolveWildcardTie(byWins[w], records, h2h));
+      if (usePfOnly) {
+        out.push(...byWins[w].slice().sort((a, b) => records[b].pf - records[a].pf));
+      } else if (isDiv) {
+        out.push(...resolveDivisionTie(byWins[w], records, h2h));
+      } else {
+        out.push(...resolveWildcardTie(byWins[w], records, h2h));
+      }
     }
     return out;
   };
 
-  const sortedChamps = rankGroup(divChamps);
-  const sortedWc = rankGroup(wcPool);
+  if (!meta.hasDivisions) {
+    const allOwners = Object.keys(records);
+    const fullSeeding = rankGroup(allOwners, false);
+    return { divTables: { League: fullSeeding }, sortedChamps: [], sortedWc: fullSeeding, fullSeeding };
+  }
+
+  const divTables = {};
+  const divChamps = [];
+  const wcPool = [];
+
+  for (const div of meta.divOrder) {
+    const members = divisions[div] || [];
+    const ordered = rankGroup(members, true);
+    divTables[div] = ordered;
+    if (ordered.length) {
+      divChamps.push(ordered[0]);
+      wcPool.push(...ordered.slice(1));
+    }
+  }
+
+  const sortedChamps = rankGroup(divChamps, false);
+  const sortedWc = rankGroup(wcPool, false);
   const fullSeeding = [...sortedChamps, ...sortedWc];
   return { divTables, sortedChamps, sortedWc, fullSeeding };
 }
@@ -272,8 +321,8 @@ function runBrowserMonteCarlo(nSims = 4000) {
         if (!unlockedKeys.has(k)) continue;
         const aMu = getProjectedMeanForWeek(g.away, g.week, power);
         const hMu = getProjectedMeanForWeek(g.home, g.week, power);
-        const aPts = aMu + zA * power[g.away].std;
-        const hPts = hMu + zH * power[g.home].std;
+        const aPts = aMu + zA * getProjectedStdForWeek(g.away, g.week, power);
+        const hPts = hMu + zH * getProjectedStdForWeek(g.home, g.week, power);
         simRec[g.away].pf += aPts;
         simRec[g.home].pf += hPts;
         if (aPts >= hPts) {
@@ -291,43 +340,54 @@ function runBrowserMonteCarlo(nSims = 4000) {
       ({ sortedChamps, fullSeeding } = detSeeding);
     }
 
-    const poField = fullSeeding.slice(0, 7);
-    const poSet = new Set(poField);
-    const byeOwner = sortedChamps.length ? sortedChamps[0] : poField[0];
+    const meta = getLeagueMeta();
+    const poField = fullSeeding.slice(0, meta.playoffTeams);
+    const byeOwners = poField.slice(0, meta.playoffByes);
     for (const dc of sortedChamps) divCount[dc] += 1;
-    if (byeOwner) byeCount[byeOwner] += 1;
+    for (const bo of byeOwners) byeCount[bo] += 1;
     for (const pfTeam of poField) poCount[pfTeam] += 1;
 
-    // Simulate Weeks 15–17 Playoff Bracket with NFL Dynamic Re-Seeding
-    // Round 1 (Week 15): #2 vs #7, #3 vs #6, #4 vs #5 (#1 Bye)
-    const r1Pairs = [[2, 7], [3, 6], [4, 5]];
-    const r1Winners = [];
-    for (const [sHi, sLo] of r1Pairs) {
-      const tHi = poField[sHi - 1], tLo = poField[sLo - 1];
-      const scHi = power[tHi].mean + gaussianRand(rng) * power[tHi].std;
-      const scLo = power[tLo].mean + gaussianRand(rng) * power[tLo].std;
-      r1Winners.push(scHi >= scLo ? [sHi, tHi] : [sLo, tLo]);
-    }
-    // Round 2 (Week 16): NFL Dynamic Re-Seeding — #1 plays lowest surviving seed (largest seed #)
-    r1Winners.sort((a, b) => a[0] - b[0]);
-    const t1 = poField[0];
-    const tLow = r1Winners[2][1];
-    const s1A = power[t1].mean + gaussianRand(rng) * power[t1].std;
-    const s1B = power[tLow].mean + gaussianRand(rng) * power[tLow].std;
-    const semiW1 = s1A >= s1B ? t1 : tLow;
+    // Rule-aware Playoff Bracket Simulation (supports 4, 6, 7, and 8-team brackets with 0, 1, or 2 Byes!)
+    const simMatch = (tA, tB) => {
+      const sA = power[tA].mean + gaussianRand(rng) * power[tA].std;
+      const sB = power[tB].mean + gaussianRand(rng) * power[tB].std;
+      return sA >= sB ? tA : tB;
+    };
 
-    const tS1 = r1Winners[0][1], tS2 = r1Winners[1][1];
-    const s2A = power[tS1].mean + gaussianRand(rng) * power[tS1].std;
-    const s2B = power[tS2].mean + gaussianRand(rng) * power[tS2].std;
-    const semiW2 = s2A >= s2B ? tS1 : tS2;
+    let semiW1, semiW2;
+    if (meta.playoffTeams === 6) {
+      // 6-team bracket: #1 & #2 Byes; R1: #3v#6, #4v#5; Semis: #1 vs lowest survivor, #2 vs other
+      const w36 = simMatch(poField[2], poField[5]) === poField[2] ? [3, poField[2]] : [6, poField[5]];
+      const w45 = simMatch(poField[3], poField[4]) === poField[3] ? [4, poField[3]] : [5, poField[4]];
+      const surv = [w36, w45].sort((a, b) => a[0] - b[0]);
+      semiW1 = simMatch(poField[0], surv[1][1]);
+      semiW2 = simMatch(poField[1], surv[0][1]);
+    } else if (meta.playoffTeams === 4) {
+      semiW1 = simMatch(poField[0], poField[3]);
+      semiW2 = simMatch(poField[1], poField[2]);
+    } else if (meta.playoffTeams === 8) {
+      const q1 = simMatch(poField[0], poField[7]);
+      const q2 = simMatch(poField[3], poField[4]);
+      const q3 = simMatch(poField[1], poField[6]);
+      const q4 = simMatch(poField[2], poField[5]);
+      semiW1 = simMatch(q1, q2);
+      semiW2 = simMatch(q3, q4);
+    } else {
+      // 7-team bracket (BFL): #1 Bye; R1: #2v#7, #3v#6, #4v#5; Semis: NFL Dynamic Re-Seeding
+      const r1Pairs = [[2, 7], [3, 6], [4, 5]];
+      const r1Winners = [];
+      for (const [sHi, sLo] of r1Pairs) {
+        const tHi = poField[sHi - 1], tLo = poField[sLo - 1];
+        r1Winners.push(simMatch(tHi, tLo) === tHi ? [sHi, tHi] : [sLo, tLo]);
+      }
+      r1Winners.sort((a, b) => a[0] - b[0]);
+      semiW1 = simMatch(poField[0], r1Winners[2][1]);
+      semiW2 = simMatch(r1Winners[0][1], r1Winners[1][1]);
+    }
 
     finalsCount[semiW1] += 1;
     finalsCount[semiW2] += 1;
-
-    // Week 17: BFL Super Bowl
-    const fA = power[semiW1].mean + gaussianRand(rng) * power[semiW1].std;
-    const fB = power[semiW2].mean + gaussianRand(rng) * power[semiW2].std;
-    const champ = fA >= fB ? semiW1 : semiW2;
+    const champ = simMatch(semiW1, semiW2);
     titleCount[champ] += 1;
 
     // Accumulate conditional stats for Rooting Guide
@@ -336,12 +396,12 @@ function runBrowserMonteCarlo(nSims = 4000) {
       if (awayWon) {
         c.aTrials += 1;
         for (const o of poField) c.aPo[o] += 1;
-        if (byeOwner) c.aBye[byeOwner] += 1;
+        for (const bo of byeOwners) c.aBye[bo] += 1;
         c.aTitle[champ] += 1;
       } else {
         c.hTrials += 1;
         for (const o of poField) c.hPo[o] += 1;
-        if (byeOwner) c.hBye[byeOwner] += 1;
+        for (const bo of byeOwners) c.hBye[bo] += 1;
         c.hTitle[champ] += 1;
       }
     }
@@ -467,34 +527,64 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
 /* ---------- RENDER PLAYOFF MACHINE ---------- */
 
 function renderPlayoffMachine() {
+  const meta = getLeagueMeta();
+  if (!HUB.teams.some(t => t.owner === ROOTING_OWNER)) {
+    ROOTING_OWNER = HUB.teams[0].owner;
+  }
   const { records, h2h, odds, cond, currentSeeding, unlockedCount, iters } = runBrowserMonteCarlo(4000);
   const lockedCount = Object.keys(LOCKED_PICKS).length;
   const totalRem = HUB.remaining_schedule.length;
   const teamMap = Object.fromEntries(HUB.teams.map(t => [t.owner, t]));
 
+  const poFieldHead = document.querySelector("#tab-playoff .card-head h3");
+  if (poFieldHead) poFieldHead.textContent = `Projected ${meta.playoffTeams}-Team Playoff Field`;
+  const poTh = document.querySelector("#playoffTable thead tr");
+  if (poTh) {
+    poTh.innerHTML = meta.hasDivisions
+      ? `<th>Seed</th><th>Manager</th><th>Rec</th><th>PF</th><th>PO %</th><th>Div %</th><th>Bye %</th><th>Title %</th>`
+      : `<th>Seed</th><th>Manager</th><th>Rec</th><th>PF</th><th>PO %</th>${meta.playoffByes > 0 ? "<th>Bye %</th>" : ""}<th>Title %</th>`;
+  }
+  const bubTh = document.querySelector("#bubbleTable thead tr");
+  if (bubTh) {
+    bubTh.innerHTML = meta.hasDivisions
+      ? `<th>#</th><th>Manager</th><th>Div</th><th>Rec</th><th>PF</th><th>PO %</th><th>Title %</th>`
+      : `<th>#</th><th>Manager</th><th>Rec</th><th>PF</th><th>PO %</th><th>Title %</th>`;
+  }
+  const bubTitle = document.querySelector("#tab-playoff h4.subhead");
+  if (bubTitle) {
+    bubTitle.textContent = `On The Bubble (#${meta.playoffTeams + 1} – #${Math.min(HUB.teams.length, meta.playoffTeams + 5)})`;
+  }
+
   const banner = document.getElementById("pickStatusBanner");
   const modelTxt = MODEL_MODE === "optimal"
     ? "Optimal Healthy Weekly Lineups (auto-fills Bye/Injury gaps with best Free Agent)"
     : "Season Average PPG";
+  const metricHeader = meta.hasDivisions ? "PO% / Div% / Bye% / Title%" : (meta.playoffByes > 0 ? "PO% / Bye% / Title%" : "PO% / Title%");
   if (lockedCount === 0) {
-    banner.innerHTML = `<strong>Standings:</strong> Completed Weeks 1–${HUB.completed_week} (no games locked yet). <strong>PO% / Div% / Bye% / Title%:</strong> ${iters.toLocaleString()} live Monte Carlo sims through Week 17 using <em>${modelTxt}</em>.`;
+    banner.innerHTML = `<strong>Standings:</strong> Completed Weeks 1–${HUB.completed_week} (no games locked yet). <strong>${metricHeader}:</strong> ${iters.toLocaleString()} live Monte Carlo sims through Playoffs using <em>${modelTxt}</em>.`;
   } else if (unlockedCount === 0) {
-    banner.innerHTML = `<strong>Full Regular Season Locked (${lockedCount}/${totalRem} games):</strong> Exact deterministic Week 15 BFL Playoff Bracket + ${iters.toLocaleString()} simulated Week 15–17 Championship brackets (NFL Dynamic Re-Seeding).`;
+    banner.innerHTML = `<strong>Full Regular Season Locked (${lockedCount}/${totalRem} games):</strong> Exact deterministic ${meta.playoffTeams}-Team Playoff Bracket + ${iters.toLocaleString()} simulated Playoff brackets.`;
   } else {
     banner.innerHTML = `<strong>Custom Scenario (${lockedCount}/${totalRem} locked):</strong> Standings reflect Weeks 1–${HUB.completed_week} + your picks; remaining ${unlockedCount} games + Playoffs simulated ${iters.toLocaleString()}x via <em>${modelTxt}</em>.`;
   }
   document.getElementById("simModeBadge").textContent =
     unlockedCount === 0 ? "Locked Field • 4k Title Sims" : `${iters.toLocaleString()} Live Browser Sims`;
 
-  // Playoff Table (#1-#7)
+  // Playoff Table (#1 - #playoffTeams)
   const poBody = document.querySelector("#playoffTable tbody");
-  poBody.innerHTML = currentSeeding.fullSeeding.slice(0, 7).map((own, idx) => {
+  const nDivChamps = meta.hasDivisions ? meta.divOrder.length : 0;
+  poBody.innerHTML = currentSeeding.fullSeeding.slice(0, meta.playoffTeams).map((own, idx) => {
     const seed = idx + 1;
     const r = records[own];
     const t = teamMap[own];
     const o = odds[own];
-    const badgeCls = seed === 1 ? "seed-1" : (seed <= 4 ? "seed-div" : "seed-wc");
-    const roleTag = seed === 1 ? "1st-Rd Bye" : (seed <= 4 ? `${t.division} Ldr` : `${t.division} • WC #${seed - 4}`);
+    const isBye = seed <= meta.playoffByes;
+    const badgeCls = isBye ? "seed-1" : (meta.hasDivisions && seed <= nDivChamps ? "seed-div" : "seed-wc");
+    let roleTag = "Playoff Seed";
+    if (isBye) roleTag = "1st-Rd Bye";
+    else if (meta.hasDivisions && seed <= nDivChamps) roleTag = `${t.division} Ldr`;
+    else if (meta.hasDivisions) roleTag = `${t.division} • WC #${seed - nDivChamps}`;
+    else roleTag = `Seed #${seed}`;
     const selCls = own === ROOTING_OWNER ? "selected-row" : "";
     return `
       <tr class="clickable-row ${selCls}" data-root="${own}">
@@ -503,17 +593,17 @@ function renderPlayoffMachine() {
         <td><strong>${r.wins}-${r.losses}</strong></td>
         <td>${r.pf.toFixed(1)}</td>
         <td><strong style="color:${Number(o.po) >= 75 ? 'var(--green)' : (Number(o.po) >= 35 ? 'var(--gold)' : 'var(--muted)')}">${o.po}%</strong></td>
-        <td>${o.div}%</td>
-        <td>${o.bye}%</td>
-        <td><strong style="color:var(--gold)" title="Super Bowl appearance odds: ${o.finals}%">${o.title}%</strong></td>
+        ${meta.hasDivisions ? `<td>${o.div}%</td>` : ""}
+        ${meta.playoffByes > 0 ? `<td>${o.bye}%</td>` : ""}
+        <td><strong style="color:var(--gold)" title="Championship Finals appearance odds: ${o.finals}%">${o.title}%</strong></td>
       </tr>
     `;
   }).join("");
 
-  // Bubble Table (#8-#12)
+  // Bubble Table
   const bubBody = document.querySelector("#bubbleTable tbody");
-  bubBody.innerHTML = currentSeeding.fullSeeding.slice(7, 12).map((own, idx) => {
-    const rank = idx + 8;
+  bubBody.innerHTML = currentSeeding.fullSeeding.slice(meta.playoffTeams, meta.playoffTeams + 5).map((own, idx) => {
+    const rank = idx + meta.playoffTeams + 1;
     const r = records[own];
     const t = teamMap[own];
     const o = odds[own];
@@ -522,7 +612,7 @@ function renderPlayoffMachine() {
       <tr class="clickable-row ${selCls}" data-root="${own}">
         <td>#${rank}</td>
         <td><strong>${displayName(own)}</strong></td>
-        <td>${t.division}</td>
+        ${meta.hasDivisions ? `<td>${t.division}</td>` : ""}
         <td>${r.wins}-${r.losses}</td>
         <td>${r.pf.toFixed(1)}</td>
         <td><strong>${o.po}%</strong></td>
@@ -538,38 +628,76 @@ function renderPlayoffMachine() {
     });
   });
 
-  // Week 15 Bracket Preview + Title Favorite
+  // Rule-Aware Playoff Bracket Preview + Title Favorites
   const f = currentSeeding.fullSeeding;
   const topTitle = [...HUB.teams.map(t => t.owner)].sort((a, b) => parseFloat(odds[b].title) - parseFloat(odds[a].title));
-  const brHtml = `
-    <div class="bracket-box bye">
-      <div class="bracket-lbl">First-Round Bye (Week 15)</div>
-      <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
-      <div class="tie-note">Plays lowest surviving seed in Week 16 Semis</div>
-    </div>
-    <div class="bracket-box">
-      <div class="bracket-lbl">Quarterfinal 1</div>
-      <div class="bracket-row"><span>#2 <strong>${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
-      <div class="bracket-row"><span>#7 <strong>${shortName(f[6])}</strong></span><span>${records[f[6]].wins}-${records[f[6]].losses} (${odds[f[6]].title}% Title)</span></div>
-    </div>
-    <div class="bracket-box">
-      <div class="bracket-lbl">Quarterfinal 2</div>
-      <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
-      <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
-    </div>
-    <div class="bracket-box">
-      <div class="bracket-lbl">Quarterfinal 3</div>
-      <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
-      <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
-    </div>
+  let bracketBoxes = "";
+  const poWk = meta.regularWeeks + 1;
+  if (meta.playoffTeams === 6) {
+    bracketBoxes = `
+      <div class="bracket-box bye">
+        <div class="bracket-lbl">First-Round Byes (Week ${poWk})</div>
+        <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
+        <div class="bracket-row"><span><strong>#2 ${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} &bull; Title ${odds[f[1]].title}%</span></div>
+      </div>
+      <div class="bracket-box">
+        <div class="bracket-lbl">Quarterfinal 1</div>
+        <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
+      </div>
+      <div class="bracket-box">
+        <div class="bracket-lbl">Quarterfinal 2</div>
+        <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
+      </div>
+    `;
+  } else if (meta.playoffTeams === 4) {
+    bracketBoxes = `
+      <div class="bracket-box">
+        <div class="bracket-lbl">Semifinal 1 (Week ${poWk})</div>
+        <div class="bracket-row"><span>#1 <strong>${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} (${odds[f[0]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
+      </div>
+      <div class="bracket-box">
+        <div class="bracket-lbl">Semifinal 2 (Week ${poWk})</div>
+        <div class="bracket-row"><span>#2 <strong>${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
+      </div>
+    `;
+  } else {
+    bracketBoxes = `
+      <div class="bracket-box bye">
+        <div class="bracket-lbl">First-Round Bye (Week ${poWk})</div>
+        <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
+        <div class="tie-note">Plays lowest surviving seed in Week ${poWk + 1} Semis</div>
+      </div>
+      <div class="bracket-box">
+        <div class="bracket-lbl">Quarterfinal 1</div>
+        <div class="bracket-row"><span>#2 <strong>${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#7 <strong>${shortName(f[6])}</strong></span><span>${records[f[6]].wins}-${records[f[6]].losses} (${odds[f[6]].title}% Title)</span></div>
+      </div>
+      <div class="bracket-box">
+        <div class="bracket-lbl">Quarterfinal 2</div>
+        <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
+      </div>
+      <div class="bracket-box">
+        <div class="bracket-lbl">Quarterfinal 3</div>
+        <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
+      </div>
+    `;
+  }
+
+  document.getElementById("bracketPreview").innerHTML = `
+    ${bracketBoxes}
     <div class="bracket-box" style="grid-column:1 / -1;border-color:rgba(56,189,248,0.35)">
-      <div class="bracket-lbl">Championship Favorites (Weeks 15–17 Re-Seeded Sims)</div>
+      <div class="bracket-lbl">Championship Favorites (Weeks ${poWk}–${poWk + 2} Simulated Brackets)</div>
       <div class="bracket-row" style="flex-wrap:wrap;gap:10px">
         ${topTitle.slice(0, 4).map((o, idx) => `<span><strong>${idx + 1}. ${shortName(o)}</strong> <span style="color:var(--gold)">${odds[o].title}%</span> <span class="muted small">(${odds[o].finals}% Finals)</span></span>`).join("")}
       </div>
     </div>
   `;
-  document.getElementById("bracketPreview").innerHTML = brHtml;
 
   renderRootingGuide(ROOTING_OWNER, odds, cond, unlockedCount);
 
@@ -593,13 +721,20 @@ function renderPlayoffMachine() {
 
       const aMu = getProjectedMeanForWeek(g.away, wk, powerMap);
       const hMu = getProjectedMeanForWeek(g.home, wk, powerMap);
-      const combStd = Math.sqrt(powerMap[g.away].std ** 2 + powerMap[g.home].std ** 2) || 20.0;
+      const aStd = getProjectedStdForWeek(g.away, wk, powerMap);
+      const hStd = getProjectedStdForWeek(g.home, wk, powerMap);
+      const combStd = Math.sqrt(aStd ** 2 + hStd ** 2) || 20.0;
       const aWinPct = Math.round(normCdf((aMu - hMu) / combStd) * 100);
       const hWinPct = 100 - aWinPct;
+      const aLive = getLiveWeekInfo(g.away, wk);
+      const hLive = getLiveWeekInfo(g.home, wk);
+      const isLiveMatch = Boolean((aLive && aLive.is_live) || (hLive && hLive.is_live));
       const aFa = getFaFillsForWeek(g.away, wk);
       const hFa = getFaFillsForWeek(g.home, wk);
-      const aFaBadge = (MODEL_MODE === "optimal" && aFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${aFa.join(', ')}">FA</span>` : "";
-      const hFaBadge = (MODEL_MODE === "optimal" && hFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${hFa.join(', ')}">FA</span>` : "";
+      const aFaBadge = (!isLiveMatch && MODEL_MODE === "optimal" && aFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${aFa.join(', ')}">FA</span>` : "";
+      const hFaBadge = (!isLiveMatch && MODEL_MODE === "optimal" && hFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${hFa.join(', ')}">FA</span>` : "";
+      const aRecTxt = isLiveMatch ? `${Math.round(aLive.live_pts)}&rarr;${Math.round(aMu)} · ${aWinPct}%` : `${aMu.toFixed(0)} · ${aWinPct}%`;
+      const hRecTxt = isLiveMatch ? `${Math.round(hLive.live_pts)}&rarr;${Math.round(hMu)} · ${hWinPct}%` : `${hMu.toFixed(0)} · ${hWinPct}%`;
 
       const aDispScore = custom ? custom.away.toFixed(1) : aMu.toFixed(1);
       const hDispScore = custom ? custom.home.toFixed(1) : hMu.toFixed(1);
@@ -614,18 +749,25 @@ function renderPlayoffMachine() {
 
       return `
         <div class="match-row">
-          <button class="pick-btn ${aCls}" data-key="${k}" data-win="${g.away}" title="${displayName(g.away)} projected ${aMu.toFixed(1)} pts (${aWinPct}% win prob)">
-            <span>${shortName(g.away)}${aFaBadge}</span><span class="pick-rec">${aMu.toFixed(0)} · ${aWinPct}%</span>
+          <button class="pick-btn ${aCls}" data-key="${k}" data-win="${g.away}" title="${displayName(g.away)} ${isLiveMatch ? `LIVE ${aLive.live_pts.toFixed(1)} pts, proj ` : `projected `}${aMu.toFixed(1)} pts (${aWinPct}% win prob)">
+            <span>${shortName(g.away)}${aFaBadge}</span><span class="pick-rec">${aRecTxt}</span>
           </button>
           <span class="at-sep">@</span>
-          <button class="pick-btn ${hCls}" data-key="${k}" data-win="${g.home}" title="${displayName(g.home)} projected ${hMu.toFixed(1)} pts (${hWinPct}% win prob)">
-            <span>${shortName(g.home)}${hFaBadge}</span><span class="pick-rec">${hMu.toFixed(0)} · ${hWinPct}%</span>
+          <button class="pick-btn ${hCls}" data-key="${k}" data-win="${g.home}" title="${displayName(g.home)} ${isLiveMatch ? `LIVE ${hLive.live_pts.toFixed(1)} pts, proj ` : `projected `}${hMu.toFixed(1)} pts (${hWinPct}% win prob)">
+            <span>${shortName(g.home)}${hFaBadge}</span><span class="pick-rec">${hRecTxt}</span>
           </button>
         </div>
         ${editRow}
       `;
     }).join("");
-    return `<div class="week-col"><h4><span>Week ${wk}</span><span class="muted small">${wk === 14 ? "Regular Season Finale" : "Proj · Win%"}</span></h4>${gamesHtml}</div>`;
+    const wkAnyLive = byWeek[wk].some(g => {
+      const li = getLiveWeekInfo(g.away, wk);
+      return li && li.is_live;
+    });
+    const wkSub = wkAnyLive
+      ? `<span class="pill pill-green" style="font-size:0.66rem;padding:1px 7px">LIVE • Score&rarr;Proj</span>`
+      : `<span class="muted small">${wk === meta.regularWeeks ? "Regular Season Finale" : "Proj · Win%"}</span>`;
+    return `<div class="week-col"><h4><span>Week ${wk}</span>${wkSub}</h4>${gamesHtml}</div>`;
   }).join("");
 
   schedEl.querySelectorAll(".pick-btn").forEach(btn => {
@@ -660,61 +802,95 @@ function renderPlayoffMachine() {
     });
   }
 
-  // 4 Division Standings Cards
+  // Division Standings Cards OR Single Flat League Standings Table
   const divEl = document.getElementById("divisionsGrid");
-  divEl.innerHTML = DIV_ORDER.map(div => {
-    const rows = currentSeeding.divTables[div].map((own, idx) => {
+  if (!meta.hasDivisions) {
+    divEl.style.gridTemplateColumns = "1fr";
+    const rows = currentSeeding.fullSeeding.map((own, idx) => {
       const r = records[own];
       const o = odds[own];
-      const seedNum = currentSeeding.fullSeeding.indexOf(own) + 1;
-      const inPo = seedNum <= 7;
+      const seedNum = idx + 1;
+      const inPo = seedNum <= meta.playoffTeams;
       return `
         <tr>
-          <td>${idx + 1}</td>
-          <td><strong>${displayName(own)}</strong> ${inPo ? `<span class="pill pill-green">#${seedNum}</span>` : ""}</td>
+          <td><strong>#${seedNum}</strong></td>
+          <td><strong>${displayName(own)}</strong> ${inPo ? `<span class="pill pill-green">${seedNum <= meta.playoffByes ? "Bye" : "In"}</span>` : ""}</td>
           <td><strong>${r.wins}-${r.losses}</strong></td>
-          <td>${r.divWins}-${r.divLosses}</td>
           <td>${r.pf.toFixed(1)}</td>
-          <td>${o.div}%</td>
+          <td><strong>${o.po}%</strong></td>
+          ${meta.playoffByes > 0 ? `<td>${o.bye}%</td>` : ""}
+          <td style="color:var(--gold)">${o.title}%</td>
         </tr>
       `;
     }).join("");
-    return `
+    divEl.innerHTML = `
       <div class="card" style="margin-bottom:0">
-        <div class="card-head"><h3>${div} Division</h3><span class="pill">Top team auto-bids</span></div>
+        <div class="card-head"><h3>Full ${HUB.teams.length}-Team League Standings</h3><span class="pill">Top ${meta.playoffTeams} qualify</span></div>
         <div class="table-wrap">
           <table class="data-table compact">
-            <thead><tr><th>#</th><th>Manager</th><th>Rec</th><th>Div</th><th>PF</th><th>Div %</th></tr></thead>
+            <thead><tr><th>#</th><th>Manager</th><th>Rec</th><th>PF</th><th>PO %</th>${meta.playoffByes > 0 ? "<th>Bye %</th>" : ""}<th>Title %</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
       </div>
     `;
-  }).join("");
+  } else {
+    divEl.style.gridTemplateColumns = "";
+    divEl.innerHTML = meta.divOrder.map(div => {
+      const rows = (currentSeeding.divTables[div] || []).map((own, idx) => {
+        const r = records[own];
+        const o = odds[own];
+        const seedNum = currentSeeding.fullSeeding.indexOf(own) + 1;
+        const inPo = seedNum <= meta.playoffTeams;
+        return `
+          <tr>
+            <td>${idx + 1}</td>
+            <td><strong>${displayName(own)}</strong> ${inPo ? `<span class="pill pill-green">#${seedNum}</span>` : ""}</td>
+            <td><strong>${r.wins}-${r.losses}</strong></td>
+            <td>${r.divWins}-${r.divLosses}</td>
+            <td>${r.pf.toFixed(1)}</td>
+            <td>${o.div}%</td>
+          </tr>
+        `;
+      }).join("");
+      return `
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head"><h3>${div} Division</h3><span class="pill">Top team auto-bids</span></div>
+          <div class="table-wrap">
+            <table class="data-table compact">
+              <thead><tr><th>#</th><th>Manager</th><th>Rec</th><th>Div</th><th>PF</th><th>Div %</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
 }
 
 /* ---------- RENDER RECORD BOOK & RIVALRY EXPLORER ---------- */
 
 function renderHistoryTab() {
+  const meta = getLeagueMeta();
   const owners = HUB.teams.map(t => t.owner).sort();
   const sel1 = document.getElementById("rivOwner1");
   const sel2 = document.getElementById("rivOwner2");
   sel1.innerHTML = owners.map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
   sel2.innerHTML = owners.map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
-  sel1.value = "Nick Christus";
-  sel2.value = "Daniel Kruszewski";
+  sel1.value = owners.includes("Nick Christus") ? "Nick Christus" : owners[0];
+  sel2.value = owners.includes("Daniel Kruszewski") ? "Daniel Kruszewski" : (owners.find(o => o !== sel1.value) || owners[0]);
 
   const drawRivalry = () => {
     const a = sel1.value, b = sel2.value;
     const card = document.getElementById("rivalryCard");
     if (a === b) {
-      card.innerHTML = `<p class="muted">Select two different BFL managers to inspect their 18-year series.</p>`;
+      card.innerHTML = `<p class="muted">Select two different ${meta.badge} managers to inspect their head-to-head series.</p>`;
       return;
     }
     const [o1, o2] = a < b ? [a, b] : [b, a];
     const rec = HUB.history.h2h[`${o1}|||${o2}`];
     if (!rec) {
-      card.innerHTML = `<p class="muted"><strong>${a}</strong> and <strong>${b}</strong> have never met in BFL history.</p>`;
+      card.innerHTML = `<p class="muted"><strong>${displayName(a)}</strong> and <strong>${displayName(b)}</strong> have not met yet in ${meta.badge} history.</p>`;
       return;
     }
     const wA = a === o1 ? rec.w1 : rec.w2;
@@ -724,19 +900,19 @@ function renderHistoryTab() {
     const poA = a === o1 ? rec.po1 : rec.po2;
     const poB = a === o1 ? rec.po2 : rec.po1;
     const headTxt = wA > wB ? `<strong>${displayName(a)}</strong> leads ${wA}–${wB}` : (wB > wA ? `<strong>${displayName(b)}</strong> leads ${wB}–${wA}` : `Series deadlocked <strong>${wA}–${wB}</strong>`);
-    const sbTxt = rec.super_bowls.length
+    const sbTxt = (rec.super_bowls || []).length
       ? rec.super_bowls.map(s => `${s.year}: ${displayName(s.champ)} def. ${displayName(s.runner_up)} (${s.score})`).join(" • ")
       : "None";
 
     card.innerHTML = `
-      <div style="font-size:1.1rem;margin-bottom:4px;">${headTxt} <span class="muted small">(${rec.games} meetings since 2008)</span></div>
+      <div style="font-size:1.1rem;margin-bottom:4px;">${headTxt} <span class="muted small">(${rec.games} ${rec.games === 1 ? "meeting" : "meetings"} since ${meta.firstSeason})</span></div>
       <div class="riv-stats">
         <div class="stat-box"><div class="lbl">Avg Points / Game</div><div class="val">${shortName(a)} ${avgA} vs ${shortName(b)} ${avgB}</div></div>
         <div class="stat-box"><div class="lbl">Current Streak</div><div class="val">${shortName(rec.streak_owner)} W${rec.streak_len}</div></div>
         <div class="stat-box"><div class="lbl">Playoff H2H</div><div class="val">${poA + poB > 0 ? `${shortName(a)} ${poA}–${poB} ${shortName(b)}` : "No Playoff Clashes"}</div></div>
         <div class="stat-box"><div class="lbl">Last Meeting</div><div class="val">${rec.last.season} Wk ${rec.last.week}: ${shortName(rec.last.winner)} (${rec.last.hi}–${rec.last.lo})</div></div>
         <div class="stat-box"><div class="lbl">Closest Finish</div><div class="val">${rec.closest.season} Wk ${rec.closest.week}: ${shortName(rec.closest.winner)} (+${rec.closest.margin})</div></div>
-        <div class="stat-box"><div class="lbl">Super Bowl History</div><div class="val" style="font-size:0.84rem">${sbTxt}</div></div>
+        <div class="stat-box"><div class="lbl">Championship Meetings</div><div class="val" style="font-size:0.84rem">${sbTxt}</div></div>
       </div>
     `;
   };
@@ -748,7 +924,7 @@ function renderHistoryTab() {
   document.querySelector("#careerTable tbody").innerHTML = HUB.history.career.map((c, idx) => `
     <tr>
       <td>${idx + 1}</td>
-      <td><strong>${displayName(c.owner)}</strong><span class="tie-note">${c.division} &bull; ${c.seasons} yrs</span></td>
+      <td><strong>${displayName(c.owner)}</strong><span class="tie-note">${c.division ? c.division + " • " : ""}${c.seasons} ${c.seasons === 1 ? "yr" : "yrs"}</span></td>
       <td>${c.rings > 0 ? `<span class="pill pill-gold">${c.rings}</span>` : "0"}</td>
       <td>${c.wins}-${c.losses}</td>
       <td><strong>${c.win_pct.toFixed(1)}%</strong></td>
@@ -757,15 +933,23 @@ function renderHistoryTab() {
     </tr>
   `).join("");
 
-  // Championships log
-  document.querySelector("#champsTable tbody").innerHTML = HUB.history.championships.map(s => `
-    <tr>
-      <td><strong>${s.year}</strong></td>
-      <td><strong>${displayName(s.champ)}</strong></td>
-      <td>${displayName(s.runner_up)}</td>
-      <td>${s.score}</td>
-    </tr>
-  `).join("");
+  // Championships log (gracefully hide card for Year-1 leagues with no past champions)
+  const champs = HUB.history.championships || [];
+  const champsCard = document.getElementById("champsTable").closest(".card");
+  if (!champs.length && champsCard) {
+    champsCard.style.display = "none";
+    const grid = champsCard.parentElement;
+    if (grid) grid.style.gridTemplateColumns = "1fr";
+  } else {
+    document.querySelector("#champsTable tbody").innerHTML = champs.map(s => `
+      <tr>
+        <td><strong>${s.year}</strong></td>
+        <td><strong>${displayName(s.champ)}</strong></td>
+        <td>${displayName(s.runner_up)}</td>
+        <td>${s.score}</td>
+      </tr>
+    `).join("");
+  }
 }
 
 /* ---------- RENDER DRAFT HALL ---------- */
@@ -774,11 +958,14 @@ function renderDraftsTab() {
   const sSel = document.getElementById("draftSeasonSelect");
   const oSel = document.getElementById("draftOwnerSelect");
   const years = HUB.history.draft_seasons || [];
-  sSel.innerHTML = [
-    `<option value="${HUB.season}">${HUB.season} Draft</option>`,
-    `<option value="all">All-Time (2018–${HUB.season})</option>`,
-    ...years.filter(y => y !== HUB.season).map(y => `<option value="${y}">${y} Draft</option>`),
-  ].join("");
+  const opts = [`<option value="${HUB.season}">${HUB.season} Draft</option>`];
+  if (years.length > 1) {
+    opts.push(`<option value="all">All-Time (${Math.min(...years)}–${HUB.season})</option>`);
+    for (const y of years.filter(y => y !== HUB.season)) {
+      opts.push(`<option value="${y}">${y} Draft</option>`);
+    }
+  }
+  sSel.innerHTML = opts.join("");
   oSel.innerHTML = `<option value="">All Managers</option>` + HUB.teams.map(t => `<option value="${t.owner}">${displayName(t.owner)}</option>`).join("");
 
   const draw = () => {
@@ -818,12 +1005,17 @@ function renderTradesTab() {
   if (!pack) return;
 
   const liveYr = pack.live ? pack.live.season : HUB.season;
+  const hasAllTime = Boolean(pack.all_time && pack.all_time.trade_count > 0);
   const btnLive = document.getElementById("btnLiveEra");
+  const btnAll = document.querySelector('#tradeEraGroup [data-era="all_time"]');
   if (btnLive) {
     btnLive.textContent = `${liveYr} Live Tracker (${pack.live ? pack.live.trade_count : 0})`;
   }
-  const btnAll = document.querySelector('#tradeEraGroup [data-era="all_time"]');
-  if (btnAll && pack.all_time) {
+  if (!hasAllTime) {
+    TRADE_ERA = "live";
+    if (btnAll) btnAll.style.display = "none";
+    if (btnLive) { btnLive.classList.add("active-gold"); }
+  } else if (btnAll && pack.all_time) {
     const yrs = pack.all_time.seasons || [];
     const span = yrs.length ? `${Math.min(...yrs)}–${Math.max(...yrs)}` : "2018–2025";
     btnAll.textContent = `All-Time Vault (${span})`;
@@ -969,10 +1161,14 @@ function renderTradesTab() {
       repEl.innerHTML = "";
     }
 
-    // 3. Filter & Sort Trades
+    // 3. Filter & Sort Trades (matches distinct co-owners too!)
     let list = (bucket.trades || []).filter(t => {
       if (yrFilter && String(t.season) !== yrFilter) return false;
-      if (ownFilter && t.owner_a !== ownFilter && t.owner_b !== ownFilter) return false;
+      if (ownFilter) {
+        const aList = t.a_owners || [t.owner_a];
+        const bList = t.b_owners || [t.owner_b];
+        if (!aList.includes(ownFilter) && !bList.includes(ownFilter)) return false;
+      }
       const ld = t[lens];
       if (cat === "playoffs") {
         return ld.win_playoff_vorp >= 10 || ld.tags.some(x => x.includes("Title") || x.includes("Finals") || x.includes("Playoff"));
@@ -1197,11 +1393,13 @@ function renderAnalyticsLabTab() {
     const plotH = H - padT - padB;
     const nW = Math.max(1, weeks.length);
 
+    const meta = getLeagueMeta();
+    const nTeams = Math.max(4, HUB.teams.length);
     let yMin = 0, yMax = 100, invertY = false;
     let yTicks = [0, 25, 50, 75, 100];
     if (TREND_METRIC === "rank") {
-      yMin = 1; yMax = 16; invertY = true;
-      yTicks = [1, 4, 7, 10, 13, 16];
+      yMin = 1; yMax = nTeams; invertY = true;
+      yTicks = [1, Math.round(nTeams * 0.25), meta.playoffTeams, Math.round(nTeams * 0.75), nTeams];
     } else if (TREND_METRIC === "pf") {
       const allPf = ownersSorted.flatMap(o => series[o].pf || []);
       yMin = 0;
@@ -1220,14 +1418,14 @@ function renderAnalyticsLabTab() {
     for (const tk of yTicks) {
       const y = yOf(tk).toFixed(1);
       const lbl = TREND_METRIC === "po" ? `${tk}%` : (TREND_METRIC === "rank" ? `#${tk}` : `${tk}`);
-      svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="rgba(143,161,188,0.16)" stroke-dasharray="${tk === 7 && TREND_METRIC === "rank" ? "5,4" : "2,3"}" />`;
+      svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="rgba(143,161,188,0.16)" stroke-dasharray="${tk === meta.playoffTeams && TREND_METRIC === "rank" ? "5,4" : "2,3"}" />`;
       svg += `<text x="${padL - 8}" y="${Number(y) + 4}" text-anchor="end" fill="#8fa1bc" font-size="11">${lbl}</text>`;
     }
-    // Cutline highlight for Power Rank (#7) or 50% Playoff Odds
+    // Cutline highlight for Power Rank
     if (TREND_METRIC === "rank") {
-      const yCut = yOf(7.5).toFixed(1);
+      const yCut = yOf(meta.playoffTeams + 0.5).toFixed(1);
       svg += `<line x1="${padL}" y1="${yCut}" x2="${W - padR}" y2="${yCut}" stroke="rgba(34,197,94,0.45)" stroke-dasharray="6,4" />`;
-      svg += `<text x="${W - padR - 4}" y="${Number(yCut) - 4}" text-anchor="end" fill="#22c55e" font-size="10" font-weight="700">Top 7 Playoff Cutline</text>`;
+      svg += `<text x="${W - padR - 4}" y="${Number(yCut) - 4}" text-anchor="end" fill="#22c55e" font-size="10" font-weight="700">Top ${meta.playoffTeams} Playoff Cutline</text>`;
     }
     // X axis week labels
     weeks.forEach((wk, i) => {
@@ -1305,11 +1503,14 @@ function renderAnalyticsLabTab() {
   const luckPack = an.luck || { seasons: [], by_season: {} };
   const lsSel = document.getElementById("luckSeasonSelect");
   const lSortSel = document.getElementById("luckSortSelect");
-  lsSel.innerHTML = [
-    `<option value="${HUB.season}">${HUB.season} Season (Live)</option>`,
-    `<option value="all">All-Time (2008–${HUB.season})</option>`,
-    ...(luckPack.seasons || []).filter(y => y !== HUB.season).map(y => `<option value="${y}">${y} Season</option>`),
-  ].join("");
+  const luckOpts = [`<option value="${HUB.season}">${HUB.season} Season (Live)</option>`];
+  if ((luckPack.seasons || []).length > 1) {
+    luckOpts.push(`<option value="all">All-Time (${getLeagueMeta().firstSeason}–${HUB.season})</option>`);
+    for (const y of (luckPack.seasons || []).filter(y => y !== HUB.season)) {
+      luckOpts.push(`<option value="${y}">${y} Season</option>`);
+    }
+  }
+  lsSel.innerHTML = luckOpts.join("");
 
   const drawLuckTable = () => {
     const key = lsSel.value;
@@ -1538,19 +1739,29 @@ function renderDossiersTab() {
 /* ---------- RENDER PODCAST & AWARDS ---------- */
 
 function renderPodcastAndAwards() {
-  document.getElementById("rssLink").href = HUB.podcast.rss_url;
   const pList = document.getElementById("podcastList");
-  const eps = HUB.podcast.episodes || [];
-  if (!eps.length) {
-    pList.innerHTML = `<p class="muted">No episodes published yet.</p>`;
+  const rssLink = document.getElementById("rssLink");
+  const eps = (HUB.podcast && HUB.podcast.episodes) || [];
+  const podCard = pList.closest(".card");
+  if (!eps.length && (!HUB.podcast || !HUB.podcast.rss_url)) {
+    if (podCard) podCard.style.display = "none";
+    const grid = podCard && podCard.parentElement;
+    if (grid) grid.style.gridTemplateColumns = "1fr";
+    const tabBtn = document.querySelector('.tab-btn[data-tab="podcast"]');
+    if (tabBtn) tabBtn.textContent = "Weekly Awards";
   } else {
-    pList.innerHTML = eps.map(e => `
-      <div class="ep-card">
-        <div class="ep-title">${e.title}</div>
-        <div class="ep-meta">${e.pub_date}${e.duration ? ` &bull; ${e.duration}` : ""}</div>
-        <audio controls preload="none" src="${e.audio_url}"></audio>
-      </div>
-    `).join("");
+    if (rssLink && HUB.podcast && HUB.podcast.rss_url) rssLink.href = HUB.podcast.rss_url;
+    if (!eps.length) {
+      pList.innerHTML = `<p class="muted">No episodes published yet.</p>`;
+    } else {
+      pList.innerHTML = eps.map(e => `
+        <div class="ep-card">
+          <div class="ep-title">${e.title}</div>
+          <div class="ep-meta">${e.pub_date}${e.duration ? ` &bull; ${e.duration}` : ""}</div>
+          <audio controls preload="none" src="${e.audio_url}"></audio>
+        </div>
+      `).join("");
+    }
   }
 
   const aw = HUB.awards;
@@ -1580,8 +1791,33 @@ async function init() {
   const resp = await fetch("hub_data.json", { cache: "no-store" });
   HUB = await resp.json();
 
+  // Apply dynamic league branding from `league_config` (works for BFL, JFF, and any future ESPN league!)
+  const meta = getLeagueMeta();
+  document.title = `${meta.name} Hub`;
+  const badgeEl = document.querySelector(".brand-badge");
+  if (badgeEl) badgeEl.textContent = meta.badge;
+  const h1El = document.querySelector(".brand h1");
+  if (h1El) h1El.textContent = `${meta.name} Hub`;
+  const yrSpan = HUB.season - meta.firstSeason + 1;
+  const histTxt = yrSpan > 1 ? `${yrSpan}-Year History` : `Inaugural Season`;
+  const scoreTxt = meta.scoringLabel ? ` • ${meta.scoringLabel}` : "";
   document.getElementById("hubSubtitle").textContent =
-    `Season ${HUB.season} • Live through Week ${HUB.completed_week} • 16 Teams • 18-Year History`;
+    `Season ${HUB.season} • Live through Week ${HUB.completed_week} • ${HUB.teams.length} Teams${scoreTxt} • ${histTxt}`;
+
+  const rulesEl = document.getElementById("rulesBlurb");
+  if (rulesEl && HUB.tiebreaker_rules) {
+    const tb = HUB.tiebreaker_rules;
+    const fieldDesc = meta.hasDivisions
+      ? `${tb.division_champions || meta.divOrder.length} Division Champions + ${tb.wild_cards || (meta.playoffTeams - meta.divOrder.length)} Wild Cards (${tb.first_round_bye || "Bye"}).`
+      : `Top ${meta.playoffTeams} of ${HUB.teams.length} Teams qualify (No Divisions • ${tb.first_round_bye || (meta.playoffByes > 0 ? `Top ${meta.playoffByes} earn 1st-Round Byes` : "No Byes")}).`;
+    rulesEl.innerHTML = `${fieldDesc} Official ${meta.badge} Tiebreakers: <strong>${tb.order || "Overall Record -> Points For (PF)"}</strong>.`;
+  }
+  const pmTitle = document.querySelector("#tab-playoff .hero-bar h2");
+  if (pmTitle) pmTitle.textContent = `Interactive ${meta.badge} Playoff Machine`;
+  const anTitle = document.querySelector("#tab-analytics .hero-bar h2");
+  if (anTitle) anTitle.textContent = `${meta.badge} Analytics Lab — Storylines, Schedule Luck & Roster DNA`;
+  const footerLeft = document.querySelector(".footer span:first-child");
+  if (footerLeft) footerLeft.innerHTML = `${meta.name} (Est. ${meta.firstSeason}) &bull; Hosted on Google Cloud Storage Free Tier`;
   document.getElementById("footerTimestamp").textContent =
     `Updated ${new Date(HUB.generated_at).toLocaleString()}`;
 

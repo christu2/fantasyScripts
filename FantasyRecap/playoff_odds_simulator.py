@@ -220,7 +220,7 @@ POS_ID_TO_NAME = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
 UNAVAILABLE_INJURY_STATUSES = {"OUT", "INJURY_RESERVE", "IR", "DOUBTFUL", "SUSPENSION"}
 
 
-def fetch_top_free_agent_baselines(season: int, week_num: int) -> dict:
+def fetch_top_free_agent_baselines(season: int, week_num: int, *, league_id: str = None) -> dict:
     """
     Fetches the best available healthy Free Agent projected score at each position
     (`QB`, `RB`, `WR`, `TE`, `K`, `D/ST`) for `week_num` from ESPN `kona_player_info`.
@@ -229,6 +229,7 @@ def fetch_top_free_agent_baselines(season: int, week_num: int) -> dict:
     baselines = dict(FA_REPLACEMENT_FALLBACK)
     if not (ESPN_S2 and ESPN_SWID):
         return baselines
+    eff_lid = str(league_id or ESPN_LEAGUE_ID)
     try:
         cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
         flt = {
@@ -241,7 +242,7 @@ def fetch_top_free_agent_baselines(season: int, week_num: int) -> dict:
         headers = {"x-fantasy-filter": json.dumps(flt)}
         url = (
             f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
-            f"/segments/0/leagues/{ESPN_LEAGUE_ID}?view=kona_player_info&scoringPeriodId={week_num}"
+            f"/segments/0/leagues/{eff_lid}?view=kona_player_info&scoringPeriodId={week_num}"
         )
         r = requests.get(url, cookies=cookies, headers=headers, timeout=8)
         if r.status_code != 200:
@@ -359,28 +360,54 @@ def build_future_week_optimal_projections(
     future_weeks: list,
     *,
     teams_by_id: dict = None,
+    league_id: str = None,
+    owner_canon_fn=None,
 ) -> dict:
     """
-    Fetches each future regular-season week (`future_weeks`, e.g. `[12, 13, 14]`) from ESPN,
+    Fetches each remaining regular-season week (`future_weeks`, e.g. `[12, 13, 14]`) from ESPN,
     computes every manager's optimal healthy projected starting lineup (+ best FA gap fills),
-    and returns `{week: {owner: {'optimal_proj', 'fa_fills', 'starters'}}}`.
+    AND automatically detects live in-progress games via ESPN's `totalPointsLive` &
+    `totalProjectedPointsLive` so mid-week deploys reflect real-time scores & tightened variance!
     """
+    eff_lid = str(league_id or ESPN_LEAGUE_ID)
     weekly_proj = {}
     for wk in future_weeks:
-        if wk < 1 or wk > 14:
+        if wk < 1 or wk > 18:
             continue
         try:
-            wk_data = fetch_espn_week_data(ESPN_LEAGUE_ID, str(season), wk, ESPN_S2, ESPN_SWID)
+            wk_data = fetch_espn_week_data(eff_lid, str(season), wk, ESPN_S2, ESPN_SWID)
             tmap = teams_by_id or parse_league_members_and_teams(wk_data)
-            fa_base = fetch_top_free_agent_baselines(season, wk)
+            fa_base = fetch_top_free_agent_baselines(season, wk, league_id=eff_lid)
+
+            # Extract live in-progress scores & live ESPN projections for week `wk`
+            live_by_tid = {}
+            any_live_this_wk = False
+            for g in wk_data.get("schedule", []):
+                if g.get("matchupPeriodId") != wk:
+                    continue
+                for side in ("away", "home"):
+                    s = g.get(side) or {}
+                    tid = s.get("teamId")
+                    if not tid:
+                        continue
+                    lp = float(s.get("totalPointsLive", 0.0) or s.get("totalPoints", 0.0) or 0.0)
+                    lproj = float(s.get("totalProjectedPointsLive", 0.0) or 0.0)
+                    if lp > 0.0:
+                        any_live_this_wk = True
+                    live_by_tid[tid] = {"live_pts": round(lp, 2), "live_proj": round(lproj, 2)}
+
             wk_out = {}
             for t in wk_data.get("teams", []):
                 tid = t.get("id")
                 if tid not in tmap:
                     continue
-                own = standardize_name(tmap[tid]["owner"])
-                if own.lower() == "rej hoxha":
-                    own = "rej hoxha"
+                raw_own = tmap[tid]["owner"]
+                if owner_canon_fn is not None:
+                    own = owner_canon_fn(raw_own)
+                else:
+                    own = standardize_name(raw_own)
+                    if own.lower() == "rej hoxha":
+                        own = "rej hoxha"
                 roster_players = []
                 for e in t.get("roster", {}).get("entries", []):
                     pl = e.get("playerPoolEntry", {}).get("player", {})
@@ -399,7 +426,23 @@ def build_future_week_optimal_projections(
                         "proj": proj,
                         "injury": pl.get("injuryStatus", "ACTIVE"),
                     })
-                wk_out[own] = solve_optimal_starting_lineup(roster_players, fa_baselines=fa_base)
+                sol = solve_optimal_starting_lineup(roster_players, fa_baselines=fa_base)
+                linfo = live_by_tid.get(tid, {"live_pts": 0.0, "live_proj": 0.0})
+                lp = linfo["live_pts"]
+                lproj = linfo["live_proj"]
+                if any_live_this_wk and lproj > 0.0:
+                    rem_frac = max(0.02, min(1.0, (lproj - lp) / max(1.0, lproj)))
+                    sol["is_live"] = True
+                    sol["live_pts"] = lp
+                    sol["live_proj"] = lproj
+                    sol["optimal_proj"] = lproj
+                    sol["rem_frac"] = round(rem_frac, 3)
+                else:
+                    sol["is_live"] = False
+                    sol["live_pts"] = 0.0
+                    sol["live_proj"] = 0.0
+                    sol["rem_frac"] = 1.0
+                wk_out[own] = sol
             if wk_out:
                 weekly_proj[wk] = wk_out
         except Exception:
@@ -472,17 +515,36 @@ def run_playoff_simulation(
         sim_h2h = dict(base_h2h)
         won_current_week = {}
         
-        # Simulate remaining games (using Week-specific Optimal Lineup projections when available!)
+        # Simulate remaining games (using Live Mid-Game scores+projections when in progress,
+        # or Week-specific Optimal Lineup projections for future weeks!)
         for g in remaining_schedule:
             a_own = g['away']
             h_own = g['home']
             wk_p = (weekly_projections or {}).get(g['week'], {})
-            a_opt = wk_p.get(a_own, {}).get('optimal_proj')
-            h_opt = wk_p.get(h_own, {}).get('optimal_proj')
-            a_mu = (0.75 * a_opt + 0.25 * team_power[a_own]['mean']) if a_opt else team_power[a_own]['mean']
-            h_mu = (0.75 * h_opt + 0.25 * team_power[h_own]['mean']) if h_opt else team_power[h_own]['mean']
-            a_score = random.gauss(a_mu, team_power[a_own]['std'])
-            h_score = random.gauss(h_mu, team_power[h_own]['std'])
+            a_info = wk_p.get(a_own, {})
+            h_info = wk_p.get(h_own, {})
+            if a_info.get('is_live') and a_info.get('live_proj', 0) > 0:
+                a_mu = float(a_info['live_proj'])
+                a_std = team_power[a_own]['std'] * math.sqrt(max(0.02, float(a_info.get('rem_frac', 1.0))))
+            elif a_info.get('optimal_proj'):
+                a_mu = 0.75 * float(a_info['optimal_proj']) + 0.25 * team_power[a_own]['mean']
+                a_std = team_power[a_own]['std']
+            else:
+                a_mu = team_power[a_own]['mean']
+                a_std = team_power[a_own]['std']
+
+            if h_info.get('is_live') and h_info.get('live_proj', 0) > 0:
+                h_mu = float(h_info['live_proj'])
+                h_std = team_power[h_own]['std'] * math.sqrt(max(0.02, float(h_info.get('rem_frac', 1.0))))
+            elif h_info.get('optimal_proj'):
+                h_mu = 0.75 * float(h_info['optimal_proj']) + 0.25 * team_power[h_own]['mean']
+                h_std = team_power[h_own]['std']
+            else:
+                h_mu = team_power[h_own]['mean']
+                h_std = team_power[h_own]['std']
+
+            a_score = random.gauss(a_mu, a_std)
+            h_score = random.gauss(h_mu, h_std)
             
             sim_records[a_own]['pf'] += a_score
             sim_records[h_own]['pf'] += h_score
