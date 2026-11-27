@@ -236,10 +236,17 @@ function computeStandingsAndSeeding(records, h2h, divisions) {
   return { divTables, sortedChamps, sortedWc, fullSeeding };
 }
 
+function getLockedScorePair(g, winner, power) {
+  const mA = getProjectedMeanForWeek(g.away, g.week, power);
+  const mH = getProjectedMeanForWeek(g.home, g.week, power);
+  const mid = (mA + mH) / 2;
+  if (winner === g.away) return mA >= mH ? [mA + 2.0, mH - 2.0] : [mid + 3.5, mid - 3.5];
+  return mH >= mA ? [mA - 2.0, mH + 2.0] : [mid - 3.5, mid + 3.5];
+}
+
 function buildStateWithLockedPicks() {
   const records = {};
   const h2h = {};
-  const divRec = {};
   const ownerDiv = {};
   const power = {};
 
@@ -266,37 +273,86 @@ function buildStateWithLockedPicks() {
     }
   };
 
+  const meta = getLeagueMeta();
+  const doneByWk = {};
   for (const g of HUB.completed_games) {
     applyGame(g.away, g.home, g.away_score, g.home_score);
+    if (meta.usesLeagueMedian) {
+      if (!doneByWk[g.week]) doneByWk[g.week] = [];
+      doneByWk[g.week].push([g.away, g.away_score], [g.home, g.home_score]);
+    }
+  }
+  if (meta.usesLeagueMedian) {
+    for (const wk of Object.keys(doneByWk)) {
+      const arr = doneByWk[wk].slice().sort((a, b) => a[1] - b[1]);
+      if (arr.length < 2) continue;
+      const mid = Math.floor(arr.length / 2);
+      const med = arr.length % 2 ? arr[mid][1] : (arr[mid - 1][1] + arr[mid][1]) / 2;
+      for (const [own, sc] of arr) {
+        if (sc >= med) records[own].wins += 1;
+        else records[own].losses += 1;
+      }
+    }
   }
 
   const unlockedGames = [];
+  const appliedScores = {};
   for (const g of HUB.remaining_schedule) {
     const k = gameKey(g);
     const custom = CUSTOM_SCORES[k];
     const lockedWinner = LOCKED_PICKS[k];
     if (custom && Number.isFinite(custom.away) && Number.isFinite(custom.home)) {
       applyGame(g.away, g.home, custom.away, custom.home);
+      appliedScores[k] = [custom.away, custom.home];
     } else if (lockedWinner) {
-      // Use the team's actual Week-W projected mean (+small winner margin) for realistic PF tiebreakers
-      const mA = getProjectedMeanForWeek(g.away, g.week, power);
-      const mH = getProjectedMeanForWeek(g.home, g.week, power);
-      const hi = Math.max(mA, mH) + 3.5;
-      const lo = Math.min(mA, mH) - 3.5;
-      if (lockedWinner === g.away) applyGame(g.away, g.home, hi, lo);
-      else applyGame(g.away, g.home, lo, hi);
+      const [aPts, hPts] = getLockedScorePair(g, lockedWinner, power);
+      applyGame(g.away, g.home, aPts, hPts);
+      appliedScores[k] = [aPts, hPts];
     } else {
       unlockedGames.push(g);
     }
   }
 
-  return { records, h2h, ownerDiv, power, unlockedGames };
+  return { records, h2h, ownerDiv, power, unlockedGames, appliedScores };
 }
 
 let ROOTING_OWNER = "Nick Christus";
 
-function runBrowserMonteCarlo(nSims = 4000) {
-  const { records, h2h, power, unlockedGames } = buildStateWithLockedPicks();
+function computeSeedingFastWithDivCache(records, h2h, divisions, baseDivTables, dirtyDivs) {
+  const meta = getLeagueMeta();
+  if (!meta.hasDivisions || !baseDivTables) {
+    return computeStandingsAndSeeding(records, h2h, divisions).fullSeeding;
+  }
+  const usePfOnly = meta.tiebreakerRule === "TOTAL_POINTS_SCORED";
+  const rankGroup = (list, isDiv) => {
+    const byWins = {};
+    for (const m of list) {
+      const w = records[m].wins;
+      if (!byWins[w]) byWins[w] = [];
+      byWins[w].push(m);
+    }
+    const out = [];
+    for (const w of Object.keys(byWins).map(Number).sort((a, b) => b - a)) {
+      if (usePfOnly) out.push(...byWins[w].slice().sort((a, b) => records[b].pf - records[a].pf));
+      else if (isDiv) out.push(...resolveDivisionTie(byWins[w], records, h2h));
+      else out.push(...resolveWildcardTie(byWins[w], records, h2h));
+    }
+    return out;
+  };
+  const divChamps = [];
+  const wcPool = [];
+  for (const div of meta.divOrder) {
+    const ordered = dirtyDivs.has(div) ? rankGroup(divisions[div] || [], true) : baseDivTables[div];
+    if (ordered && ordered.length) {
+      divChamps.push(ordered[0]);
+      for (let j = 1; j < ordered.length; j++) wcPool.push(ordered[j]);
+    }
+  }
+  return [...rankGroup(divChamps, false), ...rankGroup(wcPool, false)];
+}
+
+function runBrowserMonteCarlo(nSims = 4000, rootingOwner = null) {
+  const { records, h2h, ownerDiv, power, unlockedGames, appliedScores } = buildStateWithLockedPicks();
   const owners = HUB.teams.map(t => t.owner);
   const poCount = {}, divCount = {}, byeCount = {}, finalsCount = {}, titleCount = {};
   for (const o of owners) {
@@ -310,37 +366,33 @@ function runBrowserMonteCarlo(nSims = 4000) {
   const unlockedKeys = new Set(unlockedGames.map(g => gameKey(g)));
   const allRem = HUB.remaining_schedule;
 
-  // Conditional outcome counters per unlocked game for instant exact Rooting Guide
+  // Paired Counterfactual Rooting Guide counters (100% noise-free & guaranteed exact match to clicking!)
+  const meta = getLeagueMeta();
   const cond = {};
-  for (const g of unlockedGames) {
-    const k = gameKey(g);
-    cond[k] = {
-      game: g,
-      aTrials: 0, hTrials: 0,
-      aPo: {}, hPo: {}, aBye: {}, hBye: {}, aTitle: {}, hTitle: {},
-    };
-    for (const o of owners) {
-      cond[k].aPo[o] = 0; cond[k].hPo[o] = 0;
-      cond[k].aBye[o] = 0; cond[k].hBye[o] = 0;
-      cond[k].aTitle[o] = 0; cond[k].hTitle[o] = 0;
+  const lockedPairs = {};
+  if (rootingOwner) {
+    for (const g of allRem) {
+      const k = gameKey(g);
+      cond[k] = { game: g, trials: 0, aPo: 0, hPo: 0, aBye: 0, hBye: 0 };
+      lockedPairs[k] = {
+        away: getLockedScorePair(g, g.away, power),
+        home: getLockedScorePair(g, g.home, power),
+      };
     }
   }
 
-  // Always run nSims for Title % even when regular season is 100% locked!
-  const meta = getLeagueMeta();
   const iters = nSims;
   const regLocked = unlockedGames.length === 0;
   const detSeeding = regLocked ? computeStandingsAndSeeding(records, h2h, HUB.divisions) : null;
 
   for (let i = 0; i < iters; i++) {
-    let sortedChamps, fullSeeding;
-    const gameWinners = [];
+    let sortedChamps, fullSeeding, divTables;
+    const simRec = {};
+    for (const o of owners) simRec[o] = { wins: records[o].wins, losses: records[o].losses, pf: records[o].pf };
+    const simH2H = Object.assign({}, h2h);
+    const drawn = {};
 
     if (!regLocked) {
-      const simRec = {};
-      for (const o of owners) simRec[o] = { wins: records[o].wins, losses: records[o].losses, pf: records[o].pf };
-      const simH2H = Object.assign({}, h2h);
-
       const wkScores = meta.usesLeagueMedian ? {} : null;
       for (const g of allRem) {
         const zA = gaussianRand(rng);
@@ -351,6 +403,7 @@ function runBrowserMonteCarlo(nSims = 4000) {
         const hMu = getProjectedMeanForWeek(g.home, g.week, power);
         const aPts = aMu + zA * getProjectedStdForWeek(g.away, g.week, power);
         const hPts = hMu + zH * getProjectedStdForWeek(g.home, g.week, power);
+        drawn[k] = [aPts, hPts];
         simRec[g.away].pf += aPts;
         simRec[g.home].pf += hPts;
         if (wkScores) {
@@ -360,11 +413,9 @@ function runBrowserMonteCarlo(nSims = 4000) {
         if (aPts >= hPts) {
           simRec[g.away].wins += 1; simRec[g.home].losses += 1;
           simH2H[`${g.away}|${g.home}`] = (simH2H[`${g.away}|${g.home}`] || 0) + 1;
-          gameWinners.push([k, true]);
         } else {
           simRec[g.home].wins += 1; simRec[g.away].losses += 1;
           simH2H[`${g.home}|${g.away}`] = (simH2H[`${g.home}|${g.away}`] || 0) + 1;
-          gameWinners.push([k, false]);
         }
       }
       if (wkScores) {
@@ -378,9 +429,62 @@ function runBrowserMonteCarlo(nSims = 4000) {
           }
         }
       }
-      ({ sortedChamps, fullSeeding } = computeStandingsAndSeeding(simRec, simH2H, HUB.divisions));
+      ({ divTables, sortedChamps, fullSeeding } = computeStandingsAndSeeding(simRec, simH2H, HUB.divisions));
     } else {
-      ({ sortedChamps, fullSeeding } = detSeeding);
+      ({ divTables, sortedChamps, fullSeeding } = detSeeding);
+    }
+
+    // Paired Counterfactual Rooting Evaluation: flip each remaining game (unlocked OR locked!)
+    // on this EXACT simulated universe so Rooting Guide "if X wins" matches clicking X to 0.0%!
+    if (rootingOwner && (!regLocked || i === 0)) {
+      const addWeight = regLocked ? iters : 1;
+      for (const g of allRem) {
+        const k = gameKey(g);
+        const prev = unlockedKeys.has(k) ? drawn[k] : appliedScores[k];
+        if (!prev) continue;
+        const a = g.away, h = g.home;
+        const pA = prev[0], pH = prev[1];
+        const prevAWon = pA >= pH;
+        const dirty = new Set([ownerDiv[a], ownerDiv[h]]);
+        const c = cond[k];
+        c.trials += addWeight;
+
+        // 1. Revert g's current outcome
+        simRec[a].pf -= pA; simRec[h].pf -= pH;
+        if (prevAWon) { simRec[a].wins -= 1; simRec[h].losses -= 1; simH2H[`${a}|${h}`] -= 1; }
+        else { simRec[h].wins -= 1; simRec[a].losses -= 1; simH2H[`${h}|${a}`] -= 1; }
+
+        // 2. Evaluate Away locked win
+        const [la1, lh1] = lockedPairs[k].away;
+        simRec[a].pf += la1; simRec[h].pf += lh1;
+        simRec[a].wins += 1; simRec[h].losses += 1;
+        simH2H[`${a}|${h}`] = (simH2H[`${a}|${h}`] || 0) + 1;
+        const seedA = computeSeedingFastWithDivCache(simRec, simH2H, HUB.divisions, divTables, dirty);
+        const idxA = seedA.indexOf(rootingOwner);
+        if (idxA >= 0 && idxA < meta.playoffTeams) c.aPo += addWeight;
+        if (idxA >= 0 && idxA < meta.playoffByes) c.aBye += addWeight;
+        simRec[a].pf -= la1; simRec[h].pf -= lh1;
+        simRec[a].wins -= 1; simRec[h].losses -= 1;
+        simH2H[`${a}|${h}`] -= 1;
+
+        // 3. Evaluate Home locked win
+        const [la2, lh2] = lockedPairs[k].home;
+        simRec[a].pf += la2; simRec[h].pf += lh2;
+        simRec[h].wins += 1; simRec[a].losses += 1;
+        simH2H[`${h}|${a}`] = (simH2H[`${h}|${a}`] || 0) + 1;
+        const seedH = computeSeedingFastWithDivCache(simRec, simH2H, HUB.divisions, divTables, dirty);
+        const idxH = seedH.indexOf(rootingOwner);
+        if (idxH >= 0 && idxH < meta.playoffTeams) c.hPo += addWeight;
+        if (idxH >= 0 && idxH < meta.playoffByes) c.hBye += addWeight;
+        simRec[a].pf -= la2; simRec[h].pf -= lh2;
+        simRec[h].wins -= 1; simRec[a].losses -= 1;
+        simH2H[`${h}|${a}`] -= 1;
+
+        // 4. Restore g's original outcome
+        simRec[a].pf += pA; simRec[h].pf += pH;
+        if (prevAWon) { simRec[a].wins += 1; simRec[h].losses += 1; simH2H[`${a}|${h}`] += 1; }
+        else { simRec[h].wins += 1; simRec[a].losses += 1; simH2H[`${h}|${a}`] += 1; }
+      }
     }
 
     const poField = fullSeeding.slice(0, meta.playoffTeams);
@@ -389,7 +493,7 @@ function runBrowserMonteCarlo(nSims = 4000) {
     for (const bo of byeOwners) byeCount[bo] += 1;
     for (const pfTeam of poField) poCount[pfTeam] += 1;
 
-    // Rule-aware Playoff Bracket Simulation (supports 4/6/7/8 teams, 0/1/2 Byes, Fixed vs Re-Seed, and 1-Wk or 2-Wk Rounds!)
+    // Rule-aware Playoff Bracket Simulation (supports 4/5/6/7/8 teams, 0/1/2 Byes, Fixed vs Re-Seed, and 1-Wk or 2-Wk Rounds!)
     const roundMult = meta.playoffRoundWeeks;
     const roundStdMult = Math.sqrt(roundMult);
     const simMatch = (tA, tB) => {
@@ -400,16 +504,13 @@ function runBrowserMonteCarlo(nSims = 4000) {
 
     let semiW1, semiW2;
     if (meta.playoffTeams === 6) {
-      // 6-team bracket: #1 & #2 Byes; R1: #3v#6, #4v#5
       const w36 = simMatch(poField[2], poField[5]) === poField[2] ? [3, poField[2]] : [6, poField[5]];
       const w45 = simMatch(poField[3], poField[4]) === poField[3] ? [4, poField[3]] : [5, poField[4]];
       if (meta.playoffReseed) {
-        // Dynamic re-seeding: #1 plays lowest surviving seed, #2 plays higher survivor
         const surv = [w36, w45].sort((a, b) => a[0] - b[0]);
         semiW1 = simMatch(poField[0], surv[1][1]);
         semiW2 = simMatch(poField[1], surv[0][1]);
       } else {
-        // Fixed ESPN default bracket: #1 always plays #4/#5 winner; #2 always plays #3/#6 winner
         semiW1 = simMatch(poField[0], w45[1]);
         semiW2 = simMatch(poField[1], w36[1]);
       }
@@ -423,8 +524,11 @@ function runBrowserMonteCarlo(nSims = 4000) {
       const q4 = simMatch(poField[2], poField[5]);
       semiW1 = simMatch(q1, q2);
       semiW2 = simMatch(q3, q4);
+    } else if (meta.playoffTeams === 5) {
+      const w45 = simMatch(poField[3], poField[4]);
+      semiW1 = simMatch(poField[0], w45);
+      semiW2 = simMatch(poField[1], poField[2]);
     } else {
-      // 7-team bracket (BFL): #1 Bye; R1: #2v#7, #3v#6, #4v#5
       const w27 = simMatch(poField[1], poField[6]) === poField[1] ? [2, poField[1]] : [7, poField[6]];
       const w36 = simMatch(poField[2], poField[5]) === poField[2] ? [3, poField[2]] : [6, poField[5]];
       const w45 = simMatch(poField[3], poField[4]) === poField[3] ? [4, poField[3]] : [5, poField[4]];
@@ -442,22 +546,6 @@ function runBrowserMonteCarlo(nSims = 4000) {
     finalsCount[semiW2] += 1;
     const champ = simMatch(semiW1, semiW2);
     titleCount[champ] += 1;
-
-    // Accumulate conditional stats for Rooting Guide
-    for (const [k, awayWon] of gameWinners) {
-      const c = cond[k];
-      if (awayWon) {
-        c.aTrials += 1;
-        for (const o of poField) c.aPo[o] += 1;
-        for (const bo of byeOwners) c.aBye[bo] += 1;
-        c.aTitle[champ] += 1;
-      } else {
-        c.hTrials += 1;
-        for (const o of poField) c.hPo[o] += 1;
-        for (const bo of byeOwners) c.hBye[bo] += 1;
-        c.hTitle[champ] += 1;
-      }
-    }
   }
 
   const odds = {};
@@ -506,11 +594,6 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
   }
 
   const body = document.getElementById("rootingGuideBody");
-  if (unlockedCount === 0) {
-    body.innerHTML = `<p class="muted small">All regular-season games are locked. <strong>${escDisplayName(owner)}</strong> has <strong>${esc(o.po)}%</strong> Playoff odds, <strong>${esc(o.finals)}%</strong> Super Bowl odds, and <strong>${esc(o.title)}%</strong> Championship odds.</p>`;
-    return;
-  }
-
   // If manager has already clinched >= 98% playoffs, evaluate leverage on #1 Bye % instead of PO %!
   const useBye = poNum >= 98.0;
   const metricLbl = useBye ? "#1 Bye" : "Playoff";
@@ -519,47 +602,66 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
   const helpGames = [];
   for (const k of Object.keys(cond)) {
     const c = cond[k];
-    if (c.aTrials < 15 || c.hTrials < 15) continue;
+    if (!c.trials) continue;
     const g = c.game;
-    const pAway = ((useBye ? c.aBye[owner] : c.aPo[owner]) / c.aTrials) * 100.0;
-    const pHome = ((useBye ? c.hBye[owner] : c.hPo[owner]) / c.hTrials) * 100.0;
+    const pAway = ((useBye ? c.aBye : c.aPo) / c.trials) * 100.0;
+    const pHome = ((useBye ? c.hBye : c.hPo) / c.trials) * 100.0;
     const swing = Math.abs(pAway - pHome);
     const rootFor = pAway >= pHome ? g.away : g.home;
     const rootAgainst = pAway >= pHome ? g.home : g.away;
     const hiP = Math.max(pAway, pHome);
     const loP = Math.min(pAway, pHome);
-    const item = { week: g.week, away: g.away, home: g.home, rootFor, rootAgainst, hiP, loP, swing };
+    const custom = CUSTOM_SCORES[k];
+    const picked = custom ? (custom.away >= custom.home ? g.away : g.home) : (LOCKED_PICKS[k] || "");
+    const item = { key: k, week: g.week, away: g.away, home: g.home, pAway, pHome, rootFor, rootAgainst, hiP, loP, swing, picked };
     if (g.away === owner || g.home === owner) ownGames.push(item);
-    else if (swing >= 0.8) helpGames.push(item);
+    else if (swing >= 0.8 || (picked && swing >= 0.3)) helpGames.push(item);
   }
   ownGames.sort((a, b) => a.week - b.week);
   helpGames.sort((a, b) => b.swing - a.swing);
 
+  // Keep top 5 highest-leverage outside games + preserve any user-locked outside games so they never vanish!
+  const topHelp = helpGames.slice(0, 5);
+  const topKeys = new Set(topHelp.map(x => x.key));
+  for (const x of helpGames.slice(5)) {
+    if (x.picked && !topKeys.has(x.key)) topHelp.push(x);
+  }
+
   const ownHtml = ownGames.length
     ? ownGames.map(x => {
         const opp = x.away === owner ? x.home : x.away;
+        const winP = x.away === owner ? x.pAway : x.pHome;
+        const lossP = x.away === owner ? x.pHome : x.pAway;
+        let badge = `<span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}% Swing</span>`;
+        if (x.picked === owner) badge = `<span class="swing-badge picked">&#10003; Win Locked</span>`;
+        else if (x.picked) badge = `<span class="swing-badge against">&#10007; Loss Locked</span>`;
         return `
-          <div class="rooting-item">
+          <div class="rooting-item clickable" data-rkey="${esc(x.key)}" data-rwin="${esc(owner)}" title="Click to toggle locking ${escShortName(owner)} win">
             <div>
               <strong>Wk ${x.week} vs ${escDisplayName(opp)}</strong>
-              <span class="tie-note">Win &rarr; ${x.hiP.toFixed(1)}% &bull; Loss &rarr; ${x.loP.toFixed(1)}% ${metricLbl}</span>
+              <span class="tie-note">Win &rarr; ${winP.toFixed(1)}% &bull; Loss &rarr; ${lossP.toFixed(1)}% ${metricLbl}</span>
             </div>
-            <span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}% Swing</span>
+            ${badge}
           </div>
         `;
       }).join("")
-    : `<p class="muted small">All of ${escShortName(owner)}'s remaining games are locked.</p>`;
+    : `<p class="muted small">No regular-season games remaining for ${escShortName(owner)}.</p>`;
 
-  const helpHtml = helpGames.length
-    ? helpGames.slice(0, 5).map(x => `
-        <div class="rooting-item">
-          <div>
-            <strong>Wk ${x.week}: Root for ${escShortName(x.rootFor)}</strong> over ${escShortName(x.rootAgainst)}
-            <span class="tie-note">${metricLbl}: ${x.hiP.toFixed(1)}% if ${escShortName(x.rootFor)} wins vs ${x.loP.toFixed(1)}%</span>
+  const helpHtml = topHelp.length
+    ? topHelp.map(x => {
+        let badge = `<span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}%</span>`;
+        if (x.picked === x.rootFor) badge = `<span class="swing-badge picked">&#10003; Picked (+${x.swing.toFixed(1)}%)</span>`;
+        else if (x.picked === x.rootAgainst) badge = `<span class="swing-badge against">&#10007; Against (-${x.swing.toFixed(1)}%)</span>`;
+        return `
+          <div class="rooting-item clickable" data-rkey="${esc(x.key)}" data-rwin="${esc(x.rootFor)}" title="Click to toggle locking ${escShortName(x.rootFor)} over ${escShortName(x.rootAgainst)}">
+            <div>
+              <strong>Wk ${x.week}: Root for ${escShortName(x.rootFor)}</strong> over ${escShortName(x.rootAgainst)}
+              <span class="tie-note">${metricLbl}: ${x.hiP.toFixed(1)}% if ${escShortName(x.rootFor)} wins vs ${x.loP.toFixed(1)}%</span>
+            </div>
+            ${badge}
           </div>
-          <span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}%</span>
-        </div>
-      `).join("")
+        `;
+      }).join("")
     : `<p class="muted small">No high-leverage outside games remaining for ${escShortName(owner)} (${metricLbl} odds are largely self-determined).</p>`;
 
   body.innerHTML = `
@@ -569,11 +671,22 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
         ${ownHtml}
       </div>
       <div class="rooting-box">
-        <h4>Biggest Outside Help (Who to Root For)</h4>
+        <h4>Biggest Outside Help (Click to Lock Pick)</h4>
         ${helpHtml}
       </div>
     </div>
   `;
+
+  body.querySelectorAll(".rooting-item[data-rkey]").forEach(el => {
+    el.addEventListener("click", () => {
+      const k = el.dataset.rkey;
+      const w = el.dataset.rwin;
+      delete CUSTOM_SCORES[k];
+      if (LOCKED_PICKS[k] === w) delete LOCKED_PICKS[k];
+      else LOCKED_PICKS[k] = w;
+      renderPlayoffMachine();
+    });
+  });
 }
 
 /* ---------- RENDER PLAYOFF MACHINE ---------- */
@@ -583,7 +696,7 @@ function renderPlayoffMachine() {
   if (!HUB.teams.some(t => t.owner === ROOTING_OWNER)) {
     ROOTING_OWNER = HUB.teams[0].owner;
   }
-  const { records, h2h, odds, cond, currentSeeding, unlockedCount, iters } = runBrowserMonteCarlo(4000);
+  const { records, h2h, odds, cond, currentSeeding, unlockedCount, iters } = runBrowserMonteCarlo(4000, ROOTING_OWNER);
   const lockedCount = Object.keys(LOCKED_PICKS).length;
   const totalRem = HUB.remaining_schedule.length;
   const teamMap = Object.fromEntries(HUB.teams.map(t => [t.owner, t]));

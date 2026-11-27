@@ -252,6 +252,14 @@ class TestWebHubBrowserE2E(unittest.TestCase):
                     after_unclick_html = page.locator("#playoffTable tbody").inner_html()
                     self.assertEqual(before_html, after_unclick_html)
 
+                    # 2b. Verify Rooting Guide clickable pick stays visible (never disappears!) with ✓ badge
+                    root_item = page.locator("#rootingGuideBody .rooting-item.clickable").first
+                    root_item.click()
+                    self.assertIn("Locked", page.locator("#rootingGuideBody").inner_text())
+                    # Click again to unlock and verify exact restoration
+                    page.locator("#rootingGuideBody .rooting-item.clickable").first.click()
+                    self.assertEqual(before_html, page.locator("#playoffTable tbody").inner_html())
+
                     # 3. Click through ALL remaining 6 tabs and verify multi-format features
                     for tab in ("analytics", "dossiers", "history", "drafts", "trades", "podcast"):
                         page.locator(f'.tab-btn[data-tab="{tab}"]').click()
