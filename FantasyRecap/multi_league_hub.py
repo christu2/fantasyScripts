@@ -1133,10 +1133,53 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     return hub_data, out_path
 
 
-def deploy_multi_league_to_gcs(slug: str, data_path: Path, bucket_name: str, project_id: str = "bfl-fantasy") -> str:
-    """Uploads shared web_hub assets + league-specific hub_data.json to `gs://<bucket>/<slug>/`."""
+def render_league_index_html(hub_data: dict, out_dir: Path) -> Path:
+    """
+    Renders a league-branded `index.html` from the shared template so link-preview
+    scrapers (iMessage, Discord, Slack — which do not run JS) show the exact league
+    name, badge, and OpenGraph metadata instead of 'BFL League Hub'.
+    """
+    import html as _html
+
+    cfg = hub_data.get("league_config", {})
+    tb = hub_data.get("tiebreaker_rules", {})
+    name = _html.escape(cfg.get("name", "Fantasy League"))
+    badge = _html.escape(cfg.get("badge", "FFL"))
+    n_teams = len(hub_data.get("teams", []))
+    scoring = _html.escape(cfg.get("scoring_label", ""))
+    po_teams = tb.get("playoff_teams", 6)
+    title_txt = f"{name} Hub — {badge} Fantasy Football"
+    desc_txt = (
+        f"{n_teams}-Team{(' ' + scoring) if scoring else ''} Fantasy Hub: "
+        f"Live {po_teams}-Team Playoff Machine, Schedule Luck, Positional VORP Heatmap, Draft Hall &amp; Trade Vault."
+    )
+
+    tpl = (WEB_HUB_DIR / "index.html").read_text(encoding="utf-8")
+    tpl = re.sub(r"<title>.*?</title>", f"<title>{title_txt}</title>", tpl, count=1)
+    tpl = re.sub(r'property="og:title" content=".*?"', f'property="og:title" content="{title_txt}"', tpl, count=1)
+    tpl = re.sub(r'property="og:description" content=".*?"', f'property="og:description" content="{desc_txt}"', tpl, count=1)
+    tpl = tpl.replace('<span class="brand-badge">BFL</span>', f'<span class="brand-badge">{badge}</span>', 1)
+    tpl = tpl.replace("<h1>Beasts Football League Hub</h1>", f"<h1>{name} Hub</h1>", 1)
+
+    idx_path = out_dir / "index.html"
+    idx_path.write_text(tpl, encoding="utf-8")
+    return idx_path
+
+
+def deploy_multi_league_to_gcs(
+    slug: str,
+    data_path: Path,
+    bucket_name: str,
+    project_id: str = "bfl-fantasy",
+    hub_data: Optional[dict] = None,
+) -> str:
+    """Uploads league-branded `index.html`, shared CSS/JS, and `hub_data.json` to `gs://<bucket>/<slug>/`."""
+    if hub_data is None:
+        hub_data = json.loads(data_path.read_text(encoding="utf-8"))
+    idx_path = render_league_index_html(hub_data, data_path.parent)
+
     uploads = [
-        (WEB_HUB_DIR / "index.html", "index.html", "text/html; charset=utf-8", "no-cache, max-age=60"),
+        (idx_path, "index.html", "text/html; charset=utf-8", "no-cache, max-age=60"),
         (WEB_HUB_DIR / "styles.css", "styles.css", "text/css; charset=utf-8", "public, max-age=300"),
         (WEB_HUB_DIR / "app.js", "app.js", "application/javascript; charset=utf-8", "no-cache, max-age=60"),
         (data_path, "hub_data.json", "application/json; charset=utf-8", "no-cache, max-age=60"),
@@ -1166,9 +1209,9 @@ def main():
     parser.add_argument("--gcp-project", type=str, default="bfl-fantasy")
     args = parser.parse_args()
 
-    _, data_path = build_generic_hub_data(args.league_id, args.slug, args.season, force_week=args.week)
+    hub_data, data_path = build_generic_hub_data(args.league_id, args.slug, args.season, force_week=args.week)
     if args.deploy_gcs:
-        deploy_multi_league_to_gcs(args.slug, data_path, args.deploy_gcs, project_id=args.gcp_project)
+        deploy_multi_league_to_gcs(args.slug, data_path, args.deploy_gcs, project_id=args.gcp_project, hub_data=hub_data)
 
 
 if __name__ == "__main__":
