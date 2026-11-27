@@ -42,6 +42,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from FantasyRecap.core.manifest import dedupe_co_owners, extract_credited_owners, get_espn_credentials, load_project_env
+from FantasyRecap.core.security import validate_league_id, validate_slug
 load_project_env()
 
 from FantasyRecap.bfl_history_db import init_db
@@ -90,7 +91,7 @@ def make_league_badge(league_name: str, slug: str) -> str:
 
 
 def compute_dynamic_replacement_ranks(team_count: int, roster_slots: Dict[str, int]) -> Dict[str, int]:
-    """Scales VORP waiver-wire replacement ranks cleanly to ANY league size & roster format."""
+    """Scales VORP waiver-wire replacement ranks cleanly to ANY league size & roster format (incl. Superflex & IDP)."""
     n = max(6, int(team_count))
     qb = max(1, int(roster_slots.get("QB", 1)))
     rb = max(1, int(roster_slots.get("RB", 2)))
@@ -98,18 +99,138 @@ def compute_dynamic_replacement_ranks(team_count: int, roster_slots: Dict[str, i
     te = max(1, int(roster_slots.get("TE", 1)))
     flx = max(0, int(roster_slots.get("FLEX", 1)))
     op = max(0, int(roster_slots.get("OP", 0)))  # Superflex
-    return {
+    ranks = {
         "QB": round(n * (qb + 0.75 * op)),
         "RB": round(n * (rb + 0.25 * flx)),
         "WR": round(n * (wr + 0.375 * flx)),
         "TE": round(n * te),
-        "K": n,
-        "D/ST": n,
+        "K": max(n, round(n * max(1, int(roster_slots.get("K", 1))))),
+        "D/ST": max(n, round(n * max(1, int(roster_slots.get("D/ST", 1))))),
     }
+    for idp_pos in ("DL", "LB", "DB"):
+        cnt = int(roster_slots.get(idp_pos, 0))
+        if cnt > 0:
+            ranks[idp_pos] = round(n * cnt)
+    return ranks
+
+
+def score_draft_picks_multi_format(
+    dp_rows: List[tuple],
+    repl_ranks: Dict[str, int],
+    team_count: int,
+    *,
+    draft_type: str = "SNAKE",
+) -> Tuple[dict, List[int]]:
+    """
+    Scores Draft Hall steals & busts across Snake, Auction, Keeper, and Dynasty formats:
+      - Excludes keeper picks (`is_keeper == 1`) from redraft/auction draft-value rankings
+        so late-round keepers do not skew steals.
+      - For Auction leagues (`draft_type == "AUCTION"` or positive `bid_amount` values),
+        computes Expected VORP from the Auction `$` Spend curve (steal = cheap `$` high VORP;
+        bust = expensive `$` dud).
+      - For Snake drafts, computes position-normalized Draft VORP (`actual_vorp - expected_vorp[pos_draft_rank]`).
+    Each `dp_rows` tuple is:
+      `(season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, is_keeper)`
+    """
+    valid_rows = [r for r in dp_rows if len(r) >= 9]
+    is_auction = str(draft_type).upper() == "AUCTION" or any(
+        int(r[9] or 0) > 0 for r in valid_rows if len(r) >= 10
+    )
+
+    # Replacement baseline per (season, pos)
+    curves = defaultdict(list)
+    for r in valid_rows:
+        curves[(int(r[0]), r[5])].append(float(r[8] or 0.0))
+    repl_pts_map = {}
+    for k, vals in curves.items():
+        vals.sort(reverse=True)
+        r_idx = min(repl_ranks.get(k[1], team_count) - 1, len(vals) - 1)
+        repl_pts_map[k] = vals[r_idx] if vals else 0.0
+
+    # Auction expected-VORP curve by spend rank within each season (overall across skill positions)
+    auction_vorp_curves = defaultdict(list)
+    if is_auction:
+        for r in valid_rows:
+            yr, pos, pts = int(r[0]), r[5], float(r[8] or 0.0)
+            is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
+            if is_keeper:
+                continue
+            rp = repl_pts_map.get((yr, pos), 0.0)
+            auction_vorp_curves[yr].append(max(0.0, pts - rp))
+        for yr in auction_vorp_curves:
+            auction_vorp_curves[yr].sort(reverse=True)
+
+    # Compute spend rank per season for Auction
+    spend_rank_map = {}
+    if is_auction:
+        by_yr_bid = defaultdict(list)
+        for idx, r in enumerate(valid_rows):
+            is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
+            if is_keeper:
+                continue
+            bid = int(r[9] or 0) if len(r) >= 10 else 0
+            by_yr_bid[int(r[0])].append((bid, -int(r[1]), idx))
+        for yr, items in by_yr_bid.items():
+            items.sort(reverse=True)
+            for rank_i, (_, _, row_idx) in enumerate(items, 1):
+                spend_rank_map[row_idx] = rank_i
+
+    scored_dp = []
+    for idx, r in enumerate(valid_rows):
+        yr, pick, rnd = int(r[0]), int(r[1]), int(r[2])
+        own, pname, pos = r[3], r[4], r[5]
+        pdr, pfr, pts = int(r[6] or 0), int(r[7] or 0), float(r[8] or 0.0)
+        bid = int(r[9] or 0) if len(r) >= 10 else 0
+        is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
+        if is_keeper:
+            continue
+        c = curves.get((yr, pos), [])
+        if not c or pdr <= 0:
+            continue
+        rp = repl_pts_map[(yr, pos)]
+        actual_vorp = max(0.0, pts - rp)
+
+        if is_auction:
+            avc = auction_vorp_curves.get(yr, [])
+            srank = spend_rank_map.get(idx, pick)
+            exp_vorp = avc[min(srank - 1, len(avc) - 1)] if avc else 0.0
+            delta = round(actual_vorp - exp_vorp, 1)
+        else:
+            exp_pts = c[min(pdr - 1, len(c) - 1)]
+            delta = round(actual_vorp - max(0.0, exp_pts - rp), 1)
+
+        scored_dp.append({
+            "season": yr,
+            "pick": pick,
+            "round": rnd,
+            "bid": bid if is_auction else 0,
+            "owner": own,
+            "player": pname,
+            "pos": pos,
+            "pos_draft_rank": pdr,
+            "pos_finish_rank": pfr,
+            "pos_leap": pdr - pfr,
+            "pts": round(pts, 1),
+            "delta": delta,
+        })
+
+    draft_seasons = sorted({x["season"] for x in scored_dp}, reverse=True)
+    drafts = {}
+    for label, sub in [("all", scored_dp)] + [(str(y), [x for x in scored_dp if x["season"] == y]) for y in draft_seasons]:
+        if is_auction:
+            steals = sorted([x for x in sub if x["bid"] <= 15 and x["delta"] > 0], key=lambda x: (-x["delta"], x["bid"]))[:15]
+            busts = sorted([x for x in sub if x["bid"] >= 20 and x["delta"] < 0], key=lambda x: (x["delta"], -x["bid"]))[:15]
+        else:
+            steals = sorted([x for x in sub if x["round"] >= 4 and x["delta"] > 0 and x["pos_leap"] >= 3], key=lambda x: (-x["delta"], -x["pos_leap"]))[:15]
+            busts = sorted([x for x in sub if x["round"] <= 5 and x["delta"] < 0], key=lambda x: (x["delta"], x["pos_leap"]))[:15]
+        drafts[label] = {"steals": steals, "busts": busts}
+    return drafts, draft_seasons
 
 
 def discover_league_settings(league_id: str, cookies: dict, season: int, slug: str) -> Tuple[dict, dict]:
     """Fetches ESPN `mSettings`, `mTeam`, `mMembers`, `mMatchupScore` and derives full league config."""
+    league_id = validate_league_id(league_id)
+    slug = validate_slug(slug)
     url = (
         f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
         f"/segments/0/leagues/{league_id}?view=mSettings&view=mTeam&view=mMembers&view=mMatchupScore"
@@ -122,6 +243,7 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
     sched = settings.get("scheduleSettings", {})
     roster = settings.get("rosterSettings", {})
     scoring = settings.get("scoringSettings", {})
+    draft_cfg = settings.get("draftSettings", {})
     status = raw.get("status", {})
 
     league_name = (settings.get("name") or f"League {league_id}").strip()
@@ -130,7 +252,20 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
     po_teams = int(sched.get("playoffTeamCount") or 6)
     po_rule = str(sched.get("playoffSeedingRule") or "TOTAL_POINTS_SCORED")
     po_reseed = bool(sched.get("playoffReseed", False))
+    po_round_weeks = max(1, int(sched.get("playoffMatchupPeriodLength") or 1))
+    uses_league_median = bool(sched.get("usesLeagueMedianScoring", False))
     po_byes = (8 - po_teams) if po_teams in (6, 7) else 0
+
+    draft_type = str(draft_cfg.get("type") or "SNAKE").upper()
+    keeper_count = int(draft_cfg.get("keeperCount") or 0)
+    if keeper_count >= 10:
+        format_label = "Dynasty"
+    elif keeper_count > 0:
+        format_label = "Keeper"
+    elif draft_type == "AUCTION":
+        format_label = "Auction"
+    else:
+        format_label = "Redraft"
 
     raw_divs = sched.get("divisions") or []
     has_divisions = len(raw_divs) > 1
@@ -145,6 +280,9 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
     scoring_label = "Full PPR" if ppr_val >= 0.9 else ("Half PPR" if ppr_val >= 0.4 else "Standard")
 
     slot_counts_raw = roster.get("lineupSlotCounts") or {}
+    dl_cnt = int(slot_counts_raw.get("8", 0)) + int(slot_counts_raw.get("9", 0)) + int(slot_counts_raw.get("11", 0))
+    lb_cnt = int(slot_counts_raw.get("10", 0))
+    db_cnt = int(slot_counts_raw.get("12", 0)) + int(slot_counts_raw.get("13", 0)) + int(slot_counts_raw.get("14", 0))
     roster_slots = {
         "QB": int(slot_counts_raw.get("0", 1)),
         "RB": int(slot_counts_raw.get("2", 2)),
@@ -154,7 +292,18 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
         "OP": int(slot_counts_raw.get("7", 0)),
         "D/ST": int(slot_counts_raw.get("16", 1)),
         "K": int(slot_counts_raw.get("17", 1)),
+        "DL": dl_cnt,
+        "LB": lb_cnt,
+        "DB": db_cnt,
     }
+    active_positions = [p for p in ("QB", "RB", "WR", "TE") if roster_slots.get(p, 0) > 0]
+    if roster_slots.get("K", 0) > 0:
+        active_positions.append("K")
+    if roster_slots.get("D/ST", 0) > 0:
+        active_positions.append("D/ST")
+    for idp_p in ("DL", "LB", "DB"):
+        if roster_slots.get(idp_p, 0) > 0:
+            active_positions.append(idp_p)
 
     prev_seasons = sorted(int(y) for y in (status.get("previousSeasons") or []) if int(y) >= 2018)
     first_season = min(prev_seasons) if prev_seasons else int(season)
@@ -215,11 +364,17 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
         "playoff_teams": po_teams,
         "playoff_byes": po_byes,
         "playoff_reseed": po_reseed,
+        "playoff_round_weeks": po_round_weeks,
+        "uses_league_median": uses_league_median,
+        "draft_type": draft_type,
+        "keeper_count": keeper_count,
+        "format_label": format_label,
         "tiebreaker_rule": po_rule,
         "has_divisions": has_divisions,
         "divisions": divisions_map,
         "scoring_label": scoring_label,
         "roster_slots": roster_slots,
+        "active_positions": active_positions,
         "replacement_ranks": compute_dynamic_replacement_ranks(team_count, roster_slots),
         "previous_seasons": prev_seasons,
         "first_season": first_season,
@@ -784,35 +939,16 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "super_bowls": [],
         }
 
-    # Draft Hall (N-team Draft VORP vs Slot!)
+    # Draft Hall (Multi-Format: Snake, Auction $, Keeper/Dynasty exclusion!)
     dp_rows = cur.execute(
-        "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
+        "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, is_keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
     ).fetchall()
-    curves = defaultdict(list)
-    for r in dp_rows:
-        curves[(int(r[0]), r[5])].append(float(r[8] or 0.0))
-    repl_pts_map = {}
-    for k, vals in curves.items():
-        vals.sort(reverse=True)
-        r_idx = min(repl_ranks.get(k[1], config["team_count"]) - 1, len(vals) - 1)
-        repl_pts_map[k] = vals[r_idx] if vals else 0.0
-
-    scored_dp = []
-    for r in dp_rows:
-        yr, pick, rnd, own, pname, pos, pdr, pfr, pts = int(r[0]), int(r[1]), int(r[2]), r[3], r[4], r[5], int(r[6] or 0), int(r[7] or 0), float(r[8] or 0.0)
-        c = curves.get((yr, pos), [])
-        if not c or pdr <= 0: continue
-        rp = repl_pts_map[(yr, pos)]
-        exp_pts = c[min(pdr - 1, len(c) - 1)]
-        delta = round(max(0.0, pts - rp) - max(0.0, exp_pts - rp), 1)
-        scored_dp.append({"season": yr, "pick": pick, "round": rnd, "owner": own, "player": pname, "pos": pos, "pos_draft_rank": pdr, "pos_finish_rank": pfr, "pos_leap": pdr - pfr, "pts": round(pts, 1), "delta": delta})
-
-    draft_seasons = sorted({x["season"] for x in scored_dp}, reverse=True)
-    drafts = {}
-    for label, sub in [("all", scored_dp)] + [(str(y), [x for x in scored_dp if x["season"] == y]) for y in draft_seasons]:
-        steals = sorted([x for x in sub if x["round"] >= 4 and x["delta"] > 0 and x["pos_leap"] >= 3], key=lambda x: (-x["delta"], -x["pos_leap"]))[:15]
-        busts = sorted([x for x in sub if x["round"] <= 5 and x["delta"] < 0], key=lambda x: (x["delta"], x["pos_leap"]))[:15]
-        drafts[label] = {"steals": steals, "busts": busts}
+    drafts, draft_seasons = score_draft_picks_multi_format(
+        dp_rows,
+        repl_ranks,
+        config["team_count"],
+        draft_type=config.get("draft_type", "SNAKE"),
+    )
 
     # Analytics Lab: All-Play Luck + PF+/PA+
     by_sw = defaultdict(list)
@@ -904,7 +1040,8 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             series[o]["wins"].append(cum_w[o])
             series[o]["ap_pct"].append(round((cum_apw[o] / max(1, cum_apg[o])) * 100.0, 1))
 
-    # Positional Strength Heatmap (N-team replacement baselines!)
+    # Positional Strength Heatmap (N-team replacement baselines & active positions incl. IDP/no-K!)
+    active_pos = config.get("active_positions") or list(POSITIONS)
     baselines = _compute_generic_repl_baselines(conn, season, repl_ranks)
     pb_rows = cur.execute(
         "SELECT owner, position, week, points FROM player_boxscores WHERE season = ? AND is_starter = 1 AND is_consolation = 0 AND week <= ?",
@@ -914,11 +1051,11 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     for own, pos, wk, pts in pb_rows:
         own_wks[own].add(int(wk))
         pos_agg[(own, pos)].append(float(pts or 0.0))
-    hm_rows, pos_lists = [], {p: [] for p in POSITIONS}
+    hm_rows, pos_lists = [], {p: [] for p in active_pos}
     for o in owners:
         nw = max(1, len(own_wks.get(o, set())))
         pd_map, tot_v, sk = {}, 0.0, []
-        for p in POSITIONS:
+        for p in active_pos:
             vs = pos_agg.get((o, p), [])
             rp = baselines.get(p, 8.0)
             tv = sum(x - rp for x in vs)
@@ -930,10 +1067,12 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         hm_rows.append({
             "owner": o, "division": owner_div.get(o, ""), "weeks": nw,
             "total_vorp_wk": round(tot_v / nw, 1), "total_vorp": round(tot_v, 1),
-            "best_pos": max(sk, key=lambda x: x[1])[0], "worst_pos": min(sk, key=lambda x: x[1])[0], "positions": pd_map,
+            "best_pos": max(sk, key=lambda x: x[1])[0] if sk else "QB",
+            "worst_pos": min(sk, key=lambda x: x[1])[0] if sk else "TE",
+            "positions": pd_map,
         })
     hm_rows.sort(key=lambda r: -r["total_vorp_wk"])
-    hm_bounds = {p: {"min": min(pos_lists[p] or [0.0]), "max": max(pos_lists[p] or [0.0])} for p in POSITIONS}
+    hm_bounds = {p: {"min": min(pos_lists[p] or [0.0]), "max": max(pos_lists[p] or [0.0])} for p in active_pos}
 
     # Trade Vault (reuses our dual-lens VORP logic with dynamic N-team baselines!)
     trade_rows = cur.execute("SELECT trade_id, season, trade_week, effective_week, team_a_id, owner_a, team_b_id, owner_b FROM trades ORDER BY season DESC, trade_week DESC").fetchall()
@@ -1104,6 +1243,8 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "badge": config["badge"],
             "first_season": config["first_season"],
             "scoring_label": config["scoring_label"],
+            "format_label": config.get("format_label", "Redraft"),
+            "draft_type": config.get("draft_type", "SNAKE"),
             "has_divisions": config["has_divisions"],
             "is_first_year": config["is_first_year"],
         },
@@ -1112,6 +1253,8 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "playoff_teams": config["playoff_teams"],
             "playoff_byes": config["playoff_byes"],
             "playoff_reseed": config["playoff_reseed"],
+            "playoff_round_weeks": config.get("playoff_round_weeks", 1),
+            "uses_league_median": config.get("uses_league_median", False),
             "division_champions": len(config["divisions"]) if config["has_divisions"] else 0,
             "wild_cards": config["playoff_teams"] - (len(config["divisions"]) if config["has_divisions"] else 0),
             "first_round_bye": f"Seeds #1–#{config['playoff_byes']}" if config["playoff_byes"] > 1 else ("Seed #1" if config["playoff_byes"] == 1 else "None"),
@@ -1132,7 +1275,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         "analytics": {
             "luck": {"seasons": [season], "by_season": {str(season): luck_2026, "all": luck_all}},
             "trends": {"season": season, "weeks": weeks_list, "series": series},
-            "heatmap": {"season": season, "positions": list(POSITIONS), "baselines": baselines, "bounds": hm_bounds, "rows": hm_rows},
+            "heatmap": {"season": season, "positions": list(active_pos), "baselines": baselines, "bounds": hm_bounds, "rows": hm_rows},
         },
         "dossiers": dossiers,
         "podcast": {"rss_url": rss_url if episodes else "", "episodes": episodes},
@@ -1187,6 +1330,7 @@ def deploy_multi_league_to_gcs(
     hub_data: Optional[dict] = None,
 ) -> str:
     """Uploads league-branded `index.html`, shared CSS/JS, and `hub_data.json` to `gs://<bucket>/<slug>/`."""
+    slug = validate_slug(slug)
     if hub_data is None:
         hub_data = json.loads(data_path.read_text(encoding="utf-8"))
     idx_path = render_league_index_html(hub_data, data_path.parent)

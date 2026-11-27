@@ -1,0 +1,46 @@
+name: FantasyRecap CI — Unit, Multi-Format, Browser E2E & Security
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-security:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: FantasyRecap
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Python test & security dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install requests python-dotenv playwright bandit
+          playwright install chromium
+
+      - name: JavaScript syntax check
+        run: node --check web_hub/app.js
+
+      - name: Python unit, multi-format contract, and Playwright Chromium E2E + XSS tests
+        run: python3 -m unittest discover -s tests -t . -v
+
+      - name: Static security scan (Bandit — high severity gate)
+        run: bandit -r . -x ./tests,./live_state,./output -ll -ii --severity-level high

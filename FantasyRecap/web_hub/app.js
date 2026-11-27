@@ -6,6 +6,22 @@ const CUSTOM_SCORES = {}; // key: `${week}|${away}|${home}` -> { away: number, h
 let MODEL_MODE = "optimal"; // "optimal" (weekly optimal healthy lineup + FA fill) | "season_avg"
 let EDIT_SCORES_OPEN = false;
 
+function esc(val) {
+  if (val == null) return "";
+  return String(val)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/`/g, "&#96;");
+}
+
+function safeUrl(url) {
+  const s = String(url || "").trim();
+  return /^https?:\/\//i.test(s) ? s : "";
+}
+
 function getLeagueMeta() {
   const cfg = (HUB && HUB.league_config) || {};
   const rules = (HUB && HUB.tiebreaker_rules) || {};
@@ -16,16 +32,21 @@ function getLeagueMeta() {
     ? Number(rules.playoff_byes)
     : (poTeams === 6 ? 2 : (poTeams === 7 ? 1 : 0));
   const poReseed = rules.playoff_reseed !== undefined ? Boolean(rules.playoff_reseed) : true;
+  const poRoundWeeks = Math.max(1, Number(rules.playoff_round_weeks || 1));
   return {
     name: cfg.name || "Beasts Football League",
     badge: cfg.badge || "BFL",
     firstSeason: Number(cfg.first_season || 2008),
     scoringLabel: cfg.scoring_label || "",
+    formatLabel: cfg.format_label || "",
+    draftType: String(cfg.draft_type || "SNAKE").toUpperCase(),
     hasDivisions: hasDivs,
     divOrder: hasDivs ? divKeys : [],
     playoffTeams: poTeams,
     playoffByes: poByes,
     playoffReseed: poReseed,
+    playoffRoundWeeks: poRoundWeeks,
+    usesLeagueMedian: Boolean(rules.uses_league_median),
     tiebreakerRule: rules.tiebreaker_rule || "H2H_RECORD",
     regularWeeks: Number((HUB && HUB.regular_season_weeks) || 14),
     isFirstYear: Boolean(cfg.is_first_year),
@@ -56,6 +77,9 @@ function shortName(owner) {
   }
   return first;
 }
+
+function escDisplayName(owner) { return esc(displayName(owner)); }
+function escShortName(owner) { return esc(shortName(owner)); }
 
 function normCdf(z) {
   // Abramowitz & Stegun fast normal CDF approximation for game win probability display
@@ -303,6 +327,7 @@ function runBrowserMonteCarlo(nSims = 4000) {
   }
 
   // Always run nSims for Title % even when regular season is 100% locked!
+  const meta = getLeagueMeta();
   const iters = nSims;
   const regLocked = unlockedGames.length === 0;
   const detSeeding = regLocked ? computeStandingsAndSeeding(records, h2h, HUB.divisions) : null;
@@ -316,6 +341,7 @@ function runBrowserMonteCarlo(nSims = 4000) {
       for (const o of owners) simRec[o] = { wins: records[o].wins, losses: records[o].losses, pf: records[o].pf };
       const simH2H = Object.assign({}, h2h);
 
+      const wkScores = meta.usesLeagueMedian ? {} : null;
       for (const g of allRem) {
         const zA = gaussianRand(rng);
         const zH = gaussianRand(rng);
@@ -327,6 +353,10 @@ function runBrowserMonteCarlo(nSims = 4000) {
         const hPts = hMu + zH * getProjectedStdForWeek(g.home, g.week, power);
         simRec[g.away].pf += aPts;
         simRec[g.home].pf += hPts;
+        if (wkScores) {
+          if (!wkScores[g.week]) wkScores[g.week] = [];
+          wkScores[g.week].push([g.away, aPts], [g.home, hPts]);
+        }
         if (aPts >= hPts) {
           simRec[g.away].wins += 1; simRec[g.home].losses += 1;
           simH2H[`${g.away}|${g.home}`] = (simH2H[`${g.away}|${g.home}`] || 0) + 1;
@@ -337,22 +367,34 @@ function runBrowserMonteCarlo(nSims = 4000) {
           gameWinners.push([k, false]);
         }
       }
+      if (wkScores) {
+        for (const wk of Object.keys(wkScores)) {
+          const arr = wkScores[wk].slice().sort((a, b) => a[1] - b[1]);
+          const mid = Math.floor(arr.length / 2);
+          const med = arr.length % 2 ? arr[mid][1] : (arr[mid - 1][1] + arr[mid][1]) / 2;
+          for (const [own, sc] of arr) {
+            if (sc >= med) simRec[own].wins += 1;
+            else simRec[own].losses += 1;
+          }
+        }
+      }
       ({ sortedChamps, fullSeeding } = computeStandingsAndSeeding(simRec, simH2H, HUB.divisions));
     } else {
       ({ sortedChamps, fullSeeding } = detSeeding);
     }
 
-    const meta = getLeagueMeta();
     const poField = fullSeeding.slice(0, meta.playoffTeams);
     const byeOwners = poField.slice(0, meta.playoffByes);
     for (const dc of sortedChamps) divCount[dc] += 1;
     for (const bo of byeOwners) byeCount[bo] += 1;
     for (const pfTeam of poField) poCount[pfTeam] += 1;
 
-    // Rule-aware Playoff Bracket Simulation (supports 4, 6, 7, and 8-team brackets with 0, 1, or 2 Byes!)
+    // Rule-aware Playoff Bracket Simulation (supports 4/6/7/8 teams, 0/1/2 Byes, Fixed vs Re-Seed, and 1-Wk or 2-Wk Rounds!)
+    const roundMult = meta.playoffRoundWeeks;
+    const roundStdMult = Math.sqrt(roundMult);
     const simMatch = (tA, tB) => {
-      const sA = power[tA].mean + gaussianRand(rng) * power[tA].std;
-      const sB = power[tB].mean + gaussianRand(rng) * power[tB].std;
+      const sA = (power[tA].mean * roundMult) + gaussianRand(rng) * (power[tA].std * roundStdMult);
+      const sB = (power[tB].mean * roundMult) + gaussianRand(rng) * (power[tB].std * roundStdMult);
       return sA >= sB ? tA : tB;
     };
 
@@ -435,7 +477,7 @@ function runBrowserMonteCarlo(nSims = 4000) {
 function renderRootingGuide(owner, odds, cond, unlockedCount) {
   const sel = document.getElementById("rootingOwnerSelect");
   if (sel && sel.options.length === 0) {
-    sel.innerHTML = HUB.teams.map(t => t.owner).sort().map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
+    sel.innerHTML = HUB.teams.map(t => t.owner).sort().map(o => `<option value="${esc(o)}">${escDisplayName(o)}</option>`).join("");
     sel.value = owner;
     sel.addEventListener("change", () => {
       ROOTING_OWNER = sel.value;
@@ -448,7 +490,6 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
   const o = odds[owner] || { po: "0.0", div: "0.0", bye: "0.0", finals: "0.0", title: "0.0" };
   const poNum = parseFloat(o.po);
   const byeNum = parseFloat(o.bye);
-  const titleNum = parseFloat(o.title);
   const pill = document.getElementById("rootingStatusPill");
   if (poNum >= 99.95 && byeNum >= 99.95) {
     pill.textContent = `Clinched #1 Bye • Title ${o.title}%`;
@@ -466,7 +507,7 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
 
   const body = document.getElementById("rootingGuideBody");
   if (unlockedCount === 0) {
-    body.innerHTML = `<p class="muted small">All regular-season games are locked. <strong>${displayName(owner)}</strong> has <strong>${o.po}%</strong> Playoff odds, <strong>${o.finals}%</strong> Super Bowl odds, and <strong>${o.title}%</strong> Championship odds.</p>`;
+    body.innerHTML = `<p class="muted small">All regular-season games are locked. <strong>${escDisplayName(owner)}</strong> has <strong>${esc(o.po)}%</strong> Playoff odds, <strong>${esc(o.finals)}%</strong> Super Bowl odds, and <strong>${esc(o.title)}%</strong> Championship odds.</p>`;
     return;
   }
 
@@ -500,31 +541,31 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
         return `
           <div class="rooting-item">
             <div>
-              <strong>Wk ${x.week} vs ${displayName(opp)}</strong>
+              <strong>Wk ${x.week} vs ${escDisplayName(opp)}</strong>
               <span class="tie-note">Win &rarr; ${x.hiP.toFixed(1)}% &bull; Loss &rarr; ${x.loP.toFixed(1)}% ${metricLbl}</span>
             </div>
             <span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}% Swing</span>
           </div>
         `;
       }).join("")
-    : `<p class="muted small">All of ${shortName(owner)}'s remaining games are locked.</p>`;
+    : `<p class="muted small">All of ${escShortName(owner)}'s remaining games are locked.</p>`;
 
   const helpHtml = helpGames.length
     ? helpGames.slice(0, 5).map(x => `
         <div class="rooting-item">
           <div>
-            <strong>Wk ${x.week}: Root for ${shortName(x.rootFor)}</strong> over ${shortName(x.rootAgainst)}
-            <span class="tie-note">${metricLbl}: ${x.hiP.toFixed(1)}% if ${shortName(x.rootFor)} wins vs ${x.loP.toFixed(1)}%</span>
+            <strong>Wk ${x.week}: Root for ${escShortName(x.rootFor)}</strong> over ${escShortName(x.rootAgainst)}
+            <span class="tie-note">${metricLbl}: ${x.hiP.toFixed(1)}% if ${escShortName(x.rootFor)} wins vs ${x.loP.toFixed(1)}%</span>
           </div>
           <span class="swing-badge ${useBye ? "gold" : ""}">+${x.swing.toFixed(1)}%</span>
         </div>
       `).join("")
-    : `<p class="muted small">No high-leverage outside games remaining for ${shortName(owner)} (${metricLbl} odds are largely self-determined).</p>`;
+    : `<p class="muted small">No high-leverage outside games remaining for ${escShortName(owner)} (${metricLbl} odds are largely self-determined).</p>`;
 
   body.innerHTML = `
     <div class="rooting-grid">
       <div class="rooting-box">
-        <h4>${shortName(owner)}'s Remaining Games (${metricLbl} Leverage)</h4>
+        <h4>${escShortName(owner)}'s Remaining Games (${metricLbl} Leverage)</h4>
         ${ownHtml}
       </div>
       <div class="rooting-box">
@@ -598,9 +639,9 @@ function renderPlayoffMachine() {
     else roleTag = `Seed #${seed}`;
     const selCls = own === ROOTING_OWNER ? "selected-row" : "";
     return `
-      <tr class="clickable-row ${selCls}" data-root="${own}">
+      <tr class="clickable-row ${selCls}" data-root="${esc(own)}">
         <td><span class="seed-badge ${badgeCls}">#${seed}</span></td>
-        <td><strong>${displayName(own)}</strong><span class="tie-note">${roleTag}</span></td>
+        <td><strong>${escDisplayName(own)}</strong><span class="tie-note">${esc(roleTag)}</span></td>
         <td><strong>${r.wins}-${r.losses}</strong></td>
         <td>${r.pf.toFixed(1)}</td>
         <td><strong style="color:${Number(o.po) >= 75 ? 'var(--green)' : (Number(o.po) >= 35 ? 'var(--gold)' : 'var(--muted)')}">${o.po}%</strong></td>
@@ -620,10 +661,10 @@ function renderPlayoffMachine() {
     const o = odds[own];
     const selCls = own === ROOTING_OWNER ? "selected-row" : "";
     return `
-      <tr class="clickable-row ${selCls}" data-root="${own}">
+      <tr class="clickable-row ${selCls}" data-root="${esc(own)}">
         <td>#${rank}</td>
-        <td><strong>${displayName(own)}</strong></td>
-        ${meta.hasDivisions ? `<td>${t.division}</td>` : ""}
+        <td><strong>${escDisplayName(own)}</strong></td>
+        ${meta.hasDivisions ? `<td>${esc(t.division)}</td>` : ""}
         <td>${r.wins}-${r.losses}</td>
         <td>${r.pf.toFixed(1)}</td>
         <td><strong>${o.po}%</strong></td>
@@ -641,7 +682,8 @@ function renderPlayoffMachine() {
 
   const reseedBadge = document.querySelector("#tab-playoff .pill-gold");
   if (reseedBadge) {
-    reseedBadge.textContent = meta.playoffReseed ? "NFL Dynamic Re-Seeding" : "Fixed Playoff Bracket";
+    const roundTag = meta.playoffRoundWeeks > 1 ? ` • ${meta.playoffRoundWeeks}-Wk Rounds` : "";
+    reseedBadge.textContent = (meta.playoffReseed ? "NFL Dynamic Re-Seeding" : "Fixed Playoff Bracket") + roundTag;
   }
 
   // Rule-Aware Playoff Bracket Preview + Title Favorites
@@ -651,60 +693,60 @@ function renderPlayoffMachine() {
   const poWk = meta.regularWeeks + 1;
   if (meta.playoffTeams === 6) {
     const byeNote = meta.playoffReseed
-      ? `Re-seeded in Wk ${poWk + 1}: #1 plays lowest survivor`
+      ? `Re-seeded in Wk ${poWk + meta.playoffRoundWeeks}: #1 plays lowest survivor`
       : `Fixed bracket: #1 vs #4/#5 winner &bull; #2 vs #3/#6 winner`;
     bracketBoxes = `
       <div class="bracket-box bye">
         <div class="bracket-lbl">First-Round Byes (Week ${poWk})</div>
-        <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
-        <div class="bracket-row"><span><strong>#2 ${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} &bull; Title ${odds[f[1]].title}%</span></div>
+        <div class="bracket-row"><span><strong>#1 ${escShortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
+        <div class="bracket-row"><span><strong>#2 ${escShortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} &bull; Title ${odds[f[1]].title}%</span></div>
         <div class="tie-note">${byeNote}</div>
       </div>
       <div class="bracket-box">
         <div class="bracket-lbl">Quarterfinal 1${meta.playoffReseed ? "" : " (Winner faces #2)"}</div>
-        <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
-        <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#3 <strong>${escShortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#6 <strong>${escShortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
       </div>
       <div class="bracket-box">
         <div class="bracket-lbl">Quarterfinal 2${meta.playoffReseed ? "" : " (Winner faces #1)"}</div>
-        <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
-        <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#4 <strong>${escShortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#5 <strong>${escShortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
       </div>
     `;
   } else if (meta.playoffTeams === 4) {
     bracketBoxes = `
       <div class="bracket-box">
-        <div class="bracket-lbl">Semifinal 1 (Week ${poWk})</div>
-        <div class="bracket-row"><span>#1 <strong>${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} (${odds[f[0]].title}% Title)</span></div>
-        <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
+        <div class="bracket-lbl">Semifinal 1 (Week ${poWk}${meta.playoffRoundWeeks > 1 ? `–${poWk + meta.playoffRoundWeeks - 1}` : ""})</div>
+        <div class="bracket-row"><span>#1 <strong>${escShortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} (${odds[f[0]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#4 <strong>${escShortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
       </div>
       <div class="bracket-box">
-        <div class="bracket-lbl">Semifinal 2 (Week ${poWk})</div>
-        <div class="bracket-row"><span>#2 <strong>${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
-        <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
+        <div class="bracket-lbl">Semifinal 2 (Week ${poWk}${meta.playoffRoundWeeks > 1 ? `–${poWk + meta.playoffRoundWeeks - 1}` : ""})</div>
+        <div class="bracket-row"><span>#2 <strong>${escShortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#3 <strong>${escShortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
       </div>
     `;
   } else {
     bracketBoxes = `
       <div class="bracket-box bye">
         <div class="bracket-lbl">First-Round Bye (Week ${poWk})</div>
-        <div class="bracket-row"><span><strong>#1 ${shortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
-        <div class="tie-note">Plays lowest surviving seed in Week ${poWk + 1} Semis</div>
+        <div class="bracket-row"><span><strong>#1 ${escShortName(f[0])}</strong></span><span>${records[f[0]].wins}-${records[f[0]].losses} &bull; Title ${odds[f[0]].title}%</span></div>
+        <div class="tie-note">Plays lowest surviving seed in Week ${poWk + meta.playoffRoundWeeks} Semis</div>
       </div>
       <div class="bracket-box">
         <div class="bracket-lbl">Quarterfinal 1</div>
-        <div class="bracket-row"><span>#2 <strong>${shortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
-        <div class="bracket-row"><span>#7 <strong>${shortName(f[6])}</strong></span><span>${records[f[6]].wins}-${records[f[6]].losses} (${odds[f[6]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#2 <strong>${escShortName(f[1])}</strong></span><span>${records[f[1]].wins}-${records[f[1]].losses} (${odds[f[1]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#7 <strong>${escShortName(f[6])}</strong></span><span>${records[f[6]].wins}-${records[f[6]].losses} (${odds[f[6]].title}% Title)</span></div>
       </div>
       <div class="bracket-box">
         <div class="bracket-lbl">Quarterfinal 2</div>
-        <div class="bracket-row"><span>#3 <strong>${shortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
-        <div class="bracket-row"><span>#6 <strong>${shortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#3 <strong>${escShortName(f[2])}</strong></span><span>${records[f[2]].wins}-${records[f[2]].losses} (${odds[f[2]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#6 <strong>${escShortName(f[5])}</strong></span><span>${records[f[5]].wins}-${records[f[5]].losses} (${odds[f[5]].title}% Title)</span></div>
       </div>
       <div class="bracket-box">
         <div class="bracket-lbl">Quarterfinal 3</div>
-        <div class="bracket-row"><span>#4 <strong>${shortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
-        <div class="bracket-row"><span>#5 <strong>${shortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#4 <strong>${escShortName(f[3])}</strong></span><span>${records[f[3]].wins}-${records[f[3]].losses} (${odds[f[3]].title}% Title)</span></div>
+        <div class="bracket-row"><span>#5 <strong>${escShortName(f[4])}</strong></span><span>${records[f[4]].wins}-${records[f[4]].losses} (${odds[f[4]].title}% Title)</span></div>
       </div>
     `;
   }
@@ -712,9 +754,9 @@ function renderPlayoffMachine() {
   document.getElementById("bracketPreview").innerHTML = `
     ${bracketBoxes}
     <div class="bracket-box" style="grid-column:1 / -1;border-color:rgba(56,189,248,0.35)">
-      <div class="bracket-lbl">Championship Favorites (Weeks ${poWk}–${poWk + 2} Simulated Brackets)</div>
+      <div class="bracket-lbl">Championship Favorites (Playoffs Simulated Brackets)</div>
       <div class="bracket-row" style="flex-wrap:wrap;gap:10px">
-        ${topTitle.slice(0, 4).map((o, idx) => `<span><strong>${idx + 1}. ${shortName(o)}</strong> <span style="color:var(--gold)">${odds[o].title}%</span> <span class="muted small">(${odds[o].finals}% Finals)</span></span>`).join("")}
+        ${topTitle.slice(0, 4).map((o, idx) => `<span><strong>${idx + 1}. ${escShortName(o)}</strong> <span style="color:var(--gold)">${odds[o].title}%</span> <span class="muted small">(${odds[o].finals}% Finals)</span></span>`).join("")}
       </div>
     </div>
   `;
@@ -751,8 +793,8 @@ function renderPlayoffMachine() {
       const isLiveMatch = Boolean((aLive && aLive.is_live) || (hLive && hLive.is_live));
       const aFa = getFaFillsForWeek(g.away, wk);
       const hFa = getFaFillsForWeek(g.home, wk);
-      const aFaBadge = (!isLiveMatch && MODEL_MODE === "optimal" && aFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${aFa.join(', ')}">FA</span>` : "";
-      const hFaBadge = (!isLiveMatch && MODEL_MODE === "optimal" && hFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${hFa.join(', ')}">FA</span>` : "";
+      const aFaBadge = (!isLiveMatch && MODEL_MODE === "optimal" && aFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${esc(aFa.join(', '))}">FA</span>` : "";
+      const hFaBadge = (!isLiveMatch && MODEL_MODE === "optimal" && hFa.length) ? `<span class="fa-tag" title="Auto-filled gap: ${esc(hFa.join(', '))}">FA</span>` : "";
       const aRecTxt = isLiveMatch ? `${Math.round(aLive.live_pts)}&rarr;${Math.round(aMu)} · ${aWinPct}%` : `${aMu.toFixed(0)} · ${aWinPct}%`;
       const hRecTxt = isLiveMatch ? `${Math.round(hLive.live_pts)}&rarr;${Math.round(hMu)} · ${hWinPct}%` : `${hMu.toFixed(0)} · ${hWinPct}%`;
 
@@ -761,20 +803,20 @@ function renderPlayoffMachine() {
 
       const editRow = EDIT_SCORES_OPEN ? `
         <div class="score-edit-row">
-          <input class="score-inp" type="number" step="0.5" data-skey="${k}" data-side="away" value="${aDispScore}" aria-label="${shortName(g.away)} score" />
+          <input class="score-inp" type="number" step="0.5" data-skey="${esc(k)}" data-side="away" value="${aDispScore}" aria-label="${escShortName(g.away)} score" />
           <span>Custom Score (PF)</span>
-          <input class="score-inp" type="number" step="0.5" data-skey="${k}" data-side="home" value="${hDispScore}" aria-label="${shortName(g.home)} score" />
+          <input class="score-inp" type="number" step="0.5" data-skey="${esc(k)}" data-side="home" value="${hDispScore}" aria-label="${escShortName(g.home)} score" />
         </div>
       ` : "";
 
       return `
         <div class="match-row">
-          <button class="pick-btn ${aCls}" data-key="${k}" data-win="${g.away}" title="${displayName(g.away)} ${isLiveMatch ? `LIVE ${aLive.live_pts.toFixed(1)} pts, proj ` : `projected `}${aMu.toFixed(1)} pts (${aWinPct}% win prob)">
-            <span>${shortName(g.away)}${aFaBadge}</span><span class="pick-rec">${aRecTxt}</span>
+          <button class="pick-btn ${aCls}" data-key="${esc(k)}" data-win="${esc(g.away)}" title="${escDisplayName(g.away)} ${isLiveMatch ? `LIVE ${aLive.live_pts.toFixed(1)} pts, proj ` : `projected `}${aMu.toFixed(1)} pts (${aWinPct}% win prob)">
+            <span>${escShortName(g.away)}${aFaBadge}</span><span class="pick-rec">${aRecTxt}</span>
           </button>
           <span class="at-sep">@</span>
-          <button class="pick-btn ${hCls}" data-key="${k}" data-win="${g.home}" title="${displayName(g.home)} ${isLiveMatch ? `LIVE ${hLive.live_pts.toFixed(1)} pts, proj ` : `projected `}${hMu.toFixed(1)} pts (${hWinPct}% win prob)">
-            <span>${shortName(g.home)}${hFaBadge}</span><span class="pick-rec">${hRecTxt}</span>
+          <button class="pick-btn ${hCls}" data-key="${esc(k)}" data-win="${esc(g.home)}" title="${escDisplayName(g.home)} ${isLiveMatch ? `LIVE ${hLive.live_pts.toFixed(1)} pts, proj ` : `projected `}${hMu.toFixed(1)} pts (${hWinPct}% win prob)">
+            <span>${escShortName(g.home)}${hFaBadge}</span><span class="pick-rec">${hRecTxt}</span>
           </button>
         </div>
         ${editRow}
@@ -834,7 +876,7 @@ function renderPlayoffMachine() {
       return `
         <tr>
           <td><strong>#${seedNum}</strong></td>
-          <td><strong>${displayName(own)}</strong> ${inPo ? `<span class="pill pill-green">${seedNum <= meta.playoffByes ? "Bye" : "In"}</span>` : ""}</td>
+          <td><strong>${escDisplayName(own)}</strong> ${inPo ? `<span class="pill pill-green">${seedNum <= meta.playoffByes ? "Bye" : "In"}</span>` : ""}</td>
           <td><strong>${r.wins}-${r.losses}</strong></td>
           <td>${r.pf.toFixed(1)}</td>
           <td><strong>${o.po}%</strong></td>
@@ -865,7 +907,7 @@ function renderPlayoffMachine() {
         return `
           <tr>
             <td>${idx + 1}</td>
-            <td><strong>${displayName(own)}</strong> ${inPo ? `<span class="pill pill-green">#${seedNum}</span>` : ""}</td>
+            <td><strong>${escDisplayName(own)}</strong> ${inPo ? `<span class="pill pill-green">#${seedNum}</span>` : ""}</td>
             <td><strong>${r.wins}-${r.losses}</strong></td>
             <td>${r.divWins}-${r.divLosses}</td>
             <td>${r.pf.toFixed(1)}</td>
@@ -875,7 +917,7 @@ function renderPlayoffMachine() {
       }).join("");
       return `
         <div class="card" style="margin-bottom:0">
-          <div class="card-head"><h3>${div} Division</h3><span class="pill">Top team auto-bids</span></div>
+          <div class="card-head"><h3>${esc(div)} Division</h3><span class="pill">Top team auto-bids</span></div>
           <div class="table-wrap">
             <table class="data-table compact">
               <thead><tr><th>#</th><th>Manager</th><th>Rec</th><th>Div</th><th>PF</th><th>Div %</th></tr></thead>
@@ -895,8 +937,8 @@ function renderHistoryTab() {
   const owners = HUB.teams.map(t => t.owner).sort();
   const sel1 = document.getElementById("rivOwner1");
   const sel2 = document.getElementById("rivOwner2");
-  sel1.innerHTML = owners.map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
-  sel2.innerHTML = owners.map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
+  sel1.innerHTML = owners.map(o => `<option value="${esc(o)}">${escDisplayName(o)}</option>`).join("");
+  sel2.innerHTML = owners.map(o => `<option value="${esc(o)}">${escDisplayName(o)}</option>`).join("");
   sel1.value = owners.includes("Nick Christus") ? "Nick Christus" : owners[0];
   sel2.value = owners.includes("Daniel Kruszewski") ? "Daniel Kruszewski" : (owners.find(o => o !== sel1.value) || owners[0]);
 
@@ -904,13 +946,13 @@ function renderHistoryTab() {
     const a = sel1.value, b = sel2.value;
     const card = document.getElementById("rivalryCard");
     if (a === b) {
-      card.innerHTML = `<p class="muted">Select two different ${meta.badge} managers to inspect their head-to-head series.</p>`;
+      card.innerHTML = `<p class="muted">Select two different ${esc(meta.badge)} managers to inspect their head-to-head series.</p>`;
       return;
     }
     const [o1, o2] = a < b ? [a, b] : [b, a];
     const rec = HUB.history.h2h[`${o1}|||${o2}`];
     if (!rec) {
-      card.innerHTML = `<p class="muted"><strong>${displayName(a)}</strong> and <strong>${displayName(b)}</strong> have not met yet in ${meta.badge} history.</p>`;
+      card.innerHTML = `<p class="muted"><strong>${escDisplayName(a)}</strong> and <strong>${escDisplayName(b)}</strong> have not met yet in ${esc(meta.badge)} history.</p>`;
       return;
     }
     const wA = a === o1 ? rec.w1 : rec.w2;
@@ -919,19 +961,19 @@ function renderHistoryTab() {
     const avgB = a === o1 ? rec.avg2 : rec.avg1;
     const poA = a === o1 ? rec.po1 : rec.po2;
     const poB = a === o1 ? rec.po2 : rec.po1;
-    const headTxt = wA > wB ? `<strong>${displayName(a)}</strong> leads ${wA}–${wB}` : (wB > wA ? `<strong>${displayName(b)}</strong> leads ${wB}–${wA}` : `Series deadlocked <strong>${wA}–${wB}</strong>`);
+    const headTxt = wA > wB ? `<strong>${escDisplayName(a)}</strong> leads ${wA}–${wB}` : (wB > wA ? `<strong>${escDisplayName(b)}</strong> leads ${wB}–${wA}` : `Series deadlocked <strong>${wA}–${wB}</strong>`);
     const sbTxt = (rec.super_bowls || []).length
-      ? rec.super_bowls.map(s => `${s.year}: ${displayName(s.champ)} def. ${displayName(s.runner_up)} (${s.score})`).join(" • ")
+      ? rec.super_bowls.map(s => `${esc(s.year)}: ${escDisplayName(s.champ)} def. ${escDisplayName(s.runner_up)} (${esc(s.score)})`).join(" • ")
       : "None";
 
     card.innerHTML = `
       <div style="font-size:1.1rem;margin-bottom:4px;">${headTxt} <span class="muted small">(${rec.games} ${rec.games === 1 ? "meeting" : "meetings"} since ${meta.firstSeason})</span></div>
       <div class="riv-stats">
-        <div class="stat-box"><div class="lbl">Avg Points / Game</div><div class="val">${shortName(a)} ${avgA} vs ${shortName(b)} ${avgB}</div></div>
-        <div class="stat-box"><div class="lbl">Current Streak</div><div class="val">${shortName(rec.streak_owner)} W${rec.streak_len}</div></div>
-        <div class="stat-box"><div class="lbl">Playoff H2H</div><div class="val">${poA + poB > 0 ? `${shortName(a)} ${poA}–${poB} ${shortName(b)}` : "No Playoff Clashes"}</div></div>
-        <div class="stat-box"><div class="lbl">Last Meeting</div><div class="val">${rec.last.season} Wk ${rec.last.week}: ${shortName(rec.last.winner)} (${rec.last.hi}–${rec.last.lo})</div></div>
-        <div class="stat-box"><div class="lbl">Closest Finish</div><div class="val">${rec.closest.season} Wk ${rec.closest.week}: ${shortName(rec.closest.winner)} (+${rec.closest.margin})</div></div>
+        <div class="stat-box"><div class="lbl">Avg Points / Game</div><div class="val">${escShortName(a)} ${avgA} vs ${escShortName(b)} ${avgB}</div></div>
+        <div class="stat-box"><div class="lbl">Current Streak</div><div class="val">${escShortName(rec.streak_owner)} W${rec.streak_len}</div></div>
+        <div class="stat-box"><div class="lbl">Playoff H2H</div><div class="val">${poA + poB > 0 ? `${escShortName(a)} ${poA}–${poB} ${escShortName(b)}` : "No Playoff Clashes"}</div></div>
+        <div class="stat-box"><div class="lbl">Last Meeting</div><div class="val">${rec.last.season} Wk ${rec.last.week}: ${escShortName(rec.last.winner)} (${rec.last.hi}–${rec.last.lo})</div></div>
+        <div class="stat-box"><div class="lbl">Closest Finish</div><div class="val">${rec.closest.season} Wk ${rec.closest.week}: ${escShortName(rec.closest.winner)} (+${rec.closest.margin})</div></div>
         <div class="stat-box"><div class="lbl">Championship Meetings</div><div class="val" style="font-size:0.84rem">${sbTxt}</div></div>
       </div>
     `;
@@ -944,7 +986,7 @@ function renderHistoryTab() {
   document.querySelector("#careerTable tbody").innerHTML = HUB.history.career.map((c, idx) => `
     <tr>
       <td>${idx + 1}</td>
-      <td><strong>${displayName(c.owner)}</strong><span class="tie-note">${c.division ? c.division + " • " : ""}${c.seasons} ${c.seasons === 1 ? "yr" : "yrs"}</span></td>
+      <td><strong>${escDisplayName(c.owner)}</strong><span class="tie-note">${c.division ? esc(c.division) + " • " : ""}${c.seasons} ${c.seasons === 1 ? "yr" : "yrs"}</span></td>
       <td>${c.rings > 0 ? `<span class="pill pill-gold">${c.rings}</span>` : "0"}</td>
       <td>${c.wins}-${c.losses}</td>
       <td><strong>${c.win_pct.toFixed(1)}%</strong></td>
@@ -963,10 +1005,10 @@ function renderHistoryTab() {
   } else {
     document.querySelector("#champsTable tbody").innerHTML = champs.map(s => `
       <tr>
-        <td><strong>${s.year}</strong></td>
-        <td><strong>${displayName(s.champ)}</strong></td>
-        <td>${displayName(s.runner_up)}</td>
-        <td>${s.score}</td>
+        <td><strong>${esc(s.year)}</strong></td>
+        <td><strong>${escDisplayName(s.champ)}</strong></td>
+        <td>${escDisplayName(s.runner_up)}</td>
+        <td>${esc(s.score)}</td>
       </tr>
     `).join("");
   }
@@ -986,7 +1028,7 @@ function renderDraftsTab() {
     }
   }
   sSel.innerHTML = opts.join("");
-  oSel.innerHTML = `<option value="">All Managers</option>` + HUB.teams.map(t => `<option value="${t.owner}">${displayName(t.owner)}</option>`).join("");
+  oSel.innerHTML = `<option value="">All Managers</option>` + HUB.teams.map(t => `<option value="${esc(t.owner)}">${escDisplayName(t.owner)}</option>`).join("");
 
   const draw = () => {
     const yr = sSel.value;
@@ -996,16 +1038,19 @@ function renderDraftsTab() {
     const fmt = (rows, isSteal) => {
       const f = rows.filter(filterFn).slice(0, 10);
       if (!f.length) return `<tr><td colspan="6" class="muted">No matching picks in top list for this filter.</td></tr>`;
-      return f.map(r => `
+      return f.map(r => {
+        const costLbl = r.bid && Number(r.bid) > 0 ? `$${Number(r.bid)}` : `Rd ${r.round} (#${r.pick})`;
+        return `
         <tr>
-          <td><strong>${r.player}</strong>${yr === "all" ? ` <span class="muted small">(${r.season})</span>` : ""}</td>
-          <td>${shortName(r.owner)}</td>
-          <td>Rd ${r.round} (#${r.pick})</td>
-          <td>${r.pos}${r.pos_draft_rank} &rarr; ${r.pos}${r.pos_finish_rank}</td>
+          <td><strong>${esc(r.player)}</strong>${yr === "all" ? ` <span class="muted small">(${r.season})</span>` : ""}</td>
+          <td>${escShortName(r.owner)}</td>
+          <td>${costLbl}</td>
+          <td>${esc(r.pos)}${r.pos_draft_rank} &rarr; ${esc(r.pos)}${r.pos_finish_rank}</td>
           <td>${r.pts}</td>
           <td style="color:${isSteal ? 'var(--green)' : 'var(--red)'};font-weight:700">${r.delta > 0 ? '+' : ''}${r.delta}</td>
         </tr>
-      `).join("");
+      `;
+      }).join("");
     };
     document.querySelector("#stealsTable tbody").innerHTML = fmt(pack.steals, true);
     document.querySelector("#bustsTable tbody").innerHTML = fmt(pack.busts, false);
@@ -1046,7 +1091,7 @@ function renderTradesTab() {
   const ownSel = document.getElementById("tradeOwnerSelect");
 
   ownSel.innerHTML = `<option value="">All Managers</option>` +
-    HUB.teams.map(t => t.owner).sort().map(o => `<option value="${o}">${displayName(o)}</option>`).join("");
+    HUB.teams.map(t => t.owner).sort().map(o => `<option value="${esc(o)}">${escDisplayName(o)}</option>`).join("");
 
   const syncSeasonSelect = () => {
     const bucket = pack[TRADE_ERA] || { seasons: [], trades: [] };
@@ -1078,10 +1123,11 @@ function renderTradesTab() {
     const yrFilter = TRADE_ERA === "all_time" ? yrSel.value : "";
     const ownFilter = ownSel.value;
 
+    const meta = getLeagueMeta();
     document.getElementById("tradeVaultTitle").textContent =
       TRADE_ERA === "live"
         ? `${liveYr} Live Trade Tracker (Through Week ${HUB.completed_week})`
-        : "BFL All-Time Trade Vault — Hall of Fleeces";
+        : `${meta.badge} All-Time Trade Vault — Hall of Fleeces`;
     document.getElementById("sharksTitle").textContent =
       TRADE_ERA === "live" ? `${liveYr} Live Deal Makers` : "Career Trade Sharks vs. Marks";
     document.getElementById("sharksLensPill").textContent =
@@ -1090,8 +1136,8 @@ function renderTradesTab() {
     // Methodology blurb tailored to active lens
     const blurb = document.getElementById("tradeMethodologyBlurb");
     blurb.innerHTML = lens === "started"
-      ? `<strong>Actual Lineup Impact:</strong> Counts only weeks the acquiring manager <em>started</em> the player above 16-team positional replacement (QB16, RB36, WR38, TE16), with <strong>1.5&times; Championship Playoff weighting</strong> (consolation = 0&times;).`
-      : `<strong>Pure Player Outcome:</strong> Sums unfloored weekly points minus 16-team replacement across all active post-trade games (duds offset booms; floored at 0 per player so bench throw-ins equal waiver value), with <strong>1.5&times; Playoff-week weighting</strong>.`;
+      ? `<strong>Actual Lineup Impact:</strong> Counts only weeks the acquiring manager <em>started</em> the player above ${HUB.teams.length}-team positional replacement, with <strong>1.5&times; Championship Playoff weighting</strong> (consolation = 0&times;).`
+      : `<strong>Pure Player Outcome:</strong> Sums unfloored weekly points minus ${HUB.teams.length}-team replacement across all active post-trade games (duds offset booms; floored at 0 per player so bench throw-ins equal waiver value), with <strong>1.5&times; Playoff-week weighting</strong>.`;
 
     // 1. Render Sharks vs Marks Leaderboard
     const cards = (bucket.owner_cards && bucket.owner_cards[lens]) || [];
@@ -1100,9 +1146,9 @@ function renderTradesTab() {
       const col = c.net_vorp > 3 ? "var(--green)" : (c.net_vorp < -3 ? "var(--red)" : "var(--muted)");
       const selCls = ownFilter === c.owner ? "selected-row" : "";
       return `
-        <tr class="clickable-row ${selCls}" data-owner="${c.owner}">
+        <tr class="clickable-row ${selCls}" data-owner="${esc(c.owner)}">
           <td>${idx + 1}</td>
-          <td><strong>${shortName(c.owner)}</strong></td>
+          <td><strong>${escShortName(c.owner)}</strong></td>
           <td>${c.trades}</td>
           <td>${c.wins}-${c.losses}${c.pushes ? `-${c.pushes}` : ""}</td>
           <td style="color:${col};font-weight:800">${fmtVorp(c.net_vorp)}</td>
@@ -1125,25 +1171,25 @@ function renderTradesTab() {
       repEl.style.display = "block";
       const netCol = ownerCard.net_vorp >= 0 ? "var(--green)" : "var(--red)";
       const favTxt = ownerCard.favorite_partner
-        ? `${shortName(ownerCard.favorite_partner.owner)} (${ownerCard.favorite_partner.count} ${ownerCard.favorite_partner.count === 1 ? "deal" : "deals"}, ${fmtVorp(ownerCard.favorite_partner.net_vorp)})`
+        ? `${escShortName(ownerCard.favorite_partner.owner)} (${ownerCard.favorite_partner.count} ${ownerCard.favorite_partner.count === 1 ? "deal" : "deals"}, ${fmtVorp(ownerCard.favorite_partner.net_vorp)})`
         : "—";
       const markTxt = ownerCard.biggest_mark
-        ? `${shortName(ownerCard.biggest_mark.owner)} (${fmtVorp(ownerCard.biggest_mark.net_vorp)} in ${ownerCard.biggest_mark.count})`
+        ? `${escShortName(ownerCard.biggest_mark.owner)} (${fmtVorp(ownerCard.biggest_mark.net_vorp)} in ${ownerCard.biggest_mark.count})`
         : "—";
       const nemTxt = ownerCard.worst_nemesis
-        ? `${shortName(ownerCard.worst_nemesis.owner)} (${fmtVorp(ownerCard.worst_nemesis.net_vorp)} in ${ownerCard.worst_nemesis.count})`
+        ? `${escShortName(ownerCard.worst_nemesis.owner)} (${fmtVorp(ownerCard.worst_nemesis.net_vorp)} in ${ownerCard.worst_nemesis.count})`
         : "—";
       const renderExtreme = (label, item, cls, emptyMsg) => {
-        if (!item) return `<div class="extreme-box ${cls}"><div style="font-weight:700;margin-bottom:3px;color:${cls === "best" ? "var(--green)" : "var(--red)"}">${label}</div><div class="muted small">${emptyMsg}</div></div>`;
+        if (!item) return `<div class="extreme-box ${cls}"><div style="font-weight:700;margin-bottom:3px;color:${cls === "best" ? "var(--green)" : "var(--red)"}">${esc(label)}</div><div class="muted small">${esc(emptyMsg)}</div></div>`;
         return `
           <div class="extreme-box ${cls}">
             <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-              <strong style="color:${cls === "best" ? "var(--green)" : "var(--red)"}">${label}</strong>
+              <strong style="color:${cls === "best" ? "var(--green)" : "var(--red)"}">${esc(label)}</strong>
               <span class="pill">${item.season} Wk ${item.week} &bull; ${fmtVorp(item.swing)} VORP</span>
             </div>
-            <div>vs <strong>${displayName(item.partner)}</strong></div>
-            <div class="muted small" style="margin-top:3px">Got: ${item.received.join(", ")}</div>
-            <div class="muted small">Sent: ${item.sent.join(", ")}</div>
+            <div>vs <strong>${escDisplayName(item.partner)}</strong></div>
+            <div class="muted small" style="margin-top:3px">Got: ${esc(item.received.join(", "))}</div>
+            <div class="muted small">Sent: ${esc(item.sent.join(", "))}</div>
           </div>
         `;
       };
@@ -1153,7 +1199,7 @@ function renderTradesTab() {
         <div class="owner-report">
           <div class="owner-report-head">
             <div>
-              <h3 style="font-size:1.05rem">${displayName(ownerCard.owner)} — ${TRADE_ERA === "live" ? liveYr + " Live" : "Career"} Trade Report Card</h3>
+              <h3 style="font-size:1.05rem">${escDisplayName(ownerCard.owner)} — ${TRADE_ERA === "live" ? liveYr + " Live" : "Career"} Trade Report Card</h3>
               <span class="muted small">${ownerCard.trades} verified ${ownerCard.trades === 1 ? "deal" : "deals"} &bull; ${lens === "started" ? "Actual Lineup Impact" : "Pure Player Outcome"}</span>
             </div>
             <button id="btnClearTradeOwner" class="btn btn-secondary btn-sm">Clear Manager Filter</button>
@@ -1253,7 +1299,7 @@ function renderTradesTab() {
       }
       const headline = isPush
         ? `Even Swap (${fmtVorp(ld.abs_swing)} VORP diff)`
-        : `${displayName(ld.winner)} ${verb} ${displayName(ld.loser)}`;
+        : `${escDisplayName(ld.winner)} ${verb} ${escDisplayName(ld.loser)}`;
 
       const renderSide = (owner, players, vorp, outcome, gamesSwung, won, lost) => {
         const cls = won ? "side-win" : (lost ? "side-lose" : "");
@@ -1275,14 +1321,14 @@ function renderTradesTab() {
           const pCol = pV > 2 ? "var(--green)" : (pV < -2 ? "var(--red)" : "var(--muted)");
           const wkLbl = lens === "started" ? `${pWks} st` : `${pWks} gm`;
           const flipHtml = p.flipped
-            ? `<span class="flip-note">&#8627; Flipped Wk ${p.flipped.week} &rarr; ${shortName(p.flipped.to)}</span>`
+            ? `<span class="flip-note">&#8627; Flipped Wk ${p.flipped.week} &rarr; ${escShortName(p.flipped.to)}</span>`
             : "";
           const poHtml = pPo >= 8 ? ` <span style="color:var(--gold)">(PO ${fmtVorp(pPo)})</span>` : "";
           return `
             <div class="trade-player-row">
               <div>
-                <span class="pos-chip">${p.pos}</span>
-                <span class="trade-player-name">${p.name}</span>${poHtml}
+                <span class="pos-chip">${esc(p.pos)}</span>
+                <span class="trade-player-name">${esc(p.name)}</span>${poHtml}
                 ${flipHtml}
               </div>
               <div class="trade-player-stat">
@@ -1296,7 +1342,7 @@ function renderTradesTab() {
           <div class="trade-side ${cls}">
             <div class="trade-side-head">
               <div>
-                <span class="trade-side-owner">${displayName(owner)} received</span>
+                <span class="trade-side-owner">${escDisplayName(owner)} received</span>
                 ${metaBits.length ? `<span class="tie-note">${metaBits.join(" • ")}</span>` : ""}
               </div>
               <span class="trade-side-score" style="color:${col}">${fmtVorp(vorp)} VORP</span>
@@ -1306,7 +1352,7 @@ function renderTradesTab() {
         `;
       };
 
-      const tagsHtml = (ld.tags || []).map(tg => `<span class="tag-pill ${tagClass(tg)}">${tg}</span>`).join("");
+      const tagsHtml = (ld.tags || []).map(tg => `<span class="tag-pill ${tagClass(tg)}">${esc(tg)}</span>`).join("");
 
       return `
         <div class="trade-card">
@@ -1319,7 +1365,7 @@ function renderTradesTab() {
             <span class="pill ${isPush ? "" : "pill-green"}">${isPush ? "PUSH" : `+${ld.abs_swing.toFixed(1)} VORP Swing`}</span>
           </div>
           ${tagsHtml ? `<div class="trade-tags">${tagsHtml}</div>` : ""}
-          <div class="tug-wrap" title="${displayName(t.owner_a)} (${fmtVorp(aV)}) vs ${displayName(t.owner_b)} (${fmtVorp(bV)})">
+          <div class="tug-wrap" title="${escDisplayName(t.owner_a)} (${fmtVorp(aV)}) vs ${escDisplayName(t.owner_b)} (${fmtVorp(bV)})">
             <div class="tug-a" style="width:${pctA}%"></div>
             <div class="tug-b" style="width:${100 - pctA}%"></div>
           </div>
@@ -1466,13 +1512,13 @@ function renderAnalyticsLabTab() {
       const sw = TREND_SPOTLIGHT === own ? 3.4 : (isHi ? 2.2 : 1.2);
       const op = isHi ? 0.95 : 0.16;
       const ptsStr = vals.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
-      svg += `<polyline fill="none" stroke="${col}" stroke-width="${sw}" stroke-opacity="${op}" stroke-linecap="round" stroke-linejoin="round" points="${ptsStr}"><title>${displayName(own)}</title></polyline>`;
+      svg += `<polyline fill="none" stroke="${col}" stroke-width="${sw}" stroke-opacity="${op}" stroke-linecap="round" stroke-linejoin="round" points="${ptsStr}"><title>${escDisplayName(own)}</title></polyline>`;
 
       if (isHi) {
         vals.forEach((v, i) => {
           const cx = xOf(i).toFixed(1), cy = yOf(v).toFixed(1);
           const vTxt = TREND_METRIC === "po" ? `${v}%` : (TREND_METRIC === "rank" ? `#${v}` : `${v} pts`);
-          svg += `<circle cx="${cx}" cy="${cy}" r="${TREND_SPOTLIGHT === own ? 4 : 2.6}" fill="${col}" fill-opacity="0.95"><title>${displayName(own)} • Wk ${weeks[i]}: ${vTxt} (${series[own].wins[i]}W)</title></circle>`;
+          svg += `<circle cx="${cx}" cy="${cy}" r="${TREND_SPOTLIGHT === own ? 4 : 2.6}" fill="${col}" fill-opacity="0.95"><title>${escDisplayName(own)} • Wk ${weeks[i]}: ${vTxt} (${series[own].wins[i]}W)</title></circle>`;
         });
         const lastV = vals[vals.length - 1];
         labelSpots.push({ own, col, y: yOf(lastV), val: lastV });
@@ -1488,7 +1534,7 @@ function renderAnalyticsLabTab() {
     }
     for (const lb of labelSpots) {
       const vTxt = TREND_METRIC === "po" ? `${lb.val}%` : (TREND_METRIC === "rank" ? `#${lb.val}` : `${Math.round(lb.val)}`);
-      svg += `<text x="${W - padR + 7}" y="${(lb.y + 4).toFixed(1)}" fill="${lb.col}" font-size="11" font-weight="700">${shortName(lb.own)} ${vTxt}</text>`;
+      svg += `<text x="${W - padR + 7}" y="${(lb.y + 4).toFixed(1)}" fill="${lb.col}" font-size="11" font-weight="700">${escShortName(lb.own)} ${vTxt}</text>`;
     }
     svg += `</svg>`;
     document.getElementById("trendChartWrap").innerHTML = svg;
@@ -1497,7 +1543,7 @@ function renderAnalyticsLabTab() {
     const legEl = document.getElementById("trendLegend");
     legEl.innerHTML = ownersSorted.map(o => {
       const cls = TREND_SPOTLIGHT === o ? "active" : (TREND_SPOTLIGHT && TREND_SPOTLIGHT !== o ? "dimmed" : "");
-      return `<button class="legend-chip ${cls}" data-own="${o}"><span class="legend-dot" style="background:${colorMap[o]}"></span>${shortName(o)}</button>`;
+      return `<button class="legend-chip ${cls}" data-own="${esc(o)}"><span class="legend-dot" style="background:${colorMap[o]}"></span>${escShortName(o)}</button>`;
     }).join("") + (TREND_SPOTLIGHT ? `<button class="legend-chip" data-own="">Show Top 7</button>` : "");
 
     legEl.querySelectorAll(".legend-chip").forEach(btn => {
@@ -1556,14 +1602,14 @@ function renderAnalyticsLabTab() {
       return `
         <tr>
           <td><strong>#${r.true_rank}</strong></td>
-          <td><strong>${displayName(r.owner)}</strong><span class="tie-note">${r.division}</span></td>
+          <td><strong>${escDisplayName(r.owner)}</strong><span class="tie-note">${esc(r.division)}</span></td>
           <td>${r.wins}-${r.losses} <span class="muted small">(${r.win_pct}%)</span></td>
           <td><strong>${r.ap_pct}%</strong> <span class="muted small">(${Math.round(r.ap_wins)}-${Math.round(r.ap_losses)})</span></td>
           <td>${r.expected_wins.toFixed(1)}</td>
           <td style="color:${lCol};font-weight:800">${r.luck_delta > 0 ? "+" : ""}${r.luck_delta.toFixed(2)} W</td>
           <td><strong style="color:${pfCol}">${pfPlus}</strong> <span class="muted small">(${r.avg_pf.toFixed(1)})</span></td>
           <td><strong style="color:${paCol}">${paPlus}</strong> <span class="muted small">(#${r.sos_rank} · ${r.avg_pa.toFixed(1)})</span></td>
-          <td><span class="tag-pill ${vCls(r.verdict)}">${r.verdict}</span></td>
+          <td><span class="tag-pill ${vCls(r.verdict)}">${esc(r.verdict)}</span></td>
         </tr>
       `;
     }).join("");
@@ -1572,12 +1618,16 @@ function renderAnalyticsLabTab() {
   lSortSel.addEventListener("change", drawLuckTable);
   drawLuckTable();
 
-  // --- 3. 2026 Positional Strength VORP Heatmap ---
+  // --- 3. Positional Strength VORP Heatmap (dynamic columns for standard, no-K, or IDP!) ---
   const hm = an.heatmap;
   if (hm && hm.rows) {
     document.getElementById("heatmapTitle").textContent = `${hm.season} Positional Strength Heatmap (Starter VORP / Week)`;
     document.getElementById("heatmapSeasonPill").textContent = `${hm.season} Starters`;
     const posList = hm.positions || ["QB", "RB", "WR", "TE", "K", "D/ST"];
+    const hmThead = document.querySelector("#heatmapTable thead tr");
+    if (hmThead) {
+      hmThead.innerHTML = `<th>#</th><th>Manager</th>${posList.map(p => `<th style="text-align:center">${esc(p)}</th>`).join("")}<th style="text-align:center">Total / Wk</th><th>Edge / Hole</th>`;
+    }
 
     const heatBg = (val, pos) => {
       const b = (hm.bounds && hm.bounds[pos]) || { min: -5, max: 5 };
@@ -1600,10 +1650,10 @@ function renderAnalyticsLabTab() {
       return `
         <tr>
           <td>${idx + 1}</td>
-          <td><strong>${displayName(r.owner)}</strong><span class="tie-note">${r.division}</span></td>
+          <td><strong>${escDisplayName(r.owner)}</strong><span class="tie-note">${esc(r.division)}</span></td>
           ${cells}
           <td style="color:${totCol};font-weight:800;text-align:center">${r.total_vorp_wk > 0 ? "+" : ""}${r.total_vorp_wk.toFixed(1)}</td>
-          <td><span class="tag-pill tag-green">${r.best_pos}</span> <span class="tag-pill tag-red">${r.worst_pos}</span></td>
+          <td><span class="tag-pill tag-green">${esc(r.best_pos)}</span> <span class="tag-pill tag-red">${esc(r.worst_pos)}</span></td>
         </tr>
       `;
     }).join("");
@@ -1630,11 +1680,12 @@ function renderDossiersTab() {
   };
 
   const draw = () => {
+    const meta = getLeagueMeta();
     const picker = document.getElementById("dossierPicker");
     picker.innerHTML = list.map(d => {
       const act = d.owner === ACTIVE_DOSSIER ? "active" : "";
       const ringsHtml = d.rings > 0 ? `<span class="ring-mini">${d.rings}&#9733;</span>` : "";
-      return `<button class="dossier-btn ${act}" data-own="${d.owner}">${shortName(d.owner)}${ringsHtml}</button>`;
+      return `<button class="dossier-btn ${act}" data-own="${esc(d.owner)}">${escShortName(d.owner)}${ringsHtml}</button>`;
     }).join("");
     picker.querySelectorAll(".dossier-btn").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -1644,36 +1695,36 @@ function renderDossiersTab() {
     });
 
     const d = list.find(x => x.owner === ACTIVE_DOSSIER) || list[0];
-    const badgesHtml = (d.badges || []).map(b => `<span class="tag-pill ${badgeCls(b)}">${b}</span>`).join("");
-    const champSub = d.champ_years && d.champ_years.length ? ` (${d.champ_years.join(", ")})` : "";
+    const badgesHtml = (d.badges || []).map(b => `<span class="tag-pill ${badgeCls(b)}">${esc(b)}</span>`).join("");
+    const champSub = d.champ_years && d.champ_years.length ? ` (${esc(d.champ_years.join(", "))})` : "";
     const luckCol = d.luck_delta >= 2 ? "var(--gold)" : (d.luck_delta <= -2 ? "var(--red)" : "var(--text)");
     const trCol = d.trade.net_vorp >= 0 ? "var(--green)" : "var(--red)";
     const hiTxt = d.high_game ? `${d.high_game.score} (${d.high_game.season} Wk ${d.high_game.week})` : "—";
     const loTxt = d.low_game ? `${d.low_game.score} (${d.low_game.season} Wk ${d.low_game.week})` : "—";
 
     const nemHtml = d.nemesis
-      ? `<strong>${displayName(d.nemesis.owner)}</strong> — <span style="color:var(--red)">${d.nemesis.w}–${d.nemesis.l} (${d.nemesis.pct}%)</span>`
+      ? `<strong>${escDisplayName(d.nemesis.owner)}</strong> — <span style="color:var(--red)">${d.nemesis.w}–${d.nemesis.l} (${d.nemesis.pct}%)</span>`
       : `<span class="muted">No losing H2H rival</span>`;
     const vicHtml = d.victim
-      ? `<strong>${displayName(d.victim.owner)}</strong> — <span style="color:var(--green)">${d.victim.w}–${d.victim.l} (${d.victim.pct}%)</span>`
+      ? `<strong>${escDisplayName(d.victim.owner)}</strong> — <span style="color:var(--green)">${d.victim.w}–${d.victim.l} (${d.victim.pct}%)</span>`
       : `<span class="muted">No dominant H2H series</span>`;
 
     const bs = d.draft && d.draft.best_steal;
     const wb = d.draft && d.draft.worst_bust;
     const bestDraftHtml = bs
-      ? `<strong>${bs.player}</strong> (${bs.season}, Rd ${bs.round})<span class="tie-note">${bs.pos}${bs.pos_draft_rank} &rarr; ${bs.pos}${bs.pos_finish_rank} &bull; <strong style="color:var(--green)">+${bs.delta} VORP</strong></span>`
+      ? `<strong>${esc(bs.player)}</strong> (${bs.season}, ${bs.bid > 0 ? `$${bs.bid}` : `Rd ${bs.round}`})<span class="tie-note">${esc(bs.pos)}${bs.pos_draft_rank} &rarr; ${esc(bs.pos)}${bs.pos_finish_rank} &bull; <strong style="color:var(--green)">+${bs.delta} VORP</strong></span>`
       : `<span class="muted">No qualifying steals</span>`;
     const worstDraftHtml = wb
-      ? `<strong>${wb.player}</strong> (${wb.season}, Rd ${wb.round})<span class="tie-note">${wb.pos}${wb.pos_draft_rank} &rarr; ${wb.pos}${wb.pos_finish_rank} &bull; <strong style="color:var(--red)">${wb.delta} VORP</strong></span>`
+      ? `<strong>${esc(wb.player)}</strong> (${wb.season}, ${wb.bid > 0 ? `$${wb.bid}` : `Rd ${wb.round}`})<span class="tie-note">${esc(wb.pos)}${wb.pos_draft_rank} &rarr; ${esc(wb.pos)}${wb.pos_finish_rank} &bull; <strong style="color:var(--red)">${wb.delta} VORP</strong></span>`
       : `<span class="muted">No qualifying busts</span>`;
 
     const bt = d.trade && d.trade.best_trade;
     const wt = d.trade && d.trade.worst_trade;
     const bestTradeHtml = bt
-      ? `<strong>${bt.season} Wk ${bt.week} vs ${shortName(bt.partner)}</strong> <strong style="color:var(--green)">(${bt.swing > 0 ? "+" : ""}${bt.swing} VORP)</strong><span class="tie-note">Got: ${bt.received.join(", ")}</span>`
+      ? `<strong>${bt.season} Wk ${bt.week} vs ${escShortName(bt.partner)}</strong> <strong style="color:var(--green)">(${bt.swing > 0 ? "+" : ""}${bt.swing} VORP)</strong><span class="tie-note">Got: ${esc(bt.received.join(", "))}</span>`
       : `<span class="muted">No winning trades recorded</span>`;
     const worstTradeHtml = wt
-      ? `<strong>${wt.season} Wk ${wt.week} vs ${shortName(wt.partner)}</strong> <strong style="color:var(--red)">(${wt.swing} VORP)</strong><span class="tie-note">Got: ${wt.received.join(", ")}</span>`
+      ? `<strong>${wt.season} Wk ${wt.week} vs ${escShortName(wt.partner)}</strong> <strong style="color:var(--red)">(${wt.swing} VORP)</strong><span class="tie-note">Got: ${esc(wt.received.join(", "))}</span>`
       : `<span class="muted">No losing trades recorded</span>`;
 
     const tlRows = (d.timeline || []).map(s => {
@@ -1685,8 +1736,8 @@ function renderDossiersTab() {
       return `
         <tr>
           <td><strong>${s.season}</strong></td>
-          <td>${s.team_name}</td>
-          <td>${s.division}</td>
+          <td>${esc(s.team_name)}</td>
+          <td>${esc(s.division || "—")}</td>
           <td><strong>${s.wins}-${s.losses}</strong></td>
           <td>${s.pf.toFixed(1)}</td>
           <td>${badge}</td>
@@ -1694,12 +1745,13 @@ function renderDossiersTab() {
       `;
     }).join("");
 
+    const divTxt = d.division ? ` &bull; ${esc(d.division)} Division` : "";
     document.getElementById("dossierBody").innerHTML = `
       <div class="dossier-hero">
         <div class="dossier-hero-top">
           <div>
-            <h3 style="font-size:1.35rem;font-weight:800">${displayName(d.owner)}</h3>
-            <p class="muted small">${d.team_name} &bull; ${d.division} Division &bull; Est. ${d.first_season} (${d.seasons_played} ${d.seasons_played === 1 ? "season" : "seasons"})${champSub}</p>
+            <h3 style="font-size:1.35rem;font-weight:800">${escDisplayName(d.owner)}</h3>
+            <p class="muted small">${esc(d.team_name)}${divTxt} &bull; Est. ${d.first_season} (${d.seasons_played} ${d.seasons_played === 1 ? "season" : "seasons"})${champSub}</p>
             <div class="trade-tags" style="margin-top:8px;margin-bottom:0">${badgesHtml}</div>
           </div>
           <div class="trophy-strip">
@@ -1726,12 +1778,12 @@ function renderDossiersTab() {
           <div class="extreme-box worst"><div class="muted small">Biggest Nemesis</div><div style="margin-top:3px">${nemHtml}</div></div>
         </div>
         <div class="card" style="margin-bottom:0">
-          <div class="card-head"><h3>Draft Hall (2018–Present)</h3></div>
+          <div class="card-head"><h3>Draft Hall (${meta.firstSeason}–Present)</h3></div>
           <div class="extreme-box best" style="margin-bottom:8px"><div class="muted small">Best Draft Steal</div><div style="margin-top:3px">${bestDraftHtml}</div></div>
           <div class="extreme-box worst"><div class="muted small">Worst Draft Bust</div><div style="margin-top:3px">${worstDraftHtml}</div></div>
         </div>
         <div class="card" style="margin-bottom:0">
-          <div class="card-head"><h3>Trade Vault (2018–2025)</h3></div>
+          <div class="card-head"><h3>Trade Vault</h3></div>
           <div class="extreme-box best" style="margin-bottom:8px"><div class="muted small">Best Trade Ever</div><div style="margin-top:3px">${bestTradeHtml}</div></div>
           <div class="extreme-box worst"><div class="muted small">Worst Trade Regret</div><div style="margin-top:3px">${worstTradeHtml}</div></div>
         </div>
@@ -1770,17 +1822,21 @@ function renderPodcastAndAwards() {
     const tabBtn = document.querySelector('.tab-btn[data-tab="podcast"]');
     if (tabBtn) tabBtn.textContent = "Weekly Awards";
   } else {
-    if (rssLink && HUB.podcast && HUB.podcast.rss_url) rssLink.href = HUB.podcast.rss_url;
+    const validRss = safeUrl(HUB.podcast && HUB.podcast.rss_url);
+    if (rssLink && validRss) rssLink.href = validRss;
     if (!eps.length) {
       pList.innerHTML = `<p class="muted">No episodes published yet.</p>`;
     } else {
-      pList.innerHTML = eps.map(e => `
+      pList.innerHTML = eps.map(e => {
+        const audioSrc = safeUrl(e.audio_url);
+        return `
         <div class="ep-card">
-          <div class="ep-title">${e.title}</div>
-          <div class="ep-meta">${e.pub_date}${e.duration ? ` &bull; ${e.duration}` : ""}</div>
-          <audio controls preload="none" src="${e.audio_url}"></audio>
+          <div class="ep-title">${esc(e.title)}</div>
+          <div class="ep-meta">${esc(e.pub_date)}${e.duration ? ` &bull; ${esc(e.duration)}` : ""}</div>
+          ${audioSrc ? `<audio controls preload="none" src="${esc(audioSrc)}"></audio>` : `<p class="muted small">Audio unavailable</p>`}
         </div>
-      `).join("");
+      `;
+      }).join("");
     }
   }
 
@@ -1789,14 +1845,15 @@ function renderPodcastAndAwards() {
     document.getElementById("awardsTitle").textContent = `Week ${aw.week} Awards & Briefing`;
     document.getElementById("awardsAvg").textContent = `League Avg: ${aw.league_avg.toFixed(1)} pts`;
     document.getElementById("awardsList").innerHTML = aw.awards.map(a => {
-      const cleanBody = a.body
+      // Escape HTML FIRST, then apply safe markdown bold/code formatting (prevents Stored XSS!)
+      const cleanBody = esc(a.body)
         .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-        .replace(/`(.+?)`/g, "<code>$1</code>");
+        .replace(/&#96;(.+?)&#96;/g, "<code>$1</code>");
       return `
         <div class="award-card">
           <div class="award-head">
-            <span class="award-title">${a.title}</span>
-            <span class="pill pill-blue">${a.metric}</span>
+            <span class="award-title">${esc(a.title)}</span>
+            <span class="pill pill-blue">${esc(a.metric)}</span>
           </div>
           <div class="award-body">${cleanBody}</div>
         </div>
@@ -1811,7 +1868,7 @@ async function init() {
   const resp = await fetch("hub_data.json", { cache: "no-store" });
   HUB = await resp.json();
 
-  // Apply dynamic league branding from `league_config` (works for BFL, JFF, and any future ESPN league!)
+  // Apply dynamic league branding from `league_config` (works for BFL, JFF, and any future ESPN/Sleeper league!)
   const meta = getLeagueMeta();
   document.title = `${meta.name} Hub`;
   const badgeEl = document.querySelector(".brand-badge");
@@ -1821,23 +1878,24 @@ async function init() {
   const yrSpan = HUB.season - meta.firstSeason + 1;
   const histTxt = yrSpan > 1 ? `${yrSpan}-Year History` : `Inaugural Season`;
   const scoreTxt = meta.scoringLabel ? ` • ${meta.scoringLabel}` : "";
+  const fmtTxt = meta.formatLabel && meta.formatLabel !== "Redraft" ? ` • ${meta.formatLabel}` : "";
   document.getElementById("hubSubtitle").textContent =
-    `Season ${HUB.season} • Live through Week ${HUB.completed_week} • ${HUB.teams.length} Teams${scoreTxt} • ${histTxt}`;
+    `Season ${HUB.season} • Live through Week ${HUB.completed_week} • ${HUB.teams.length} Teams${scoreTxt}${fmtTxt} • ${histTxt}`;
 
   const rulesEl = document.getElementById("rulesBlurb");
   if (rulesEl && HUB.tiebreaker_rules) {
     const tb = HUB.tiebreaker_rules;
     const fieldDesc = meta.hasDivisions
-      ? `${tb.division_champions || meta.divOrder.length} Division Champions + ${tb.wild_cards || (meta.playoffTeams - meta.divOrder.length)} Wild Cards (${tb.first_round_bye || "Bye"}).`
-      : `Top ${meta.playoffTeams} of ${HUB.teams.length} Teams qualify (No Divisions • ${tb.first_round_bye || (meta.playoffByes > 0 ? `Top ${meta.playoffByes} earn 1st-Round Byes` : "No Byes")}).`;
-    rulesEl.innerHTML = `${fieldDesc} Official ${meta.badge} Tiebreakers: <strong>${tb.order || "Overall Record -> Points For (PF)"}</strong>.`;
+      ? `${tb.division_champions || meta.divOrder.length} Division Champions + ${tb.wild_cards || (meta.playoffTeams - meta.divOrder.length)} Wild Cards (${esc(tb.first_round_bye || "Bye")}).`
+      : `Top ${meta.playoffTeams} of ${HUB.teams.length} Teams qualify (No Divisions • ${esc(tb.first_round_bye || (meta.playoffByes > 0 ? `Top ${meta.playoffByes} earn 1st-Round Byes` : "No Byes"))}).`;
+    rulesEl.innerHTML = `${fieldDesc} Official ${esc(meta.badge)} Tiebreakers: <strong>${esc(tb.order || "Overall Record -> Points For (PF)")}</strong>.`;
   }
   const pmTitle = document.querySelector("#tab-playoff .hero-bar h2");
   if (pmTitle) pmTitle.textContent = `Interactive ${meta.badge} Playoff Machine`;
   const anTitle = document.querySelector("#tab-analytics .hero-bar h2");
   if (anTitle) anTitle.textContent = `${meta.badge} Analytics Lab — Storylines, Schedule Luck & Roster DNA`;
   const footerLeft = document.querySelector(".footer span:first-child");
-  if (footerLeft) footerLeft.innerHTML = `${meta.name} (Est. ${meta.firstSeason}) &bull; Hosted on Google Cloud Storage Free Tier`;
+  if (footerLeft) footerLeft.textContent = `${meta.name} (Est. ${meta.firstSeason}) • Hosted on Google Cloud Storage Free Tier`;
   document.getElementById("footerTimestamp").textContent =
     `Updated ${new Date(HUB.generated_at).toLocaleString()}`;
 
