@@ -387,43 +387,105 @@ def build_hub_data(season: int, completed_week: int) -> dict:
     return hub_data
 
 
+def _upload_blob_sdk_or_cli(src: Path, bucket_name: str, blob_name: str, ctype: str, cctl: str, project_id: str) -> None:
+    try:
+        from google.cloud import storage as gcs_storage  # type: ignore
+        client = gcs_storage.Client(project=project_id)
+        blob = client.bucket(bucket_name).blob(blob_name)
+        blob.cache_control = cctl
+        blob.upload_from_filename(str(src), content_type=ctype)
+        return
+    except Exception:
+        pass
+    subprocess.run(
+        [
+            "gcloud", "storage", "cp", str(src), f"gs://{bucket_name}/{blob_name}",
+            f"--project={project_id}",
+            f"--content-type={ctype}",
+            f"--cache-control={cctl}",
+        ],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+
+def refresh_bfl_live_overlay_from_gcs(
+    season: int,
+    completed_week: int,
+    bucket_name: str = "bfl-hub-7x9k2",
+    project_id: str = "bfl-fantasy",
+    league_id: str = "",
+) -> str:
+    """
+    Stateless Cloud-Run-friendly live game-day refresh for BFL:
+    Hydrates the existing `hub_data.json` from GCS (preserving full 2008–2026 history,
+    Trade Vault & Dossiers without needing local `bfl_history.db`), refreshes live
+    in-progress ESPN scores/projections + Playoff Machine odds, and re-uploads `hub_data.json`.
+    """
+    import requests
+    url = f"https://storage.googleapis.com/{bucket_name}/hub_data.json"
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
+    hub_data = r.json()
+
+    lid = str(league_id or ESPN_LEAGUE_ID)
+    raw_data = fetch_espn_week_data(lid, str(season), completed_week, ESPN_S2, ESPN_SWID)
+    teams_raw = parse_league_members_and_teams(raw_data)
+    completed_games, full_schedule, team_power = extract_live_state_from_espn(raw_data, completed_week)
+    future_weeks = list(range(completed_week + 1, 15))
+    weekly_projections = build_future_week_optimal_projections(season, future_weeks, teams_by_id=teams_raw)
+    baseline_odds = run_playoff_simulation(
+        min(14, completed_week + 1),
+        completed_games,
+        full_schedule,
+        team_power=team_power,
+        n_sims=5000,
+        weekly_projections=weekly_projections,
+    )
+
+    hub_data["generated_at"] = datetime.now(timezone.utc).isoformat()
+    hub_data["completed_week"] = completed_week
+    hub_data["completed_games"] = completed_games
+    hub_data["remaining_schedule"] = [g for g in full_schedule if g["week"] > completed_week]
+    hub_data["weekly_projections"] = {
+        str(wk): {
+            own: {
+                "proj": info["optimal_proj"],
+                "fa_fills": info["fa_fills"],
+                "is_live": bool(info.get("is_live", False)),
+                "live_pts": float(info.get("live_pts", 0.0)),
+                "rem_frac": float(info.get("rem_frac", 1.0)),
+            }
+            for own, info in wk_map.items()
+        }
+        for wk, wk_map in weekly_projections.items()
+    }
+    for t in hub_data.get("teams", []):
+        own = t["owner"]
+        pwr = team_power.get(own)
+        bo = baseline_odds.get(own, {})
+        if pwr:
+            t["power_mean"] = pwr["mean"]
+            t["power_std"] = pwr["std"]
+            t["raw_avg"] = pwr["raw_avg"]
+        if bo:
+            t["baseline_playoff_pct"] = bo.get("playoff_pct", t.get("baseline_playoff_pct", 0.0))
+            t["baseline_div_pct"] = bo.get("div_title_pct", t.get("baseline_div_pct", 0.0))
+            t["baseline_bye_pct"] = bo.get("bye_pct", t.get("baseline_bye_pct", 0.0))
+            t["baseline_leverage"] = bo.get("leverage_swing", t.get("baseline_leverage", 0.0))
+
+    out_path = WEB_HUB_DIR / "hub_data.json"
+    out_path.write_text(json.dumps(hub_data, indent=2), encoding="utf-8")
+    _upload_blob_sdk_or_cli(out_path, bucket_name, "hub_data.json", "application/json; charset=utf-8", "no-cache, max-age=60", project_id)
+    live_url = f"https://storage.googleapis.com/{bucket_name}/index.html"
+    print(f"⚡ Stateless live-overlay refresh deployed for BFL: {live_url}")
+    return live_url
+
+
 def deploy_hub_to_gcs(bucket_name: str, project_id: str = "bfl-fantasy") -> str:
     """
-    Deploys `web_hub/` static files to a Free-Tier GCS bucket (`US-CENTRAL1`, Standard)
-    using `gcloud storage`, ensuring public read access and fast cache revalidation.
+    Deploys `web_hub/` static files to a Free-Tier GCS bucket (`US-CENTRAL1`, Standard),
+    using `google-cloud-storage` SDK when available with automatic fallback to `gcloud storage`.
     """
-    # Create bucket in Always-Free-Tier US-CENTRAL1 if it does not yet exist
-    chk = subprocess.run(
-        ["gcloud", "storage", "buckets", "describe", f"gs://{bucket_name}", f"--project={project_id}"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
-    if chk.returncode != 0:
-        print(f"🪣 Creating Always-Free-Tier GCS bucket gs://{bucket_name} in US-CENTRAL1 ({project_id})...")
-        cr = subprocess.run(
-            [
-                "gcloud", "storage", "buckets", "create", f"gs://{bucket_name}",
-                f"--project={project_id}",
-                "--location=US-CENTRAL1",
-                "--default-storage-class=STANDARD",
-                "--uniform-bucket-level-access",
-            ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        if cr.returncode != 0:
-            raise RuntimeError(f"Failed creating bucket gs://{bucket_name}: {cr.stderr}")
-
-        # Configure public read & index.html main page
-        subprocess.run(
-            ["gcloud", "storage", "buckets", "add-iam-policy-binding", f"gs://{bucket_name}",
-             "--member=allUsers", "--role=roles/storage.objectViewer", f"--project={project_id}"],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        subprocess.run(
-            ["gcloud", "storage", "buckets", "update", f"gs://{bucket_name}",
-             "--web-main-page-suffix=index.html", "--web-error-page=index.html", f"--project={project_id}"],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
     uploads = [
         ("index.html", "text/html; charset=utf-8", "no-cache, max-age=60"),
         ("styles.css", "text/css; charset=utf-8", "public, max-age=300"),
@@ -434,15 +496,7 @@ def deploy_hub_to_gcs(bucket_name: str, project_id: str = "bfl-fantasy") -> str:
         src = WEB_HUB_DIR / fname
         if not src.exists():
             raise FileNotFoundError(f"Missing web hub asset: {src}")
-        subprocess.run(
-            [
-                "gcloud", "storage", "cp", str(src), f"gs://{bucket_name}/{fname}",
-                f"--project={project_id}",
-                f"--content-type={ctype}",
-                f"--cache-control={cctl}",
-            ],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        _upload_blob_sdk_or_cli(src, bucket_name, fname, ctype, cctl, project_id)
 
     url = f"https://storage.googleapis.com/{bucket_name}/index.html"
     print(f"🚀 Deployed BFL League Hub live to GCP Free Tier: {url}")

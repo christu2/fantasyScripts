@@ -338,9 +338,16 @@ def check_and_run_orchestrator(override_season: int = None, override_week: int =
                     save_scheduler_state(season, week, st)
 
     # -------------------------------------------------------------------------
-    # MILESTONE 6: Live NFL Game-Day Multi-League Hub Auto-Refresh (every ~20m)
-    # Updates live scores & real-time Playoff/Title odds across all leagues in `leagues_registry.json`!
+    # MILESTONE 6: Decoupled Multi-League Live Event Ledger (every 5m during NFL)
+    #              + Live Game-Day Multi-League Hub Auto-Refresh (every ~20m)
+    # Captures play-by-play swings, lead changes, nuclear games & injuries purely
+    # from ESPN to GCS JSONL for ALL leagues (no Discord required!) and updates
+    # live scores & Playoff/Title odds across all enabled leagues.
     # -------------------------------------------------------------------------
+    run_py_script(
+        ["live_event_ledger.py", "--season", str(season)],
+        f"Week {week} Multi-League Live Event Ledger Poll",
+    )
     run_py_script(
         ["game_day_hub_refresher.py", "--season", str(season)],
         f"Week {week} Live Game-Day Multi-League Hub Refresh Check",

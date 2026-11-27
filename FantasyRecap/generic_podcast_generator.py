@@ -50,6 +50,12 @@ from FantasyRecap.core.manifest import get_espn_credentials, load_project_env
 load_project_env()
 
 from FantasyRecap.config import CURRENT_YEAR
+from FantasyRecap.chat_adapters import (
+    fetch_optional_chat_messages,
+    load_league_game_events,
+    merge_game_and_chat_timeline,
+)
+from FantasyRecap.game_day_hub_refresher import REGISTRY_PATH
 from FantasyRecap.gemini_podcast_generator import (
     CONTRACTION_REPLACEMENTS,
     DEFAULT_CHRIS_VOICE,
@@ -246,6 +252,29 @@ RECENT TRADES:
 {tr_lines}
 """
 
+    # Load decoupled ESPN live event ledger + optional chat plugin (Discord, etc.) from registry
+    reg_entry = {}
+    hub_bucket = "bfl-hub-7x9k2"
+    if REGISTRY_PATH.exists():
+        try:
+            reg_data = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+            hub_bucket = reg_data.get("hub_bucket", hub_bucket)
+            for lg in reg_data.get("leagues", []):
+                if lg.get("slug") == slug:
+                    reg_entry = lg
+                    break
+        except Exception:
+            pass
+    game_events = load_league_game_events(
+        slug, season, week, bucket=hub_bucket, gcs_subpath=reg_entry.get("gcs_subpath", slug)
+    )
+    ev_ts = [float(e.get("ts", 0.0)) for e in game_events if e.get("ts")]
+    chat_msgs = fetch_optional_chat_messages(
+        reg_entry.get("chat"),
+        start_ts=(min(ev_ts) - 14400) if ev_ts else None,
+        end_ts=(max(ev_ts) + 21600) if ev_ts else None,
+    )
+
     # Act 2: Individual Matchup Breakdowns (ordered by excitement / closeness & playoff leverage)
     matchup_blocks: List[Tuple[str, str]] = []
     for m in matchups_wk:
@@ -269,6 +298,14 @@ RECENT TRADES:
             bl_txt = f" | Bench Blunder: started {blunders[0]['started']['name']} ({blunders[0]['started']['pts']:.1f}) over {blunders[0]['benched']['name']} ({blunders[0]['benched']['pts']:.1f}, +{blunders[0]['diff']:.1f} left on bench)" if blunders else ""
             return f"  - Top Performers: {studs}\n  - Dud/Disappointment: {busts or 'None major'}{bl_txt}"
 
+        timeline_lines = merge_game_and_chat_timeline(
+            game_events, chat_msgs, matchup_owners=[w_own, l_own]
+        )
+        timeline_section = ""
+        if timeline_lines:
+            capped = timeline_lines[:10]
+            timeline_section = "\nLIVE GAME TIMELINE, SWINGS & CHAT REACTIONS:\n" + "\n".join(f"  - {ln}" for ln in capped) + "\n"
+
         blk = f"""MATCHUP: {w_own} (entering {we[0]}-{we[1]}) vs {l_own} (entering {le[0]}-{le[1]})
 FINAL RESULT: {w_own} def. {l_own}, {w_pts:.2f} to {l_pts:.2f} (margin: {margin:.2f} pts)
 UPDATED RECORDS: {w_own} moves to {wp[0]}-{wp[1]}; {l_own} drops to {lp[0]}-{lp[1]}
@@ -279,7 +316,7 @@ WINNER CONTEXT — {w_own}:
 
 LOSER CONTEXT — {l_own}:
   {_manager_blurb(l_own)}
-{_fmt_team_box(l_tid, l_own)}
+{_fmt_team_box(l_tid, l_own)}{timeline_section}
 """
         matchup_blocks.append((f"{w_own} vs {l_own}", blk))
 
@@ -491,6 +528,7 @@ TASK (SEGMENT 1 OF {total_segs} — COLD OPEN, AWARDS & TRADES, ~240–320 words
             pm = f"""{base_rules}
 TASK (SEGMENT {seg_n} OF {total_segs} — MATCHUP BREAKDOWN, ~{m_words} words):
 - Mid-show (no "welcome back"). Break down every matchup below with studs, busts, bench blunders, schedule luck, and playoff implications.
+- Whenever a matchup includes a LIVE GAME TIMELINE, SWINGS & CHAT REACTIONS section, vividly weave the win-probability shockwaves, lead changes, nuclear plays, injury exits, prime-time sweats, and any manager chat quotes into the storytelling!
 --- MATCHUPS ---
 {body[:9000]}
 """

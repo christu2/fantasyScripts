@@ -1198,15 +1198,27 @@ def deploy_multi_league_to_gcs(
         (data_path, "hub_data.json", "application/json; charset=utf-8", "no-cache, max-age=60"),
     ]
     for src, dest_name, ctype, cctl in uploads:
-        subprocess.run(
-            [
-                "gcloud", "storage", "cp", str(src), f"gs://{bucket_name}/{slug}/{dest_name}",
-                f"--project={project_id}",
-                f"--content-type={ctype}",
-                f"--cache-control={cctl}",
-            ],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        blob_path = f"{slug}/{dest_name}"
+        uploaded = False
+        try:
+            from google.cloud import storage as gcs_storage  # type: ignore
+            client = gcs_storage.Client(project=project_id)
+            blob = client.bucket(bucket_name).blob(blob_path)
+            blob.cache_control = cctl
+            blob.upload_from_filename(str(src), content_type=ctype)
+            uploaded = True
+        except Exception:
+            uploaded = False
+        if not uploaded:
+            subprocess.run(
+                [
+                    "gcloud", "storage", "cp", str(src), f"gs://{bucket_name}/{blob_path}",
+                    f"--project={project_id}",
+                    f"--content-type={ctype}",
+                    f"--cache-control={cctl}",
+                ],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
     url = f"https://storage.googleapis.com/{bucket_name}/{slug}/index.html"
     print(f"🚀 Deployed {slug} League Hub live to GCP Free Tier: {url}")
     return url

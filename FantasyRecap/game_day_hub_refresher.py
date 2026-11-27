@@ -70,27 +70,37 @@ def _load_registry() -> dict:
     return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
 
 
-def _should_refresh_now(interval_min: int, force: bool) -> bool:
+def _should_refresh_now(interval_min: int, force: bool, bucket: str = "") -> bool:
     if force:
         return True
     if not is_nfl_live_window():
         return False
+    last_ts = 0.0
     if STATE_PATH.exists():
         try:
             st = json.loads(STATE_PATH.read_text(encoding="utf-8"))
             last_ts = float(st.get("last_run_epoch", 0.0))
-            if (time.time() - last_ts) < (interval_min * 60 - 15):
-                return False
         except Exception:
             pass
+    elif bucket:
+        try:
+            import requests
+            r = requests.get(f"https://storage.googleapis.com/{bucket}/telemetry/_hub_refresh_state.json", timeout=5)
+            if r.status_code == 200:
+                last_ts = float(r.json().get("last_run_epoch", 0.0))
+        except Exception:
+            pass
+    if last_ts > 0 and (time.time() - last_ts) < (interval_min * 60 - 15):
+        return False
     return True
 
 
-def _detect_completed_week_for_bfl(season: int) -> int:
+def _detect_completed_week_for_bfl(season: int, league_id: str = "") -> int:
     from FantasyRecap.core.manifest import get_espn_credentials
     from FantasyRecap.multi_league_hub import discover_league_settings
     creds = get_espn_credentials()
-    cfg, _ = discover_league_settings(creds["league_id"], creds["cookies"], season, "bfl")
+    lid = str(league_id or creds["league_id"])
+    cfg, _ = discover_league_settings(lid, creds["cookies"], season, "bfl")
     return max(1, int(cfg["completed_week"]))
 
 
@@ -102,12 +112,12 @@ def refresh_all_leagues(
     deploy: bool = True,
 ) -> dict:
     reg = _load_registry()
-    interval = int(reg.get("live_refresh_interval_minutes", 20))
-    if not _should_refresh_now(interval, force=force):
-        return {"ran": False, "reason": "outside_live_window_or_cooldown"}
-
     bucket = reg.get("hub_bucket", "bfl-hub-7x9k2")
     project = reg.get("gcp_project", "bfl-fantasy")
+    interval = int(reg.get("live_refresh_interval_minutes", 20))
+    if not _should_refresh_now(interval, force=force, bucket=bucket):
+        return {"ran": False, "reason": "outside_live_window_or_cooldown"}
+
     results = {}
 
     for lg in reg.get("leagues", []):
@@ -118,11 +128,24 @@ def refresh_all_leagues(
             continue
         try:
             if lg.get("builder") == "bfl":
-                from FantasyRecap.build_league_hub import build_hub_data, deploy_hub_to_gcs
-                cwk = _detect_completed_week_for_bfl(season)
-                build_hub_data(season, cwk)
-                url = deploy_hub_to_gcs(bucket, project_id=project) if deploy else "local"
-                results[slug] = {"ok": True, "completed_week": cwk, "url": url}
+                from FantasyRecap.build_league_hub import (
+                    DB_PATH,
+                    build_hub_data,
+                    deploy_hub_to_gcs,
+                    refresh_bfl_live_overlay_from_gcs,
+                )
+                cwk = _detect_completed_week_for_bfl(season, lg.get("espn_league_id", ""))
+                if DB_PATH.exists():
+                    build_hub_data(season, cwk)
+                    url = deploy_hub_to_gcs(bucket, project_id=project) if deploy else "local"
+                    results[slug] = {"ok": True, "mode": "full", "completed_week": cwk, "url": url}
+                elif deploy:
+                    url = refresh_bfl_live_overlay_from_gcs(
+                        season, cwk, bucket_name=bucket, project_id=project, league_id=str(lg.get("espn_league_id") or "")
+                    )
+                    results[slug] = {"ok": True, "mode": "stateless_live_overlay", "completed_week": cwk, "url": url}
+                else:
+                    results[slug] = {"ok": True, "mode": "skipped_no_local_db", "completed_week": cwk}
             else:
                 from FantasyRecap.multi_league_hub import build_generic_hub_data, deploy_multi_league_to_gcs
                 hub_data, data_path = build_generic_hub_data(lg["espn_league_id"], slug, season)
@@ -133,10 +156,20 @@ def refresh_all_leagues(
             results[slug] = {"ok": False, "error": str(exc)}
 
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(
-        json.dumps({"last_run_epoch": time.time(), "last_run_iso": datetime.now(CT_TZ).isoformat(), "results": results}, indent=2),
-        encoding="utf-8",
+    state_payload = json.dumps(
+        {"last_run_epoch": time.time(), "last_run_iso": datetime.now(CT_TZ).isoformat(), "results": results},
+        indent=2,
     )
+    STATE_PATH.write_text(state_payload, encoding="utf-8")
+    if deploy:
+        try:
+            from FantasyRecap.build_league_hub import _upload_blob_sdk_or_cli
+            _upload_blob_sdk_or_cli(
+                STATE_PATH, bucket, "telemetry/_hub_refresh_state.json",
+                "application/json; charset=utf-8", "no-cache, max-age=30", project,
+            )
+        except Exception:
+            pass
     return {"ran": True, "results": results}
 
 

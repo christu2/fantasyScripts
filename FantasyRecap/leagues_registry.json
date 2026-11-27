@@ -11,6 +11,12 @@
       "builder": "bfl",
       "gcs_subpath": "",
       "rss_url": "https://storage.googleapis.com/bfl-podcast-7x9k2/feed.xml",
+      "telemetry_enabled": true,
+      "chat": {
+        "provider": "discord",
+        "channel_id_env": "TRASH_TALK_CHANNEL_ID",
+        "bot_token_env": "DISCORD_BOT_TOKEN"
+      },
       "enabled": true
     },
     {
@@ -20,6 +26,10 @@
       "builder": "generic",
       "gcs_subpath": "jff",
       "rss_url": "https://storage.googleapis.com/bfl-podcast-7x9k2/jff/feed.xml",
+      "telemetry_enabled": true,
+      "chat": {
+        "provider": "none"
+      },
       "enabled": true
     }
   ]

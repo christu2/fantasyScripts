@@ -534,6 +534,82 @@ class TestAnalyticsLabAndPlayoffPush(unittest.TestCase):
         self.assertIn("Fixed Playoff Bracket", app_js)
         self.assertIn("meta.playoffReseed", app_js)
 
+    def test_decoupled_live_event_ledger_and_optional_chat_merger(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from FantasyRecap.chat_adapters import fetch_optional_chat_messages, merge_game_and_chat_timeline
+        from FantasyRecap.live_event_ledger import detect_live_events_from_snapshots
+
+        ct = ZoneInfo("America/Chicago")
+        t1 = datetime(2026, 11, 29, 13, 30, tzinfo=ct)
+        t2 = datetime(2026, 11, 29, 19, 30, tzinfo=ct)  # SNF window
+
+        # Snapshot 1: Alice leads Bob early
+        snap1 = [{
+            "matchup_key": "1_2",
+            "away_owner": "Alice Smith",
+            "home_owner": "Bob Jones",
+            "away_live": 45.0,
+            "home_live": 28.0,
+            "away_proj": 118.0,
+            "home_proj": 95.0,
+            "away_starters": [
+                {"id": 10, "name": "Star WR", "pos": "WR", "pts": 12.0, "proj": 15.0, "injury": "ACTIVE"},
+                {"id": 11, "name": "Hurt RB", "pos": "RB", "pts": 1.2, "proj": 14.0, "injury": "ACTIVE"},
+            ],
+            "home_starters": [
+                {"id": 20, "name": "Boom WR", "pos": "WR", "pts": 6.0, "proj": 14.0, "injury": "ACTIVE"},
+            ],
+        }]
+        ev1, st1 = detect_live_events_from_snapshots({}, snap1, slug="jff", season=2026, week=12, now_epoch=t1.timestamp(), now_ct=t1)
+        self.assertEqual(ev1, [])  # First baseline snapshot emits no false shockwaves
+
+        # Snapshot 2 (SNF): Bob's Boom WR explodes to 34.0 (+20 over proj), Alice's Hurt RB exits OUT, lead flips + WP shockwave + SNF sweat!
+        snap2 = [{
+            "matchup_key": "1_2",
+            "away_owner": "Alice Smith",
+            "home_owner": "Bob Jones",
+            "away_live": 62.0,
+            "home_live": 74.0,
+            "away_proj": 86.0,
+            "home_proj": 114.0,
+            "away_starters": [
+                {"id": 10, "name": "Star WR", "pos": "WR", "pts": 14.0, "proj": 15.0, "injury": "ACTIVE"},
+                {"id": 11, "name": "Hurt RB", "pos": "RB", "pts": 1.2, "proj": 14.0, "injury": "OUT"},
+            ],
+            "home_starters": [
+                {"id": 20, "name": "Boom WR", "pos": "WR", "pts": 34.0, "proj": 14.0, "injury": "ACTIVE"},
+            ],
+        }]
+        ev2, st2 = detect_live_events_from_snapshots(st1, snap2, slug="jff", season=2026, week=12, now_epoch=t2.timestamp(), now_ct=t2)
+        ev_types = {e["type"] for e in ev2}
+        self.assertEqual(ev_types, {"nuclear", "injury_exit", "shockwave", "lead_change", "prime_time_sweat"})
+        shock = next(e for e in ev2 if e["type"] == "shockwave")
+        self.assertEqual(shock["surging_owner"], "Bob Jones")
+        self.assertTrue(any("Boom WR" in c for c in shock["catalysts"]))
+
+        # Deduplication: re-polling identical snap2 must NOT re-emit nuclear/injury/sweat/shockwave!
+        ev3, _ = detect_live_events_from_snapshots(st2, snap2, slug="jff", season=2026, week=12, now_epoch=t2.timestamp() + 300, now_ct=t2)
+        self.assertEqual(ev3, [])
+
+        # Optional chat adapter returns [] cleanly when provider == "none"
+        self.assertEqual(fetch_optional_chat_messages({"provider": "none"}), [])
+        self.assertEqual(fetch_optional_chat_messages(None), [])
+
+        # Pure-ESPN timeline works with zero chat
+        pure_tl = merge_game_and_chat_timeline(ev2, [], matchup_owners=["Alice Smith", "Bob Jones"])
+        self.assertEqual(len(pure_tl), 5)
+        self.assertFalse(any("CHAT (" in ln for ln in pure_tl))
+
+        # With optional chat enabled, messages within ±15m of a shockwave interleave chronologically!
+        chats = [
+            {"ts": t2.timestamp() + 120, "time_ct": "Sun 7:32 PM CT", "type": "chat", "author": "Bob Jones", "text": "BOOM WR JUST SAVED MY SEASON!"},
+            {"ts": t2.timestamp() + 7200, "time_ct": "Sun 9:30 PM CT", "type": "chat", "author": "Unrelated Guy", "text": "Anyone want pizza?"},
+        ]
+        merged = merge_game_and_chat_timeline(ev2, chats, matchup_owners=["Alice Smith", "Bob Jones"])
+        self.assertTrue(any("BOOM WR JUST SAVED MY SEASON!" in ln for ln in merged))
+        self.assertFalse(any("pizza" in ln for ln in merged))
+
 
 if __name__ == "__main__":
     unittest.main()
