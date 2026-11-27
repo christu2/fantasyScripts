@@ -94,8 +94,9 @@ class TestMultiFormatLeagueSupport(unittest.TestCase):
             # Keeper $2 stud -> MUST be excluded from draft steals ranking!
             (2026, 50, 10, "Frank", "Kept Dynasty WR", "WR", 25, 2, 275.0, 2, 1),
         ]
-        drafts, seasons = score_draft_picks_multi_format(rows, {"WR": 5}, team_count=10, draft_type="AUCTION")
+        drafts, seasons, scored_dp = score_draft_picks_multi_format(rows, {"WR": 5}, team_count=10, draft_type="AUCTION")
         self.assertEqual(seasons, [2026])
+        self.assertEqual(len(scored_dp), 5)  # 6th row was keeper -> excluded!
         steals = drafts["2026"]["steals"]
         busts = drafts["2026"]["busts"]
         self.assertTrue(steals)

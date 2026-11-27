@@ -224,7 +224,7 @@ def score_draft_picks_multi_format(
             steals = sorted([x for x in sub if x["round"] >= 4 and x["delta"] > 0 and x["pos_leap"] >= 3], key=lambda x: (-x["delta"], -x["pos_leap"]))[:15]
             busts = sorted([x for x in sub if x["round"] <= 5 and x["delta"] < 0], key=lambda x: (x["delta"], x["pos_leap"]))[:15]
         drafts[label] = {"steals": steals, "busts": busts}
-    return drafts, draft_seasons
+    return drafts, draft_seasons, scored_dp
 
 
 def discover_league_settings(league_id: str, cookies: dict, season: int, slug: str) -> Tuple[dict, dict]:
@@ -943,7 +943,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     dp_rows = cur.execute(
         "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
     ).fetchall()
-    drafts, draft_seasons = score_draft_picks_multi_format(
+    drafts, draft_seasons, scored_dp = score_draft_picks_multi_format(
         dp_rows,
         repl_ranks,
         config["team_count"],
@@ -1169,8 +1169,9 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         lk = luck_map.get(o, {})
         tc = tc_map.get(o, {})
         my_dp = [x for x in scored_dp if x["owner"] == o]
-        bs = max((x for x in my_dp if x["round"] >= 4 and x["delta"] > 0), key=lambda x: x["delta"], default=None)
-        wb = min((x for x in my_dp if x["round"] <= 5 and x["delta"] < 0), key=lambda x: x["delta"], default=None)
+        is_auc = config.get("draft_type") == "AUCTION" or any(x.get("bid", 0) > 0 for x in my_dp)
+        bs = max((x for x in my_dp if ((x.get("bid", 0) <= 15) if is_auc else x["round"] >= 4) and x["delta"] > 0), key=lambda x: x["delta"], default=None)
+        wb = min((x for x in my_dp if ((x.get("bid", 0) >= 20) if is_auc else x["round"] <= 5) and x["delta"] < 0), key=lambda x: x["delta"], default=None)
         badges = []
         if (lk.get("pf_plus") or 100.0) >= 105.0: badges.append("Era Scorer")
         if (lk.get("luck_delta") or 0.0) >= 1.5: badges.append("Schedule Blessed")
