@@ -449,12 +449,17 @@ def poll_all_league_ledgers(
         slug = lg["slug"]
         if slug_filter and slug != slug_filter:
             continue
-        lid = str(lg["espn_league_id"])
+        platform = str(lg.get("platform") or "espn").lower()
+        lid = str(lg.get("league_id") or lg.get("espn_league_id") or "")
         subpath = lg.get("gcs_subpath", slug).strip("/")
         gcs_prefix = f"{subpath}/telemetry" if subpath else "telemetry"
 
         try:
-            wk = _detect_active_nfl_week(lid, creds["cookies"], season)
+            if platform == "sleeper":
+                from FantasyRecap.sleeper_adapter import detect_sleeper_active_week, fetch_sleeper_live_matchups
+                wk = detect_sleeper_active_week(lid)
+            else:
+                wk = _detect_active_nfl_week(lid, creds["cookies"], season)
             state_file = TELEMETRY_DIR / f"{slug}_{season}_week_{wk}_state.json"
             events_file = TELEMETRY_DIR / f"{slug}_{season}_week_{wk}_events.jsonl"
 
@@ -471,7 +476,10 @@ def poll_all_league_ledgers(
                 if remote_ev:
                     events_file.write_text(remote_ev, encoding="utf-8")
 
-            curr_matchups = _fetch_live_matchups_for_league(lid, season, wk, creds)
+            if platform == "sleeper":
+                curr_matchups = fetch_sleeper_live_matchups(lid, wk)
+            else:
+                curr_matchups = _fetch_live_matchups_for_league(lid, season, wk, creds)
             new_events, next_state = detect_live_events_from_snapshots(
                 prev_state, curr_matchups, slug=slug, season=season, week=wk
             )

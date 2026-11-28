@@ -1147,6 +1147,24 @@ function renderDraftsTab() {
     const yr = sSel.value;
     const own = oSel.value;
     const pack = HUB.history.drafts[yr] || { steals: [], busts: [] };
+    const modes = pack.modes || [];
+    const stHead = document.getElementById("stealsSubhead");
+    const buHead = document.getElementById("bustsSubhead");
+    if (stHead && buHead) {
+      if (modes.length > 1) {
+        stHead.textContent = "Biggest Draft Steals (Mixed Snake & Auction Eras)";
+        buHead.textContent = "Biggest Draft Busts (Mixed Snake & Auction Eras)";
+      } else if (modes[0] === "AUCTION") {
+        stHead.textContent = "Biggest Auction Steals ($15 & Under)";
+        buHead.textContent = "Biggest Auction Busts ($20+ Spend)";
+      } else if (modes[0] === "LINEAR") {
+        stHead.textContent = "Biggest Rookie Draft Steals (Round 2+)";
+        buHead.textContent = "Biggest Rookie Draft Busts (Round 1)";
+      } else {
+        stHead.textContent = "Biggest Draft Steals (Round 4+)";
+        buHead.textContent = "Biggest Draft Busts (Rounds 1–5)";
+      }
+    }
     const filterFn = r => !own || r.owner === own;
     const fmt = (rows, isSteal) => {
       const f = rows.filter(filterFn).slice(0, 10);
@@ -1846,10 +1864,11 @@ function renderDossiersTab() {
       else if (s.runner_up) badge = `<span class="tag-pill tag-blue">Runner-Up</span>`;
       else if (s.won_division) badge = `<span class="tag-pill tag-green">Div Champ (#${s.final_rank})</span>`;
       else if (s.made_playoffs) badge = `<span class="tag-pill tag-green">Playoffs (#${s.final_rank})</span>`;
+      const eraHtml = s.era_note ? `<span class="tie-note">${esc(s.era_note)}</span>` : "";
       return `
         <tr>
           <td><strong>${s.season}</strong></td>
-          <td>${esc(s.team_name)}</td>
+          <td>${esc(s.team_name)}${eraHtml}</td>
           <td>${esc(s.division || "—")}</td>
           <td><strong>${s.wins}-${s.losses}</strong></td>
           <td>${s.pf.toFixed(1)}</td>

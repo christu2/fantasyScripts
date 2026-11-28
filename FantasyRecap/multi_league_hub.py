@@ -120,60 +120,74 @@ def score_draft_picks_multi_format(
     team_count: int,
     *,
     draft_type: str = "SNAKE",
-) -> Tuple[dict, List[int]]:
+    season_draft_types: Optional[Dict[int, str]] = None,
+    season_repl_ranks: Optional[Dict[int, Dict[str, int]]] = None,
+) -> Tuple[dict, List[int], List[dict]]:
     """
-    Scores Draft Hall steals & busts across Snake, Auction, Keeper, and Dynasty formats:
-      - Excludes keeper picks (`is_keeper == 1`) from redraft/auction draft-value rankings
-        so late-round keepers do not skew steals.
-      - For Auction leagues (`draft_type == "AUCTION"` or positive `bid_amount` values),
-        computes Expected VORP from the Auction `$` Spend curve (steal = cheap `$` high VORP;
-        bust = expensive `$` dud).
-      - For Snake drafts, computes position-normalized Draft VORP (`actual_vorp - expected_vorp[pos_draft_rank]`).
-    Each `dp_rows` tuple is:
-      `(season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, is_keeper)`
+    Scores Draft Hall steals & busts across Snake, Auction, Keeper, Dynasty Linear,
+    AND Mixed-History leagues that changed rules over time (e.g., Snake in 2021–2023
+    then Auction + Superflex in 2024–2026!):
+      - Evaluates draft mode (`AUCTION` vs `SNAKE` vs short `LINEAR` rookie draft) and
+        positional replacement baselines **independently per season `yr`**.
+      - Excludes keeper picks (`keeper == 1`) so late-round keepers never skew steals.
+      - Because every era is normalized to `+VORP points above expectation`, All-Time
+        Steals & Busts rank Snake-era picks (`Rd 10`) and Auction-era picks (`$3`)
+        side-by-side on the exact same value scale!
     """
     valid_rows = [r for r in dp_rows if len(r) >= 9]
-    is_auction = str(draft_type).upper() == "AUCTION" or any(
-        int(r[9] or 0) > 0 for r in valid_rows if len(r) >= 10
-    )
+    rows_by_yr: Dict[int, List[tuple]] = defaultdict(list)
+    max_round_by_yr: Dict[int, int] = defaultdict(int)
+    for r in valid_rows:
+        yr = int(r[0])
+        rows_by_yr[yr].append(r)
+        max_round_by_yr[yr] = max(max_round_by_yr[yr], int(r[2] or 0))
 
-    # Replacement baseline per (season, pos)
+    # Determine draft mode PER SEASON so Snake -> Auction rule transitions never corrupt prior years!
+    mode_by_yr: Dict[int, str] = {}
+    all_yrs = sorted(rows_by_yr.keys())
+    for yr in all_yrs:
+        has_bids = any(int(r[9] or 0) > 0 for r in rows_by_yr[yr] if len(r) >= 10)
+        explicit = str((season_draft_types or {}).get(yr) or "").upper()
+        if has_bids or explicit == "AUCTION" or (not season_draft_types and len(all_yrs) == 1 and str(draft_type).upper() == "AUCTION"):
+            mode_by_yr[yr] = "AUCTION"
+        elif explicit == "LINEAR" or (0 < max_round_by_yr[yr] <= 6):
+            mode_by_yr[yr] = "LINEAR"
+        else:
+            mode_by_yr[yr] = "SNAKE"
+
+    # Replacement baseline per (season, pos) using that exact season's replacement ranks!
     curves = defaultdict(list)
     for r in valid_rows:
         curves[(int(r[0]), r[5])].append(float(r[8] or 0.0))
     repl_pts_map = {}
-    for k, vals in curves.items():
+    for (yr, pos), vals in curves.items():
         vals.sort(reverse=True)
-        r_idx = min(repl_ranks.get(k[1], team_count) - 1, len(vals) - 1)
-        repl_pts_map[k] = vals[r_idx] if vals else 0.0
+        yr_ranks = (season_repl_ranks or {}).get(yr) or repl_ranks
+        r_idx = min(yr_ranks.get(pos, team_count) - 1, len(vals) - 1)
+        repl_pts_map[(yr, pos)] = vals[r_idx] if vals else 0.0
 
-    # Auction expected-VORP curve by spend rank within each season (overall across skill positions)
+    # Auction expected-VORP curve & spend rank computed only for AUCTION seasons
     auction_vorp_curves = defaultdict(list)
-    if is_auction:
-        for r in valid_rows:
-            yr, pos, pts = int(r[0]), r[5], float(r[8] or 0.0)
-            is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
-            if is_keeper:
-                continue
-            rp = repl_pts_map.get((yr, pos), 0.0)
-            auction_vorp_curves[yr].append(max(0.0, pts - rp))
-        for yr in auction_vorp_curves:
-            auction_vorp_curves[yr].sort(reverse=True)
-
-    # Compute spend rank per season for Auction
     spend_rank_map = {}
-    if is_auction:
-        by_yr_bid = defaultdict(list)
-        for idx, r in enumerate(valid_rows):
-            is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
-            if is_keeper:
-                continue
-            bid = int(r[9] or 0) if len(r) >= 10 else 0
-            by_yr_bid[int(r[0])].append((bid, -int(r[1]), idx))
-        for yr, items in by_yr_bid.items():
-            items.sort(reverse=True)
-            for rank_i, (_, _, row_idx) in enumerate(items, 1):
-                spend_rank_map[row_idx] = rank_i
+    by_yr_bid = defaultdict(list)
+    for idx, r in enumerate(valid_rows):
+        yr = int(r[0])
+        if mode_by_yr.get(yr) != "AUCTION":
+            continue
+        is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
+        if is_keeper:
+            continue
+        pos, pts = r[5], float(r[8] or 0.0)
+        bid = int(r[9] or 0) if len(r) >= 10 else 0
+        rp = repl_pts_map.get((yr, pos), 0.0)
+        auction_vorp_curves[yr].append(max(0.0, pts - rp))
+        by_yr_bid[yr].append((bid, -int(r[1]), idx))
+    for yr in auction_vorp_curves:
+        auction_vorp_curves[yr].sort(reverse=True)
+    for yr, items in by_yr_bid.items():
+        items.sort(reverse=True)
+        for rank_i, (_, _, row_idx) in enumerate(items, 1):
+            spend_rank_map[row_idx] = rank_i
 
     scored_dp = []
     for idx, r in enumerate(valid_rows):
@@ -189,8 +203,9 @@ def score_draft_picks_multi_format(
             continue
         rp = repl_pts_map[(yr, pos)]
         actual_vorp = max(0.0, pts - rp)
+        dmode = mode_by_yr.get(yr, "SNAKE")
 
-        if is_auction:
+        if dmode == "AUCTION":
             avc = auction_vorp_curves.get(yr, [])
             srank = spend_rank_map.get(idx, pick)
             exp_vorp = avc[min(srank - 1, len(avc) - 1)] if avc else 0.0
@@ -203,7 +218,8 @@ def score_draft_picks_multi_format(
             "season": yr,
             "pick": pick,
             "round": rnd,
-            "bid": bid if is_auction else 0,
+            "bid": bid if dmode == "AUCTION" else 0,
+            "draft_mode": dmode,
             "owner": own,
             "player": pname,
             "pos": pos,
@@ -214,16 +230,31 @@ def score_draft_picks_multi_format(
             "delta": delta,
         })
 
+    def _is_steal(x: dict) -> bool:
+        if x["delta"] <= 0:
+            return False
+        if x["draft_mode"] == "AUCTION":
+            return x["bid"] <= 15
+        if x["draft_mode"] == "LINEAR":
+            return x["round"] >= 2 and x["pos_leap"] >= 1
+        return x["round"] >= 4 and x["pos_leap"] >= 3
+
+    def _is_bust(x: dict) -> bool:
+        if x["delta"] >= 0:
+            return False
+        if x["draft_mode"] == "AUCTION":
+            return x["bid"] >= 20
+        if x["draft_mode"] == "LINEAR":
+            return x["round"] == 1
+        return x["round"] <= 5
+
     draft_seasons = sorted({x["season"] for x in scored_dp}, reverse=True)
     drafts = {}
     for label, sub in [("all", scored_dp)] + [(str(y), [x for x in scored_dp if x["season"] == y]) for y in draft_seasons]:
-        if is_auction:
-            steals = sorted([x for x in sub if x["bid"] <= 15 and x["delta"] > 0], key=lambda x: (-x["delta"], x["bid"]))[:15]
-            busts = sorted([x for x in sub if x["bid"] >= 20 and x["delta"] < 0], key=lambda x: (x["delta"], -x["bid"]))[:15]
-        else:
-            steals = sorted([x for x in sub if x["round"] >= 4 and x["delta"] > 0 and x["pos_leap"] >= 3], key=lambda x: (-x["delta"], -x["pos_leap"]))[:15]
-            busts = sorted([x for x in sub if x["round"] <= 5 and x["delta"] < 0], key=lambda x: (x["delta"], x["pos_leap"]))[:15]
-        drafts[label] = {"steals": steals, "busts": busts}
+        steals = sorted([x for x in sub if _is_steal(x)], key=lambda x: (-x["delta"], -x["pos_leap"]))[:15]
+        busts = sorted([x for x in sub if _is_bust(x)], key=lambda x: (x["delta"], x["pos_leap"]))[:15]
+        modes_present = sorted({x["draft_mode"] for x in sub})
+        drafts[label] = {"steals": steals, "busts": busts, "modes": modes_present}
     return drafts, draft_seasons, scored_dp
 
 
@@ -385,14 +416,18 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
     return config, raw
 
 
-def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: int) -> None:
-    """Syncs games, weekly player_boxscores, team_seasons, draft_picks, and trades for ANY ESPN league."""
+def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: int) -> Dict[int, dict]:
+    """
+    Syncs games, weekly player_boxscores, team_seasons, draft_picks, and trades for ANY ESPN league.
+    Returns `season_rules_by_yr` capturing per-season rule evolution (Snake -> Auction, 10T -> 12T, 1QB -> SF, PPR shifts).
+    """
     conn = sqlite3.connect(db_path)
     init_db(conn)
     cur = conn.cursor()
 
     lid = config["league_id"]
     seasons_to_sync = sorted(set(config["previous_seasons"] + [int(season)]))
+    season_rules_by_yr: Dict[int, dict] = {}
 
     for yr in seasons_to_sync:
         is_curr = (yr == int(season))
@@ -407,11 +442,46 @@ def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: i
         data = r.json()
         settings = data.get("settings", {})
         sched_set = settings.get("scheduleSettings", {})
+        roster_set = settings.get("rosterSettings", {})
+        scoring_set = settings.get("scoringSettings", {})
+        draft_set = settings.get("draftSettings", {})
         reg_wks = int(sched_set.get("matchupPeriodCount") or config["regular_season_weeks"])
         po_teams = int(sched_set.get("playoffTeamCount") or config["playoff_teams"])
         raw_divs = sched_set.get("divisions") or []
         div_id_map = {int(d["id"]): (d.get("name") or f"Div {d['id']}").strip() for d in raw_divs}
         has_divs = len(raw_divs) > 1
+
+        yr_tcount = int(settings.get("size") or len(data.get("teams", [])) or config["team_count"])
+        yr_ppr = 0.0
+        for it in (scoring_set.get("scoringItems") or []):
+            if it.get("statId") == 53:
+                yr_ppr = float(it.get("points") or 0.0)
+                break
+        yr_scoring = "Full PPR" if yr_ppr >= 0.9 else ("Half PPR" if yr_ppr >= 0.4 else "Standard")
+        yr_slots_raw = roster_set.get("lineupSlotCounts") or {}
+        yr_slots = {
+            "QB": int(yr_slots_raw.get("0", 1)),
+            "RB": int(yr_slots_raw.get("2", 2)),
+            "WR": int(yr_slots_raw.get("4", 2)),
+            "TE": int(yr_slots_raw.get("6", 1)),
+            "FLEX": int(yr_slots_raw.get("23", 1)),
+            "OP": int(yr_slots_raw.get("7", 0)),
+            "D/ST": int(yr_slots_raw.get("16", 1)),
+            "K": int(yr_slots_raw.get("17", 1)),
+        }
+        yr_dtype = str(draft_set.get("type") or "SNAKE").upper()
+        yr_keepers = int(draft_set.get("keeperCount") or 0)
+        yr_fmt = "Dynasty" if yr_keepers >= 10 else ("Keeper" if yr_keepers > 0 else ("Auction" if yr_dtype == "AUCTION" else "Snake"))
+        sf_tag = " • SF" if yr_slots["OP"] > 0 else ""
+        season_rules_by_yr[yr] = {
+            "teams": yr_tcount,
+            "scoring": yr_scoring,
+            "draft_type": yr_dtype,
+            "format": yr_fmt,
+            "superflex": yr_slots["OP"] > 0,
+            "repl_ranks": compute_dynamic_replacement_ranks(yr_tcount, yr_slots),
+            "summary": f"{yr_tcount}T • {yr_fmt} • {yr_scoring}{sf_tag}",
+        }
 
         members = {}
         for m in data.get("members", []):
@@ -646,6 +716,7 @@ def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: i
         print(f"✅ Synced {config['name']} Season {yr}: {len(trades)} trades, {len(picks_raw)} draft picks, {len(target_wks)} boxscore weeks")
 
     conn.close()
+    return season_rules_by_yr
 
 
 def run_generic_playoff_simulation(
@@ -666,19 +737,33 @@ def run_generic_playoff_simulation(
     po_teams = config["playoff_teams"]
     po_byes = config["playoff_byes"]
     use_pf_only = config["tiebreaker_rule"] == "TOTAL_POINTS_SCORED"
+    use_median = bool(config.get("uses_league_median", False))
 
     base_rec = {o: {"wins": 0, "losses": 0, "pf": 0.0} for o in owners}
     base_h2h = defaultdict(int)
     max_done_wk = 0
+    done_by_wk = defaultdict(list)
     for g in completed_games:
-        max_done_wk = max(max_done_wk, int(g["week"]))
+        gwk = int(g["week"])
+        max_done_wk = max(max_done_wk, gwk)
         a, h, sa, sh = g["away"], g["home"], float(g["away_score"]), float(g["home_score"])
         base_rec[a]["pf"] += sa
         base_rec[h]["pf"] += sh
+        done_by_wk[gwk].append((a, sa))
+        done_by_wk[gwk].append((h, sh))
         if sa >= sh:
             base_rec[a]["wins"] += 1; base_rec[h]["losses"] += 1; base_h2h[(a, h)] += 1
         else:
             base_rec[h]["wins"] += 1; base_rec[a]["losses"] += 1; base_h2h[(h, a)] += 1
+    if use_median:
+        for _gwk, scores_wk in done_by_wk.items():
+            if len(scores_wk) >= 2:
+                med = statistics.median([s for _, s in scores_wk])
+                for own, sc in scores_wk:
+                    if sc >= med:
+                        base_rec[own]["wins"] += 1
+                    else:
+                        base_rec[own]["losses"] += 1
 
     rem_games = [g for g in full_schedule if int(g["week"]) > max_done_wk]
     next_wk = min((int(g["week"]) for g in rem_games), default=max_done_wk + 1)
@@ -714,6 +799,7 @@ def run_generic_playoff_simulation(
         rec = {o: dict(base_rec[o]) for o in owners}
         h2h = defaultdict(int, base_h2h)
         won_next = {}
+        sim_wk_scores = defaultdict(list) if use_median else None
         for g in rem_games:
             a, h, wk = g["away"], g["home"], int(g["week"])
             wk_p = (weekly_projections or {}).get(wk, {})
@@ -725,6 +811,9 @@ def run_generic_playoff_simulation(
             sa = rng.gauss(a_mu, a_std)
             sh = rng.gauss(h_mu, h_std)
             rec[a]["pf"] += sa; rec[h]["pf"] += sh
+            if sim_wk_scores is not None:
+                sim_wk_scores[wk].append((a, sa))
+                sim_wk_scores[wk].append((h, sh))
             if sa >= sh:
                 rec[a]["wins"] += 1; rec[h]["losses"] += 1; h2h[(a, h)] += 1
                 if wk == next_wk:
@@ -733,6 +822,15 @@ def run_generic_playoff_simulation(
                 rec[h]["wins"] += 1; rec[a]["losses"] += 1; h2h[(h, a)] += 1
                 if wk == next_wk:
                     won_next[h] = True; won_next[a] = False
+        if sim_wk_scores:
+            for _swk, s_list in sim_wk_scores.items():
+                if len(s_list) >= 2:
+                    med = statistics.median([s for _, s in s_list])
+                    for own, sc in s_list:
+                        if sc >= med:
+                            rec[own]["wins"] += 1
+                        else:
+                            rec[own]["losses"] += 1
 
         if has_divs:
             dchamps, wcpool = [], []
@@ -821,7 +919,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     )
 
     db_path = LEAGUES_DB_DIR / f"{slug}_history.db"
-    sync_generic_league_db(db_path, config, cookies, season)
+    season_rules_by_yr = sync_generic_league_db(db_path, config, cookies, season)
 
     tmap = config["teams_by_id"]
     owners = [t["owner"] for t in tmap.values()]
@@ -939,15 +1037,19 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "super_bowls": [],
         }
 
-    # Draft Hall (Multi-Format: Snake, Auction $, Keeper/Dynasty exclusion!)
+    # Draft Hall (Multi-Format & Rule-Evolution Aware: Snake, Auction $, Keeper/Dynasty per season!)
     dp_rows = cur.execute(
         "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
     ).fetchall()
+    season_dtypes = {yr: info["draft_type"] for yr, info in season_rules_by_yr.items()}
+    season_rranks = {yr: info["repl_ranks"] for yr, info in season_rules_by_yr.items()}
     drafts, draft_seasons, scored_dp = score_draft_picks_multi_format(
         dp_rows,
         repl_ranks,
         config["team_count"],
         draft_type=config.get("draft_type", "SNAKE"),
+        season_draft_types=season_dtypes,
+        season_repl_ranks=season_rranks,
     )
 
     # Analytics Lab: All-Play Luck + PF+/PA+
@@ -1074,8 +1176,13 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     hm_rows.sort(key=lambda r: -r["total_vorp_wk"])
     hm_bounds = {p: {"min": min(pos_lists[p] or [0.0]), "max": max(pos_lists[p] or [0.0])} for p in active_pos}
 
-    # Trade Vault (reuses our dual-lens VORP logic with dynamic N-team baselines!)
+    # Trade Vault (reuses our dual-lens VORP logic with per-season N-team baselines so historical rule changes stay accurate!)
     trade_rows = cur.execute("SELECT trade_id, season, trade_week, effective_week, team_a_id, owner_a, team_b_id, owner_b FROM trades ORDER BY season DESC, trade_week DESC").fetchall()
+    trade_seasons_set = {int(r[1]) for r in trade_rows}
+    baselines_by_yr = {
+        yr: (baselines if yr == int(season) else _compute_generic_repl_baselines(conn, yr, season_rranks.get(yr, repl_ranks)))
+        for yr in trade_seasons_set
+    }
     titems_by_id = defaultdict(list)
     for r in cur.execute("SELECT trade_id, season, from_team_id, from_owner, to_team_id, to_owner, player_id, player_name, position FROM trade_items").fetchall():
         titems_by_id[r[0]].append({"from_tid": int(r[2]), "to_tid": int(r[4]), "pid": int(r[6]), "name": r[7], "pos": r[8] or "FLEX"})
@@ -1086,6 +1193,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     eval_live, eval_all = [], []
     for r in trade_rows:
         tid_s, yr, twk, ewk, ta, oa, tb, ob = r[0], int(r[1]), int(r[2]), int(r[3]), int(r[4]), r[5], int(r[6]), r[7]
+        yr_base = baselines_by_yr.get(yr, baselines)
         its = titems_by_id.get(tid_s, [])
         a_its = [x for x in its if x["to_tid"] == ta]
         b_its = [x for x in its if x["to_tid"] == tb]
@@ -1093,7 +1201,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         def _side(s_its, acq_tid):
             pout, sv_tot, rv_tot = [], 0.0, 0.0
             for it in s_its:
-                rp = baselines.get(it["pos"], 8.0)
+                rp = yr_base.get(it["pos"], 8.0)
                 rows_p = [x for x in pb_all.get((yr, it["pid"]), []) if x["wk"] >= ewk]
                 sv, sp, sw, rv_raw, rp_pts, rw = 0.0, 0.0, 0, 0.0, 0.0, 0
                 seen_w = set()
@@ -1169,17 +1277,23 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         lk = luck_map.get(o, {})
         tc = tc_map.get(o, {})
         my_dp = [x for x in scored_dp if x["owner"] == o]
-        is_auc = config.get("draft_type") == "AUCTION" or any(x.get("bid", 0) > 0 for x in my_dp)
-        bs = max((x for x in my_dp if ((x.get("bid", 0) <= 15) if is_auc else x["round"] >= 4) and x["delta"] > 0), key=lambda x: x["delta"], default=None)
-        wb = min((x for x in my_dp if ((x.get("bid", 0) >= 20) if is_auc else x["round"] <= 5) and x["delta"] < 0), key=lambda x: x["delta"], default=None)
+        bs = max((x for x in my_dp if ((x.get("bid", 0) <= 15) if x.get("draft_mode") == "AUCTION" else (x["round"] >= 2 if x.get("draft_mode") == "LINEAR" else x["round"] >= 4)) and x["delta"] > 0), key=lambda x: x["delta"], default=None)
+        wb = min((x for x in my_dp if ((x.get("bid", 0) >= 20) if x.get("draft_mode") == "AUCTION" else (x["round"] == 1 if x.get("draft_mode") == "LINEAR" else x["round"] <= 5)) and x["delta"] < 0), key=lambda x: x["delta"], default=None)
         badges = []
         if (lk.get("pf_plus") or 100.0) >= 105.0: badges.append("Era Scorer")
         if (lk.get("luck_delta") or 0.0) >= 1.5: badges.append("Schedule Blessed")
         elif (lk.get("luck_delta") or 0.0) <= -1.5: badges.append("Schedule Cursed")
         if tc.get("net_vorp", 0.0) >= 35.0: badges.append("Trade Shark")
         if not badges: badges.append(f"{config['badge']} Contender")
+        distinct_eras = len({info["summary"] for info in season_rules_by_yr.values()}) > 1
         ts_tl = [
-            {"season": int(r[0]), "team_name": r[1], "division": r[2], "wins": int(r[3]), "losses": int(r[4]), "pf": round(float(r[5]), 1), "final_rank": int(r[6]), "made_playoffs": False, "won_division": False, "won_champ": False, "runner_up": False, "is_complete": bool(r[7])}
+            {
+                "season": int(r[0]), "team_name": r[1], "division": r[2],
+                "era_note": season_rules_by_yr.get(int(r[0]), {}).get("summary", "") if distinct_eras else "",
+                "wins": int(r[3]), "losses": int(r[4]), "pf": round(float(r[5]), 1),
+                "final_rank": int(r[6]), "made_playoffs": False, "won_division": False,
+                "won_champ": False, "runner_up": False, "is_complete": bool(r[7]),
+            }
             for r in cur.execute("SELECT season, team_name, division_name, wins, losses, points_for, final_rank, is_season_complete FROM team_seasons WHERE owner = ? ORDER BY season DESC", (o,)).fetchall()
         ]
         dossiers.append({
@@ -1268,7 +1382,14 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         "remaining_schedule": [g for g in full_schedule if int(g["week"]) > completed_week],
         "weekly_projections": weekly_proj_export,
         "awards": awards_data,
-        "history": {"career": career, "h2h": h2h_summary, "championships": [], "drafts": drafts, "draft_seasons": draft_seasons},
+        "history": {
+            "career": career,
+            "h2h": h2h_summary,
+            "championships": [],
+            "drafts": drafts,
+            "draft_seasons": draft_seasons,
+            "season_rules": {str(yr): {k: v for k, v in info.items() if k != "repl_ranks"} for yr, info in sorted(season_rules_by_yr.items())},
+        },
         "trades": {
             "all_time": {"seasons": [], "trade_count": len(eval_all), "trades": eval_all, "owner_cards": all_cards},
             "live": {"season": season, "trade_count": len(eval_live), "trades": eval_live, "owner_cards": live_cards},

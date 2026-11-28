@@ -146,6 +146,12 @@ def refresh_all_leagues(
                     results[slug] = {"ok": True, "mode": "stateless_live_overlay", "completed_week": cwk, "url": url}
                 else:
                     results[slug] = {"ok": True, "mode": "skipped_no_local_db", "completed_week": cwk}
+            elif lg.get("platform", "espn").lower() == "sleeper":
+                from FantasyRecap.sleeper_adapter import build_sleeper_hub_data
+                from FantasyRecap.multi_league_hub import deploy_multi_league_to_gcs
+                hub_data, data_path = build_sleeper_hub_data(lg["league_id"], slug)
+                url = deploy_multi_league_to_gcs(slug, data_path, bucket, project_id=project, hub_data=hub_data) if deploy else "local"
+                results[slug] = {"ok": True, "platform": "sleeper", "completed_week": hub_data["completed_week"], "url": url}
             else:
                 from FantasyRecap.multi_league_hub import build_generic_hub_data, deploy_multi_league_to_gcs
                 hub_data, data_path = build_generic_hub_data(lg["espn_league_id"], slug, season)

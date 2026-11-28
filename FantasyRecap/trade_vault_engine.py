@@ -218,7 +218,7 @@ def _extract_executed_trades_from_txs(all_txs: List[dict], season: int) -> List[
 
         team_a_id, team_b_id = teams_involved[0], teams_involved[1]
         sig_hash = hashlib.sha1(
-            json.dumps(sorted(list(sig[1]))).encode("utf-8")
+            json.dumps(sorted(list(sig[1]))).encode("utf-8"), usedforsecurity=False
         ).hexdigest()[:10]
         trade_id = f"{season}_w{trade_week:02d}_{sig_hash}"
 
@@ -421,7 +421,7 @@ def _discover_roster_diff_trades(
                     })
 
                 sig_tuples = sorted((it["from_team_id"], it["to_team_id"], it["player_id"]) for it in items)
-                sig_hash = hashlib.sha1(json.dumps(sig_tuples).encode("utf-8")).hexdigest()[:10]
+                sig_hash = hashlib.sha1(json.dumps(sig_tuples).encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
                 trade_id = f"{season}_w{wk:02d}_{sig_hash}"
                 discovered.append({
                     "trade_id": trade_id,

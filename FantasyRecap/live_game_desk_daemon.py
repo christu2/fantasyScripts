@@ -66,7 +66,7 @@ def _pick_live_copy(seed_key: str, variants: list) -> str:
     """Deterministically picks a varied broadcast line per event so alerts never feel robotic."""
     if not variants:
         return ""
-    idx = int(hashlib.md5(seed_key.encode("utf-8")).hexdigest()[:8], 16) % len(variants)
+    idx = int(hashlib.md5(seed_key.encode("utf-8"), usedforsecurity=False).hexdigest()[:8], 16) % len(variants)
     return variants[idx]
 
 

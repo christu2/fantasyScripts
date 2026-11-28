@@ -323,28 +323,28 @@
             <select id="draftOwnerSelect" class="select"></select>
           </div>
         </div>
-        <p class="muted small">
-          <strong>VORP vs Slot</strong> = Actual Season VORP minus Expected VORP for that exact draft slot above 16-team positional replacement
-          (QB16, RB36, WR38, TE16) — matching the Trade Vault and preventing backup QBs from skewing steals or busts.
+        <p class="muted small" id="draftMethodologyBlurb">
+          <strong>VORP+</strong> = Actual Season VORP minus Expected VORP for that exact draft slot or auction price above positional replacement
+          — evaluated per season so rule changes (Snake &rarr; Auction, 10T &rarr; 12T, 1QB &rarr; Superflex) compare apples-to-apples across eras.
         </p>
         <div class="grid-two mt-1">
           <div>
-            <h4 class="subhead green">Biggest Draft Steals (Round 4+)</h4>
+            <h4 class="subhead green" id="stealsSubhead">Biggest Draft Steals</h4>
             <div class="table-wrap">
               <table class="data-table compact" id="stealsTable">
                 <thead>
-                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>VORP vs Slot</th></tr>
+                  <tr><th>Player</th><th>Mgr</th><th>Cost / Pick</th><th>Rank</th><th>Pts</th><th>VORP+</th></tr>
                 </thead>
                 <tbody></tbody>
               </table>
             </div>
           </div>
           <div>
-            <h4 class="subhead red">Biggest Draft Busts (Rounds 1–5)</h4>
+            <h4 class="subhead red" id="bustsSubhead">Biggest Draft Busts</h4>
             <div class="table-wrap">
               <table class="data-table compact" id="bustsTable">
                 <thead>
-                  <tr><th>Player</th><th>Mgr</th><th>Pick</th><th>Rank</th><th>Pts</th><th>VORP vs Slot</th></tr>
+                  <tr><th>Player</th><th>Mgr</th><th>Cost / Pick</th><th>Rank</th><th>Pts</th><th>VORP+</th></tr>
                 </thead>
                 <tbody></tbody>
               </table>

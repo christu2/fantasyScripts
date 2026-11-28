@@ -30,11 +30,12 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install Python test & security dependencies
+      - name: Install system audio tools (ffmpeg) & Python dependencies
         run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
           python3 -m pip install --upgrade pip
-          pip install requests python-dotenv playwright bandit
-          playwright install chromium
+          pip install requests urllib3 python-dotenv numpy discord.py google-cloud-storage playwright bandit
+          playwright install --with-deps chromium
 
       - name: JavaScript syntax check
         run: node --check web_hub/app.js

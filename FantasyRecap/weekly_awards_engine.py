@@ -44,7 +44,7 @@ from FantasyRecap.league_recap_generator import (
 
 
 def _pick_quip(seed: str, variants: List[str]) -> str:
-    idx = int(hashlib.md5(seed.encode("utf-8")).hexdigest()[:8], 16) % len(variants)
+    idx = int(hashlib.md5(seed.encode("utf-8"), usedforsecurity=False).hexdigest()[:8], 16) % len(variants)
     return variants[idx]
 
 
