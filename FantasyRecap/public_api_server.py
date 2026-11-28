@@ -34,8 +34,9 @@ leagues while enforcing strict Staff-Engineer security & wallet-protection invar
 
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import gzip
+import hmac
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -150,15 +151,48 @@ class SingleflightGroup:
                 self._inflight.pop(key, None)
 
 
+class RollingByteBudget:
+    """
+    Hard rolling 24-hour egress circuit breaker (Wallet-Exhaustion Kill-Switch).
+    Guarantees a single `--max-instances=1` container can never exceed `max_bytes`
+    within `window_seconds` (default 250 MiB / 24h — well inside GCP's 1 GiB/mo free tier).
+    """
+
+    def __init__(self, max_bytes: int = 250 * 1024 * 1024, window_seconds: float = 86400.0) -> None:
+        self.max_bytes = max(1024, int(max_bytes))
+        self.window_seconds = float(window_seconds)
+        self._lock = threading.Lock()
+        self._events: "deque[Tuple[float, int]]" = deque()
+        self._total = 0
+
+    def try_consume(self, nbytes: int) -> bool:
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        nb = max(0, int(nbytes))
+        with self._lock:
+            while self._events and self._events[0][0] <= cutoff:
+                _ts, old_b = self._events.popleft()
+                self._total -= old_b
+            if self._total + nb > self.max_bytes:
+                return False
+            if nb > 0:
+                self._events.append((now, nb))
+                self._total += nb
+            return True
+
+
 class PublicAPIService:
-    """Stateful rate-limiter, cache, singleflight, and builder registry for the HTTP server."""
+    """Stateful rate-limiter, egress circuit breaker, cache, singleflight, and builder registry."""
 
     def __init__(
         self,
         *,
+        max_total_req_per_min_ip: int = 60,
         max_builds_per_min_ip: int = 8,
         max_lookups_per_min_ip: int = 24,
         max_concurrent_builds: int = 3,
+        max_daily_egress_mb: int = 250,
+        edge_shared_secret: str = "",
         max_history_years: int = 5,
         allowed_origins: Optional[Set[str]] = None,
         serve_static: bool = True,
@@ -167,12 +201,16 @@ class PublicAPIService:
         espn_builder: Optional[Callable[..., Tuple[dict, Optional[Path]]]] = None,
         sleeper_user_lookup: Optional[Callable[[str, int], dict]] = None,
     ) -> None:
+        self.global_limiter = SlidingWindowRateLimiter(max_total_req_per_min_ip, 60.0)
         self.build_limiter = SlidingWindowRateLimiter(max_builds_per_min_ip, 60.0)
         self.lookup_limiter = SlidingWindowRateLimiter(max_lookups_per_min_ip, 60.0)
+        self.egress_budget = RollingByteBudget(max_bytes=max(1, int(max_daily_egress_mb)) * 1024 * 1024)
+        self.edge_shared_secret = str(edge_shared_secret or "").strip()
         self.build_sem = threading.BoundedSemaphore(max(1, int(max_concurrent_builds)))
         self.max_history_years = max(1, min(6, int(max_history_years)))
         self.hub_cache = BoundedGzipTTLCache(max_entries=64, ttl_seconds=900.0)
         self.lookup_cache = BoundedGzipTTLCache(max_entries=256, ttl_seconds=300.0)
+        self.static_cache: Dict[str, Tuple[float, bytes, bytes, str]] = {}
         self.singleflight = SingleflightGroup()
         self.allowed_origins = allowed_origins or set()
         self.serve_static = serve_static
@@ -295,16 +333,25 @@ def make_request_handler(service: PublicAPIService):
             # Redact query strings / headers cleanly in standard logs
             sys.stderr.write(f"[public-api] {self.client_ip()} - {fmt % args}\n")
 
+        def _has_valid_edge_token(self) -> bool:
+            if not service.edge_shared_secret:
+                return False
+            supplied = (self.headers.get("X-Edge-Token") or "").strip()
+            return bool(supplied) and hmac.compare_digest(supplied.encode("utf-8"), service.edge_shared_secret.encode("utf-8"))
+
         def client_ip(self) -> str:
-            # Prefer Cloudflare header if proxied, else rightmost X-Forwarded-For hop (Cloud Run LB), else socket IP
+            # Trust CF-Connecting-IP when authenticated via X-Edge-Token; otherwise prefer Cloud Run GFE's
+            # un-spoofable rightmost X-Forwarded-For hop so direct clients can NEVER spoof CF-Connecting-IP!
             cf_ip = (self.headers.get("CF-Connecting-IP") or "").strip()
-            if cf_ip and len(cf_ip) <= 64:
+            if self._has_valid_edge_token() and cf_ip and len(cf_ip) <= 64:
                 return cf_ip
             xff = (self.headers.get("X-Forwarded-For") or "").strip()
             if xff:
                 parts = [p.strip() for p in xff.split(",") if p.strip()]
                 if parts:
                     return parts[-1][:64]
+            if not service.edge_shared_secret and cf_ip and len(cf_ip) <= 64 and not os.getenv("K_SERVICE"):
+                return cf_ip
             return str(self.client_address[0] if self.client_address else "unknown")
 
         def _add_security_headers(self, *, is_html: bool = False, cache_control: str = "no-store") -> None:
@@ -336,6 +383,21 @@ def make_request_handler(service: PublicAPIService):
             accept_enc = (self.headers.get("Accept-Encoding") or "").lower()
             use_gzip = gz_b is not None and "gzip" in accept_enc
             body = gz_b if use_gzip else raw_b
+
+            if status == HTTPStatus.OK and len(body) > 256 and not service.egress_budget.try_consume(len(body)):
+                err_b = json.dumps({
+                    "ok": False,
+                    "error": "daily_capacity_reached",
+                    "message": "Free daily beta bandwidth cap reached — please try again later!",
+                }).encode("utf-8")
+                self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self._add_security_headers(is_html=False, cache_control="no-store")
+                self.send_header("Content-Length", str(len(err_b)))
+                self.end_headers()
+                if not head_only:
+                    self.wfile.write(err_b)
+                return
 
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -397,6 +459,23 @@ def make_request_handler(service: PublicAPIService):
                 if path == "/api/v1/health":
                     payload = json.dumps({"ok": True, "public_only": True}).encode("utf-8")
                     self._send_json_bytes(HTTPStatus.OK, payload, cache_control="no-store", head_only=head_only)
+                    return
+
+                # Optional Cloudflare Edge Token lock: blocks direct *.run.app bypass when configured!
+                if service.edge_shared_secret and not self._has_valid_edge_token():
+                    self._send_error_json(HTTPStatus.FORBIDDEN, "forbidden", "Direct origin access disabled.", head_only=head_only)
+                    return
+
+                # Universal per-IP request rate limit across ALL static & API routes (anti-troll flood shield)
+                allowed_g, retry_g = service.global_limiter.allow(ip)
+                if not allowed_g:
+                    self._send_error_json(
+                        HTTPStatus.TOO_MANY_REQUESTS,
+                        "rate_limited",
+                        f"Too many requests from your IP. Please wait {retry_g}s.",
+                        retry_after=retry_g,
+                        head_only=head_only,
+                    )
                     return
 
                 if path == "/api/v1/demo":
@@ -494,26 +573,49 @@ def make_request_handler(service: PublicAPIService):
                     self._send_error_json(HTTPStatus.NOT_FOUND, "not_found", "Asset not found.", head_only=head_only)
                     return
 
-                raw_file = target.read_bytes()
-                if rel == "index.html":
-                    raw_file = raw_file.replace(
-                        b'content="hub_data.json"',
-                        b'content="demo_hub_data.json"',
-                        1,
+                mtime = target.stat().st_mtime
+                st_cached = service.static_cache.get(rel)
+                if st_cached and st_cached[0] == mtime:
+                    _mt, raw_file, gz_file, ctype = st_cached
+                else:
+                    raw_file = target.read_bytes()
+                    if rel == "index.html":
+                        raw_file = raw_file.replace(
+                            b'content="hub_data.json"',
+                            b'content="demo_hub_data.json"',
+                            1,
+                        )
+                    gz_file = gzip.compress(raw_file, compresslevel=6)
+                    ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+                    if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
+                        ctype = f"{ctype}; charset=utf-8"
+                    service.static_cache[rel] = (mtime, raw_file, gz_file, ctype)
+
+                accept_enc = (self.headers.get("Accept-Encoding") or "").lower()
+                use_gz = "gzip" in accept_enc
+                out_bytes = gz_file if use_gz else raw_file
+                if not service.egress_budget.try_consume(len(out_bytes)):
+                    self._send_error_json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "daily_capacity_reached",
+                        "Free daily beta bandwidth cap reached — please try again later!",
+                        head_only=head_only,
                     )
-                ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-                if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
-                    ctype = f"{ctype}; charset=utf-8"
+                    return
+
                 is_html = rel.endswith(".html")
                 cctl = "public, max-age=60" if is_html else "public, max-age=300"
 
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", ctype)
+                if use_gz:
+                    self.send_header("Content-Encoding", "gzip")
+                self.send_header("Vary", "Accept-Encoding")
                 self._add_security_headers(is_html=is_html, cache_control=cctl)
-                self.send_header("Content-Length", str(len(raw_file)))
+                self.send_header("Content-Length", str(len(out_bytes)))
                 self.end_headers()
                 if not head_only:
-                    self.wfile.write(raw_file)
+                    self.wfile.write(out_bytes)
 
             except ValueError as ve:
                 self._send_error_json(HTTPStatus.BAD_REQUEST, "invalid_input", str(ve), head_only=head_only)
@@ -569,8 +671,12 @@ def create_server(host: str = "127.0.0.1", port: int = 8080, service: Optional[P
         origins = {o.strip() for o in raw_origins.split(",") if o.strip()}
         serve_static = os.getenv("SERVE_STATIC", "1").strip().lower() not in ("0", "false", "no")
         max_hist = int(os.getenv("MAX_HISTORY_YEARS", "5") or 5)
+        max_egress_mb = int(os.getenv("MAX_DAILY_EGRESS_MB", "250") or 250)
+        edge_secret = os.getenv("EDGE_SHARED_SECRET", "").strip()
         service = PublicAPIService(
             max_history_years=max_hist,
+            max_daily_egress_mb=max_egress_mb,
+            edge_shared_secret=edge_secret,
             allowed_origins=origins,
             serve_static=serve_static,
         )

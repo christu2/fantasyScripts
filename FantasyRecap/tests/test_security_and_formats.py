@@ -573,6 +573,49 @@ class TestPublicAPIAndAnonymizerSecurity(unittest.TestCase):
         self.assertNotIn("Slow Start 2026 Rookie QB", all_bust_names)
         self.assertIn("Slow Start 2026 Rookie QB", [b["player"] for b in drafts["2026"]["busts"]])
 
+    def test_anti_troll_edge_token_xff_spoof_resistance_and_egress_circuit_breaker(self):
+        import threading
+        import urllib.error
+        import urllib.request
+        from FantasyRecap.public_api_server import PublicAPIService, RollingByteBudget, create_server
+
+        # 1. RollingByteBudget hard cutoff check
+        budget = RollingByteBudget(max_bytes=2000, window_seconds=3600.0)
+        self.assertTrue(budget.try_consume(1200))
+        self.assertFalse(budget.try_consume(900))  # Exceeds 2000-byte hard cap!
+        self.assertTrue(budget.try_consume(800))
+
+        # 2. Edge token lock + X-Forwarded-For spoof resistance + universal per-IP rate limit
+        svc = PublicAPIService(
+            max_total_req_per_min_ip=3,
+            max_daily_egress_mb=1,
+            edge_shared_secret="super-secret-edge-token-32b",
+            sleeper_builder=lambda lid, slug, **kw: ({"league_config": {"name": "OK"}, "teams": []}, None),
+        )
+        srv = create_server(host="127.0.0.1", port=0, service=svc)
+        port = srv.server_address[1]
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        base = f"http://127.0.0.1:{port}"
+        try:
+            # Direct origin bypass without X-Edge-Token -> immediate 403!
+            with self.assertRaises(urllib.error.HTTPError) as ctx_403:
+                urllib.request.urlopen(f"{base}/api/v1/hub/sleeper/12345")
+            self.assertEqual(ctx_403.exception.code, 403)
+
+            # Valid X-Edge-Token succeeds up to universal per-IP cap (3/min), then 429s even on cache HITs!
+            hdrs = {"X-Edge-Token": "super-secret-edge-token-32b", "CF-Connecting-IP": "192.0.2.55"}
+            for _ in range(3):
+                req = urllib.request.Request(f"{base}/api/v1/hub/sleeper/12345", headers=hdrs)
+                self.assertEqual(urllib.request.urlopen(req).status, 200)
+            with self.assertRaises(urllib.error.HTTPError) as ctx_429:
+                req4 = urllib.request.Request(f"{base}/api/v1/hub/sleeper/12345", headers=hdrs)
+                urllib.request.urlopen(req4)
+            self.assertEqual(ctx_429.exception.code, 429)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

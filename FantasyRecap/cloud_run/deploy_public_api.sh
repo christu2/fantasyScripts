@@ -56,7 +56,9 @@ gcloud builds submit "${TMP_BUILD}" \
   --tag="${IMAGE_URI}" \
   --project="${PROJECT_ID}" --quiet
 
-echo "🚀 [4/4] Deploying ${SERVICE_NAME} (--max-instances=2, zero secrets, zero-privilege SA)..."
+echo "🚀 [4/4] Deploying ${SERVICE_NAME} (--max-instances=1, 250MB/24h egress cap, zero secrets, zero-privilege SA)..."
+MAX_DAILY_EGRESS_MB="${MAX_DAILY_EGRESS_MB:-250}"
+EDGE_SHARED_SECRET="${EDGE_SHARED_SECRET:-}"
 gcloud run deploy "${SERVICE_NAME}" \
   --project="${PROJECT_ID}" \
   --region="${REGION}" \
@@ -64,14 +66,14 @@ gcloud run deploy "${SERVICE_NAME}" \
   --service-account="${PUBLIC_SA_EMAIL}" \
   --platform=managed \
   --allow-unauthenticated \
-  --max-instances=2 \
+  --max-instances=1 \
   --min-instances=0 \
   --cpu=1 \
   --memory=512Mi \
-  --concurrency=16 \
+  --concurrency=32 \
   --timeout=25s \
   --clear-secrets \
-  --set-env-vars="^@^HOST=0.0.0.0@PUBLIC_ONLY=1@SERVE_STATIC=1@MAX_HISTORY_YEARS=5@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}" \
+  --set-env-vars="^@^HOST=0.0.0.0@PUBLIC_ONLY=1@SERVE_STATIC=1@MAX_HISTORY_YEARS=5@MAX_DAILY_EGRESS_MB=${MAX_DAILY_EGRESS_MB}@EDGE_SHARED_SECRET=${EDGE_SHARED_SECRET}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}" \
   --quiet
 
 SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"

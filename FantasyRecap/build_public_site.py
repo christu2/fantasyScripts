@@ -119,6 +119,54 @@ def build_public_bundle(out_dir: Path = DEFAULT_OUT_DIR, api_base: str = "") -> 
 """
     (out_dir / "_headers").write_text(headers_txt, encoding="utf-8")
 
+    # 5. Write Cloudflare Pages Edge-Caching Proxy Function (`functions/api/[[path]].js`)
+    # When deployed on Cloudflare Pages Free Tier (`*.pages.dev`, $0.00 no credit card):
+    #   - Static HTML/CSS/JS + 1MB `demo_hub_data.json` are served 100% by Cloudflare's unlimited $0 CDN!
+    #   - `/api/v1/*` requests check Cloudflare's global edge cache first (`0` Cloud Run invocations on hits)
+    #     and attach `X-Edge-Token` (`env.EDGE_SHARED_SECRET`) + `CF-Connecting-IP` on cache misses!
+    fn_dir = out_dir / "functions" / "api"
+    fn_dir.mkdir(parents=True, exist_ok=True)
+    worker_js = """// Cloudflare Pages Function: Edge Cache + Origin Token Proxy to Cloud Run ($0.00 Shield)
+export async function onRequest(context) {
+  const { request, env } = context;
+  if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS") {
+    return new Response(JSON.stringify({ ok: false, error: "method_not_allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    });
+  }
+  const originBase = (env.CLOUD_RUN_API_ORIGIN || "").replace(/\\/+$/, "");
+  if (!originBase) {
+    return new Response(JSON.stringify({ ok: false, error: "unconfigured_origin" }), { status: 500 });
+  }
+  const url = new URL(request.url);
+  const cache = caches.default;
+  const cacheKey = new Request(url.toString(), { method: "GET" });
+  if (request.method === "GET") {
+    const cached = await cache.match(cacheKey);
+    if (cached) return cached;
+  }
+
+  const upstreamUrl = `${originBase}${url.pathname}${url.search}`;
+  const fwdHeaders = new Headers();
+  fwdHeaders.set("Accept", request.headers.get("Accept") || "application/json");
+  fwdHeaders.set("Accept-Encoding", "gzip");
+  const clientIp = request.headers.get("CF-Connecting-IP") || "";
+  if (clientIp) fwdHeaders.set("CF-Connecting-IP", clientIp);
+  if (env.EDGE_SHARED_SECRET) {
+    fwdHeaders.set("X-Edge-Token", env.EDGE_SHARED_SECRET);
+  }
+
+  const resp = await fetch(upstreamUrl, { method: request.method, headers: fwdHeaders });
+  const out = new Response(resp.body, resp);
+  if (request.method === "GET" && resp.status === 200) {
+    context.waitUntil(cache.put(cacheKey, out.clone()));
+  }
+  return out;
+}
+"""
+    (fn_dir / "[[path]].js").write_text(worker_js, encoding="utf-8")
+
     # Final safety check: assert personal hub_data.json does NOT exist in dist_public
     assert not (out_dir / "hub_data.json").exists(), "Personal hub_data.json must never be copied to dist_public!"
     raw_idx = (out_dir / "index.html").read_text(encoding="utf-8")
