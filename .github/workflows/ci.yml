@@ -44,4 +44,4 @@ jobs:
         run: python3 -m unittest discover -s tests -t . -v
 
       - name: Static security scan (Bandit — high severity gate)
-        run: bandit -r . -x ./tests,./live_state,./output -ll -ii --severity-level high
+        run: bandit -r . -x ./tests,./live_state,./output --severity-level high --confidence-level medium
