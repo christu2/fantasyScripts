@@ -1462,21 +1462,34 @@ function renderTradesTab() {
           const pPts = lens === "started" ? p.started_pts : p.ros_pts;
           const pPpg = lens === "started" ? p.started_ppg : p.ros_ppg;
           const pPo = lens === "started" ? p.po_started_vorp : p.po_ros_vorp;
+          const statNote = lens === "started" ? (p.started_stat_note || "") : (p.ros_stat_note || "");
           const pCol = pV > 2 ? "var(--green)" : (pV < -2 ? "var(--red)" : "var(--muted)");
           const wkLbl = lens === "started" ? `${pWks} st` : `${pWks} gm`;
-          const flipHtml = p.flipped
-            ? `<span class="flip-note">&#8627; Flipped Wk ${p.flipped.week} &rarr; ${escShortName(p.flipped.to)}</span>`
+          const pickChip = p.pick_badge
+            ? `<span class="pos-chip" style="background:rgba(245,158,11,0.16);color:var(--gold)">${esc(p.pick_badge)}</span>`
             : "";
+          let flipHtml = "";
+          if (p.flipped) {
+            const fWhen = p.flipped.is_pick_flip
+              ? `Pick traded`
+              : (p.flipped.season && p.flipped.season !== t.season
+                ? `Flipped ${p.flipped.season} Wk ${p.flipped.week}`
+                : `Flipped Wk ${p.flipped.week}`);
+            flipHtml = `<span class="flip-note">&#8627; ${esc(fWhen)} &rarr; ${escShortName(p.flipped.to)}</span>`;
+          }
           const poHtml = pPo >= 8 ? ` <span style="color:var(--gold)">(PO ${fmtVorp(pPo)})</span>` : "";
+          const rightStatHtml = statNote
+            ? `${esc(statNote)} &bull; <strong style="color:${pCol}">Est. ${fmtVorp(pV)}</strong>`
+            : `${wkLbl} &bull; ${pPts} pts (${pPpg}) &bull; <strong style="color:${pCol}">${fmtVorp(pV)}</strong>`;
           return `
             <div class="trade-player-row">
               <div>
-                <span class="pos-chip">${esc(p.pos)}</span>
+                <span class="pos-chip">${esc(p.pos)}</span>${pickChip}
                 <span class="trade-player-name">${esc(p.name)}</span>${poHtml}
                 ${flipHtml}
               </div>
               <div class="trade-player-stat">
-                ${wkLbl} &bull; ${pPts} pts (${pPpg}) &bull; <strong style="color:${pCol}">${fmtVorp(pV)}</strong>
+                ${rightStatHtml}
               </div>
             </div>
           `;

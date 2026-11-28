@@ -461,6 +461,30 @@ class TestPublicAPIAndAnonymizerSecurity(unittest.TestCase):
                 self.assertEqual(rec["o1"], o1)
                 self.assertEqual(rec["o2"], o2)
 
+    def test_dynasty_pick_vorp_monotonicity_superflex_boost_and_time_discount(self):
+        from FantasyRecap.sleeper_adapter import estimate_dynasty_pick_vorp, slot_tier_from_slot
+
+        self.assertEqual(slot_tier_from_slot(1, 12), "early")
+        self.assertEqual(slot_tier_from_slot(4, 12), "early")
+        self.assertEqual(slot_tier_from_slot(6, 12), "mid")
+        self.assertEqual(slot_tier_from_slot(12, 12), "late")
+
+        r1_early_1qb = estimate_dynasty_pick_vorp(1, "early", is_superflex=False, years_out=1)
+        r1_early_sf = estimate_dynasty_pick_vorp(1, "early", is_superflex=True, years_out=1)
+        r1_mid_sf = estimate_dynasty_pick_vorp(1, "mid", is_superflex=True, years_out=1)
+        r1_late_sf = estimate_dynasty_pick_vorp(1, "late", is_superflex=True, years_out=1)
+        r2_mid_sf = estimate_dynasty_pick_vorp(2, "mid", is_superflex=True, years_out=1)
+        r3_mid_sf = estimate_dynasty_pick_vorp(3, "mid", is_superflex=True, years_out=1)
+        r1_2yrs_out = estimate_dynasty_pick_vorp(1, "mid", is_superflex=True, years_out=2)
+
+        self.assertGreater(r1_early_sf, r1_early_1qb)
+        self.assertGreater(r1_early_sf, r1_mid_sf)
+        self.assertGreater(r1_mid_sf, r1_late_sf)
+        self.assertGreater(r1_late_sf, r2_mid_sf)
+        self.assertGreater(r2_mid_sf, r3_mid_sf)
+        self.assertGreater(r3_mid_sf, 0.0)
+        self.assertGreater(r1_mid_sf, r1_2yrs_out)
+
 
 if __name__ == "__main__":
     unittest.main()

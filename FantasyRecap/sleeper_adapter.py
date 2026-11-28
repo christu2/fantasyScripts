@@ -88,6 +88,46 @@ def _sleeper_get(subpath: str, timeout: float = 12.0):
     return None
 
 
+def slot_tier_from_slot(slot_1based: int, team_count: int) -> str:
+    """Classifies a 1-based draft slot (`1..N`) into `'early'`, `'mid'`, or `'late'`."""
+    n = max(4, int(team_count))
+    s = max(1, min(n, int(slot_1based)))
+    early_cut = math.ceil(n / 3.0)
+    mid_cut = math.ceil(2.0 * n / 3.0)
+    if s <= early_cut:
+        return "early"
+    if s <= mid_cut:
+        return "mid"
+    return "late"
+
+
+def estimate_dynasty_pick_vorp(
+    round_num: int,
+    slot_tier: str = "mid",
+    *,
+    is_superflex: bool = False,
+    years_out: int = 1,
+) -> float:
+    """
+    Calibrated Expected Multi-Season Dynasty VORP for un-drafted future rookie picks
+    (and pre-draft flipped pick capital), scaled for Superflex QB depth and multi-year
+    time discounting (`0.88^(years_out - 1)`).
+    """
+    tier = slot_tier if slot_tier in ("early", "mid", "late") else "mid"
+    rnd = max(1, int(round_num))
+    base_table = {
+        1: {"early": 46.0, "mid": 32.0, "late": 21.0},
+        2: {"early": 15.0, "mid": 11.0, "late": 8.0},
+        3: {"early": 6.0, "mid": 4.5, "late": 3.0},
+    }
+    base = base_table.get(rnd, {"early": 2.0, "mid": 2.0, "late": 2.0})[tier]
+    if is_superflex:
+        sf_mult = 1.15 if rnd == 1 else (1.12 if rnd == 2 else 1.05)
+        base *= sf_mult
+    discount = 0.88 ** max(0, int(years_out) - 1)
+    return round(base * discount, 1)
+
+
 def _stable_int_pid(raw_pid: str) -> int:
     """Maps Sleeper string player IDs (numeric `'4046'` or team `'PHI'`) to positive SQLite INTEGER IDs."""
     s = str(raw_pid or "").strip()
@@ -527,13 +567,18 @@ def _build_sleeper_hub_data_impl(
     cur = conn.cursor()
 
     season_rules_by_yr: Dict[int, dict] = {}
+    season_tmap_by_yr: Dict[int, dict] = {}
     championships_log: List[dict] = []
     champ_count: Counter = Counter()
     runner_up_count: Counter = Counter()
     champ_years_map: Dict[str, List[int]] = defaultdict(list)
     ru_years_map: Dict[str, List[int]] = defaultdict(list)
     curr_week_matchups_cache: Dict[int, list] = {}
-    traded_picks_notes: Dict[str, Dict[str, List[str]]] = defaultdict(lambda: defaultdict(list))
+    traded_picks_raw: Dict[str, Dict[int, List[dict]]] = defaultdict(lambda: defaultdict(list))
+    draft_orig_slot_by_yr: Dict[int, Dict[int, int]] = {}
+    draft_picks_by_yr_rnd_slot: Dict[int, Dict[Tuple[int, int], dict]] = defaultdict(dict)
+    draft_picks_by_yr_rnd_tid: Dict[int, Dict[Tuple[int, int], List[dict]]] = defaultdict(lambda: defaultdict(list))
+    player_transfers: Dict[int, List[Tuple[int, int, int, int, str]]] = defaultdict(list)
 
     for cfg in chain:
         yr = cfg["season"]
@@ -541,6 +586,7 @@ def _build_sleeper_hub_data_impl(
         is_curr = (yr == curr_season)
         reg_wks = cfg["regular_season_weeks"]
         tmap = cfg["teams_by_id"]
+        season_tmap_by_yr[yr] = tmap
         max_fetch_wk = reg_wks if is_curr else (reg_wks + 3)
 
         sf_tag = " • SF" if cfg["roster_slots"].get("OP", 0) > 0 else ""
@@ -669,15 +715,27 @@ def _build_sleeper_hub_data_impl(
                  0, 0, 0, 0, 0, 1 if (won_ch or ru_ch) else 0, 0, won_ch, ru_ch, is_complete),
             )
 
-        # 3. Draft Picks (Snake, Auction `$`, Linear Rookie, Keepers)
+        # 3. Draft Picks (Snake, Auction `$`, Linear Rookie, Keepers + Traded-Slot Indexing)
         drafts_list = cfg.get("_drafts_raw") or []
         if drafts_list:
-            did = str(drafts_list[0].get("draft_id") or "")
+            d0 = drafts_list[0]
+            did = str(d0.get("draft_id") or "")
+            s2r_raw = d0.get("slot_to_roster_id")
+            if not s2r_raw and did:
+                dfull = _sleeper_get(f"draft/{did}") or {}
+                s2r_raw = dfull.get("slot_to_roster_id")
+            if isinstance(s2r_raw, dict):
+                draft_orig_slot_by_yr[yr] = {
+                    int(orig_rid): int(slot_k)
+                    for slot_k, orig_rid in s2r_raw.items()
+                    if str(slot_k).isdigit() and orig_rid is not None
+                }
             picks = _sleeper_get(f"draft/{did}/picks") or [] if did else []
             if picks:
                 pos_draft_cnt: Counter = Counter()
                 by_pos_pts: Dict[str, List[Tuple[float, int]]] = defaultdict(list)
                 parsed_p = []
+                n_teams_d = max(1, int(cfg["team_count"]))
                 for p in sorted(picks, key=lambda x: int(x.get("pick_no") or 0)):
                     rid = int(p.get("roster_id") or 0)
                     spid = str(p.get("player_id") or "")
@@ -693,7 +751,23 @@ def _build_sleeper_hub_data_impl(
                     is_k = 1 if p.get("is_keeper") else 0
                     spts = round(p_season_pts.get(pid_i, 0.0), 2)
                     by_pos_pts[pos].append((spts, pid_i))
-                    parsed_p.append((int(p.get("pick_no") or 0), int(p.get("round") or 1), int(p.get("draft_slot") or 1), rid, pid_i, pname, pro, pos, bid, is_k, spts))
+                    opick = int(p.get("pick_no") or 0)
+                    rnd = int(p.get("round") or 1)
+                    dslot = int(p.get("draft_slot") or 1)
+                    parsed_p.append((opick, rnd, dslot, rid, pid_i, pname, pro, pos, bid, is_k, spts))
+                    p_info = {
+                        "pick_no": opick,
+                        "round": rnd,
+                        "draft_slot": dslot,
+                        "pick_in_round": ((opick - 1) % n_teams_d) + 1 if opick > 0 else dslot,
+                        "drafted_by_tid": rid,
+                        "drafted_by_owner": tmap[rid]["owner"],
+                        "pid": pid_i,
+                        "name": pname,
+                        "pos": pos,
+                    }
+                    draft_picks_by_yr_rnd_slot[yr][(rnd, dslot)] = p_info
+                    draft_picks_by_yr_rnd_tid[yr][(rnd, rid)].append(p_info)
                 pfr_map = {}
                 for pos, plist in by_pos_pts.items():
                     plist.sort(key=lambda x: -x[0])
@@ -712,7 +786,7 @@ def _build_sleeper_hub_data_impl(
                          0, pfr, 0, pdr - pfr, 0.0, 0.0, 0.0, 0, 1),
                     )
 
-        # 4. Trades (Players + Dynasty Future Draft Picks!)
+        # 4. Trades (Players + Dynasty Realized & Future Draft Picks!)
         for twk, tx_list in sorted(wk_txs.items()):
             for tx in tx_list:
                 if tx.get("type") != "trade" or tx.get("status") != "complete":
@@ -741,11 +815,16 @@ def _build_sleeper_hub_data_impl(
                         "INSERT OR REPLACE INTO trade_items VALUES (?,?,?,?,?,?,?,?,?)",
                         (tx_id, yr, fr_i, tmap[fr_i]["owner"], to_i, tmap[to_i]["owner"], pid_i, pname, pos),
                     )
+                    player_transfers[pid_i].append((yr, twk, fr_i, to_i, tmap[to_i]["owner"]))
                 for dp in dp_swaps:
                     to_i = int(dp.get("owner_id") or 0)
                     if to_i in (ta, tb):
-                        lbl = f"{dp.get('season')} Rd {dp.get('round')} Pick"
-                        traded_picks_notes[tx_id][tmap[to_i]["owner"]].append(lbl)
+                        traded_picks_raw[tx_id][to_i].append({
+                            "season": int(dp.get("season") or yr),
+                            "round": int(dp.get("round") or 1),
+                            "orig_rid": int(dp.get("roster_id") or 0),
+                            "to_rid": to_i,
+                        })
 
         conn.commit()
         print(f"   ✅ Synced Sleeper {cfg['name']} ({yr}): {completed_wk_yr} completed wks, format={season_rules_by_yr[yr]['summary']}")
@@ -1038,62 +1117,186 @@ def _build_sleeper_hub_data_impl(
     hm_rows.sort(key=lambda r: -r["total_vorp_wk"])
     hm_bounds = {p: {"min": min(pos_lists[p] or [0.0]), "max": max(pos_lists[p] or [0.0])} for p in active_pos}
 
-    # Dual-Lens Trade Vault (with per-season baselines + Dynasty traded draft picks!)
+    # Dual-Lens Trade Vault (Multi-Season Dynasty Horizon + Realized Rookie Pick Resolver + Future Pick VORP!)
     trade_rows = cur.execute("SELECT trade_id, season, trade_week, effective_week, team_a_id, owner_a, team_b_id, owner_b FROM trades ORDER BY season DESC, trade_week DESC").fetchall()
+    all_synced_seasons = sorted(season_rules_by_yr.keys())
     baselines_by_yr = {
-        yr: (baselines if yr == curr_season else _compute_generic_repl_baselines(conn, yr, season_rranks.get(yr, repl_ranks)))
-        for yr in {int(r[1]) for r in trade_rows}
+        s_yr: (baselines if s_yr == curr_season else _compute_generic_repl_baselines(conn, s_yr, season_rranks.get(s_yr, repl_ranks)))
+        for s_yr in all_synced_seasons
     }
     titems_by_id = defaultdict(list)
     for r in cur.execute("SELECT trade_id, season, from_team_id, from_owner, to_team_id, to_owner, player_id, player_name, position FROM trade_items").fetchall():
         titems_by_id[r[0]].append({"from_tid": int(r[2]), "to_tid": int(r[4]), "pid": int(r[6]), "name": r[7], "pos": r[8] or "FLEX"})
     pb_all = defaultdict(list)
-    for r in cur.execute("SELECT season, week, team_id, player_id, is_starter, is_playoffs, points FROM player_boxscores ORDER BY week").fetchall():
+    for r in cur.execute("SELECT season, week, team_id, player_id, is_starter, is_playoffs, points FROM player_boxscores ORDER BY season, week").fetchall():
         pb_all[(int(r[0]), int(r[3]))].append({"wk": int(r[1]), "tid": int(r[2]), "st": int(r[4]) == 1, "po": int(r[5]) == 1, "pts": float(r[6] or 0.0)})
+
+    for pid_k in player_transfers:
+        player_transfers[pid_k].sort(key=lambda x: (x[0], x[1]))
+
+    # Projected rookie draft order (1 = worst current team -> Early pick; N = best current team -> Late pick)
+    standings_for_picks = []
+    for r_raw in (curr_cfg.get("_rosters_raw") or []):
+        rid_p = int(r_raw.get("roster_id") or 0)
+        rs_p = r_raw.get("settings") or {}
+        w_p = int(rs_p.get("wins") or 0)
+        pf_p = float(rs_p.get("fpts") or 0.0) + float(rs_p.get("fpts_decimal") or 0.0) / 100.0
+        if rid_p in tmap:
+            standings_for_picks.append((w_p, pf_p, rid_p))
+    standings_for_picks.sort(key=lambda x: (x[0], x[1]))
+    proj_future_slot_by_rid = {rid_p: idx_s for idx_s, (_w, _pf, rid_p) in enumerate(standings_for_picks, 1)}
+    is_multi_yr_keeper = curr_cfg["format_label"] in ("Dynasty", "Keeper")
+    is_sf_curr = curr_cfg["roster_slots"].get("OP", 0) > 0
+
+    def _eval_player_horizon(pid_i: int, pos: str, start_yr: int, start_wk: int, acq_tid: int) -> dict:
+        horizon_yrs = [s for s in all_synced_seasons if s >= start_yr] if is_multi_yr_keeper else ([start_yr] if start_yr in season_rules_by_yr else [])
+        flip_info = None
+        for f_yr, f_wk, fr_i, _to_i, next_own in player_transfers.get(pid_i, []):
+            if fr_i == acq_tid and (f_yr > start_yr or (f_yr == start_yr and f_wk > start_wk)):
+                flip_info = {"season": f_yr, "week": f_wk, "to": next_own}
+                break
+
+        sv, po_sv, sp, sw = 0.0, 0.0, 0.0, 0
+        rv_raw, po_rv, rp_pts, rw = 0.0, 0.0, 0.0, 0
+        for s_yr in horizon_yrs:
+            s_base = baselines_by_yr.get(s_yr, baselines)
+            rp = s_base.get(pos, 8.0)
+            min_w = start_wk if s_yr == start_yr else 1
+            seen_w = set()
+            for x in pb_all.get((s_yr, pid_i), []):
+                if x["wk"] < min_w:
+                    continue
+                after_flip = flip_info is not None and (s_yr > flip_info["season"] or (s_yr == flip_info["season"] and x["wk"] >= flip_info["week"]))
+                w_mult = PLAYOFF_WEIGHT if x["po"] else 1.0
+                if not after_flip and x["tid"] == acq_tid and x["st"]:
+                    v_inc = w_mult * (x["pts"] - rp)
+                    sv += v_inc
+                    if x["po"]:
+                        po_sv += v_inc
+                    sp += x["pts"]
+                    sw += 1
+                if x["wk"] not in seen_w:
+                    seen_w.add(x["wk"])
+                    if x["pts"] > 0 or x["st"]:
+                        rv_inc = w_mult * (x["pts"] - rp)
+                        rv_raw += rv_inc
+                        if x["po"]:
+                            po_rv += rv_inc
+                        rp_pts += x["pts"]
+                        rw += 1
+        rv = max(0.0, rv_raw)
+        return {
+            "started_wks": sw, "started_pts": round(sp, 1), "started_ppg": round(sp / sw, 1) if sw else 0.0,
+            "started_vorp": round(sv, 1), "po_started_vorp": round(max(0.0, po_sv), 1),
+            "ros_wks": rw, "ros_pts": round(rp_pts, 1), "ros_ppg": round(rp_pts / rw, 1) if rw else 0.0,
+            "ros_vorp": round(rv, 1), "po_ros_vorp": round(max(0.0, po_rv), 1),
+            "flipped": flip_info,
+        }
+
+    def _eval_traded_pick(pk: dict, acq_tid: int) -> dict:
+        p_yr = int(pk["season"])
+        rnd = int(pk["round"])
+        orig_rid = int(pk["orig_rid"])
+        yr_tmap = season_tmap_by_yr.get(p_yr, tmap)
+        orig_owner = (yr_tmap.get(orig_rid) or tmap.get(orig_rid) or {}).get("owner", "")
+
+        # Case A: Completed Draft in `p_yr` -> resolve exact slot & drafted player!
+        if p_yr in draft_picks_by_yr_rnd_slot and draft_picks_by_yr_rnd_slot[p_yr]:
+            dslot = draft_orig_slot_by_yr.get(p_yr, {}).get(orig_rid)
+            resolved = draft_picks_by_yr_rnd_slot[p_yr].get((rnd, dslot)) if dslot else None
+            if resolved is None:
+                cands = draft_picks_by_yr_rnd_tid[p_yr].get((rnd, acq_tid)) or draft_picks_by_yr_rnd_tid[p_yr].get((rnd, orig_rid)) or []
+                resolved = cands[0] if cands else None
+            if resolved is not None:
+                pir = int(resolved["pick_in_round"])
+                pick_tag = f"'{str(p_yr)[-2:]} {rnd}.{pir:02d}"
+                n_t = season_rules_by_yr.get(p_yr, {}).get("teams", curr_cfg["team_count"])
+                is_sf = season_rules_by_yr.get(p_yr, {}).get("superflex", is_sf_curr)
+                slot_ev = estimate_dynasty_pick_vorp(rnd, slot_tier_from_slot(pir, n_t), is_superflex=is_sf, years_out=1)
+                perf = _eval_player_horizon(resolved["pid"], resolved["pos"], p_yr, 1, resolved["drafted_by_tid"])
+
+                if resolved["drafted_by_tid"] == acq_tid:
+                    # Acquiring manager kept the pick and drafted `resolved["name"]`!
+                    return {
+                        "player_id": resolved["pid"],
+                        "name": resolved["name"],
+                        "pos": resolved["pos"],
+                        "pick_badge": pick_tag,
+                        **perf,
+                    }
+                else:
+                    # Acquiring manager flipped this pick before draft day -> credit liquid pick slot value on `started`
+                    # and show who was drafted at that exact slot!
+                    ros_val = perf["ros_vorp"] if perf["ros_wks"] >= 4 else slot_ev
+                    return {
+                        "player_id": resolved["pid"],
+                        "name": resolved["name"],
+                        "pos": resolved["pos"],
+                        "pick_badge": pick_tag,
+                        "started_wks": 0,
+                        "started_pts": 0.0,
+                        "started_ppg": 0.0,
+                        "started_vorp": slot_ev,
+                        "po_started_vorp": 0.0,
+                        "started_stat_note": f"Traded {pick_tag} Pick Capital",
+                        "ros_wks": perf["ros_wks"],
+                        "ros_pts": perf["ros_pts"],
+                        "ros_ppg": perf["ros_ppg"],
+                        "ros_vorp": round(ros_val, 1),
+                        "po_ros_vorp": perf["po_ros_vorp"],
+                        "ros_stat_note": "" if perf["ros_wks"] >= 4 else f"Est. {pick_tag} Pick Value",
+                        "flipped": {"season": p_yr, "week": 0, "to": resolved["drafted_by_owner"], "is_pick_flip": True},
+                    }
+
+        # Case B: Future Un-Drafted Pick (`2027`, `2028`, etc.) -> Projected Slot Expected VORP!
+        years_out = max(1, p_yr - curr_season)
+        if years_out == 1 and orig_rid in proj_future_slot_by_rid:
+            stier = slot_tier_from_slot(proj_future_slot_by_rid[orig_rid], curr_cfg["team_count"])
+            tier_tag = f" • Proj. {stier.capitalize()}"
+        else:
+            stier = "mid"
+            tier_tag = ""
+        ev = estimate_dynasty_pick_vorp(rnd, stier, is_superflex=is_sf_curr, years_out=years_out)
+        via_short = orig_owner.split()[0] if orig_owner else ""
+        via_txt = f" ({via_short}{tier_tag})" if via_short else (f" ({tier_tag.lstrip(' • ')})" if tier_tag else "")
+        return {
+            "player_id": 0,
+            "name": f"{p_yr} Rd {rnd} Pick{via_txt}",
+            "pos": "PICK",
+            "pick_badge": "",
+            "started_wks": 0, "started_pts": 0.0, "started_ppg": 0.0, "started_vorp": ev, "po_started_vorp": 0.0,
+            "started_stat_note": "Future Pick Capital",
+            "ros_wks": 0, "ros_pts": 0.0, "ros_ppg": 0.0, "ros_vorp": ev, "po_ros_vorp": 0.0,
+            "ros_stat_note": "Future Pick Capital",
+            "flipped": None,
+        }
 
     eval_live, eval_all = [], []
     for r in trade_rows:
         tid_s, yr, twk, ewk, ta, oa, tb, ob = r[0], int(r[1]), int(r[2]), int(r[3]), int(r[4]), r[5], int(r[6]), r[7]
-        yr_base = baselines_by_yr.get(yr, baselines)
         its = titems_by_id.get(tid_s, [])
         a_its = [x for x in its if x["to_tid"] == ta]
         b_its = [x for x in its if x["to_tid"] == tb]
-        a_picks = traded_picks_notes.get(tid_s, {}).get(oa, [])
-        b_picks = traded_picks_notes.get(tid_s, {}).get(ob, [])
+        a_picks = traded_picks_raw.get(tid_s, {}).get(ta, [])
+        b_picks = traded_picks_raw.get(tid_s, {}).get(tb, [])
         if not (a_its or a_picks) or not (b_its or b_picks):
             continue
 
-        def _side(s_its, acq_tid, pick_labels):
+        def _side(s_its, acq_tid, pick_objs):
             pout, sv_tot, rv_tot = [], 0.0, 0.0
             for it in s_its:
-                rp = yr_base.get(it["pos"], 8.0)
-                rows_p = [x for x in pb_all.get((yr, it["pid"]), []) if x["wk"] >= ewk]
-                sv, sp, sw, rv_raw, rp_pts, rw = 0.0, 0.0, 0, 0.0, 0.0, 0
-                seen_w = set()
-                for x in rows_p:
-                    if x["tid"] == acq_tid and x["st"]:
-                        sv += (PLAYOFF_WEIGHT if x["po"] else 1.0) * (x["pts"] - rp)
-                        sp += x["pts"]; sw += 1
-                    if x["wk"] not in seen_w:
-                        seen_w.add(x["wk"])
-                        if x["pts"] > 0 or x["st"]:
-                            rv_raw += (PLAYOFF_WEIGHT if x["po"] else 1.0) * (x["pts"] - rp)
-                            rp_pts += x["pts"]; rw += 1
-                rv = max(0.0, rv_raw)
-                sv_tot += sv; rv_tot += rv
+                perf = _eval_player_horizon(it["pid"], it["pos"], yr, ewk, acq_tid)
+                sv_tot += perf["started_vorp"]
+                rv_tot += perf["ros_vorp"]
                 pout.append({
-                    "player_id": it["pid"], "name": it["name"], "pos": it["pos"],
-                    "started_wks": sw, "started_pts": round(sp, 1), "started_ppg": round(sp / sw, 1) if sw else 0.0,
-                    "started_vorp": round(sv, 1), "po_started_vorp": 0.0,
-                    "ros_wks": rw, "ros_pts": round(rp_pts, 1), "ros_ppg": round(rp_pts / rw, 1) if rw else 0.0,
-                    "ros_vorp": round(rv, 1), "po_ros_vorp": 0.0, "flipped": None,
+                    "player_id": it["pid"], "name": it["name"], "pos": it["pos"], "pick_badge": "",
+                    **perf,
                 })
-            for plbl in pick_labels:
-                pout.append({
-                    "player_id": 0, "name": plbl, "pos": "PICK",
-                    "started_wks": 0, "started_pts": 0.0, "started_ppg": 0.0, "started_vorp": 0.0, "po_started_vorp": 0.0,
-                    "ros_wks": 0, "ros_pts": 0.0, "ros_ppg": 0.0, "ros_vorp": 0.0, "po_ros_vorp": 0.0, "flipped": None,
-                })
+            for pk in pick_objs:
+                pk_eval = _eval_traded_pick(pk, acq_tid)
+                sv_tot += pk_eval["started_vorp"]
+                rv_tot += pk_eval["ros_vorp"]
+                pout.append(pk_eval)
             pout.sort(key=lambda z: (-z["started_vorp"], -z["ros_vorp"]))
             return pout, round(sv_tot, 1), round(rv_tot, 1)
 
