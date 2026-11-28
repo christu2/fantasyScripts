@@ -1095,18 +1095,22 @@ function renderHistoryTab() {
   sel2.addEventListener("change", drawRivalry);
   drawRivalry();
 
-  // Career table
-  document.querySelector("#careerTable tbody").innerHTML = HUB.history.career.map((c, idx) => `
+  // Career table (preserves Alumni / replaced former managers with subtle Alumni badge!)
+  document.querySelector("#careerTable tbody").innerHTML = HUB.history.career.map((c, idx) => {
+    const alumTag = c.is_active === false ? ` <span class="pill" style="font-size:0.65rem;padding:1px 6px">Alumni</span>` : "";
+    const fkaTxt = (c.former_names && c.former_names.length) ? ` • fka ${esc(c.former_names.join(", "))}` : "";
+    return `
     <tr>
       <td>${idx + 1}</td>
-      <td><strong>${escDisplayName(c.owner)}</strong><span class="tie-note">${c.division ? esc(c.division) + " • " : ""}${c.seasons} ${c.seasons === 1 ? "yr" : "yrs"}</span></td>
+      <td><strong>${escDisplayName(c.owner)}</strong>${alumTag}<span class="tie-note">${c.division ? esc(c.division) + " • " : ""}${c.seasons} ${c.seasons === 1 ? "yr" : "yrs"}${fkaTxt}</span></td>
       <td>${c.rings > 0 ? `<span class="pill pill-gold">${c.rings}</span>` : "0"}</td>
       <td>${c.wins}-${c.losses}</td>
       <td><strong>${c.win_pct.toFixed(1)}%</strong></td>
       <td>${c.avg_pf.toFixed(1)}</td>
       <td>${c.high_score.toFixed(1)}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 
   // Championships log (gracefully hide card for Year-1 leagues with no past champions)
   const champs = HUB.history.championships || [];
@@ -1816,7 +1820,8 @@ function renderDossiersTab() {
     picker.innerHTML = list.map(d => {
       const act = d.owner === ACTIVE_DOSSIER ? "active" : "";
       const ringsHtml = d.rings > 0 ? `<span class="ring-mini">${d.rings}&#9733;</span>` : "";
-      return `<button class="dossier-btn ${act}" data-own="${esc(d.owner)}">${escShortName(d.owner)}${ringsHtml}</button>`;
+      const alumSuffix = d.is_active === false ? ` <span class="muted small">(Alumni)</span>` : "";
+      return `<button class="dossier-btn ${act}" data-own="${esc(d.owner)}">${escShortName(d.owner)}${ringsHtml}${alumSuffix}</button>`;
     }).join("");
     picker.querySelectorAll(".dossier-btn").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -1878,12 +1883,13 @@ function renderDossiersTab() {
     }).join("");
 
     const divTxt = d.division ? ` &bull; ${esc(d.division)} Division` : "";
+    const fkaHero = (d.former_names && d.former_names.length) ? ` &bull; Formerly: ${esc(d.former_names.join(", "))}` : "";
     document.getElementById("dossierBody").innerHTML = `
       <div class="dossier-hero">
         <div class="dossier-hero-top">
           <div>
             <h3 style="font-size:1.35rem;font-weight:800">${escDisplayName(d.owner)}</h3>
-            <p class="muted small">${esc(d.team_name)}${divTxt} &bull; Est. ${d.first_season} (${d.seasons_played} ${d.seasons_played === 1 ? "season" : "seasons"})${champSub}</p>
+            <p class="muted small">${esc(d.team_name)}${divTxt} &bull; Est. ${d.first_season} (${d.seasons_played} ${d.seasons_played === 1 ? "season" : "seasons"})${champSub}${fkaHero}</p>
             <div class="trade-tags" style="margin-top:8px;margin-bottom:0">${badgesHtml}</div>
           </div>
           <div class="trophy-strip">

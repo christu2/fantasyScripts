@@ -222,5 +222,81 @@ class TestMultiFormatLeagueSupport(unittest.TestCase):
         self.assertEqual(cfg["teams_by_id"][1]["owner"], "Cooper Powell")
 
 
+class TestLeagueIdentityResolver(unittest.TestCase):
+    def test_manager_replacement_stays_strictly_separate_and_tags_alumni(self):
+        from FantasyRecap.core.identity_resolver import LeagueIdentityResolver
+
+        res = LeagueIdentityResolver()
+        # Team 4 owned by John Doe (2022–2023), then replaced by Sarah Lee (2024–2026)
+        res.observe(2022, "{GUID-JOHN}", "John Doe", team_id=4, team_name="John's Squad")
+        res.observe(2023, "{GUID-JOHN}", "John Doe", team_id=4, team_name="John's Squad")
+        res.observe(2024, "{GUID-SARAH}", "Sarah Lee", team_id=4, team_name="Sarah's Sharks")
+        res.observe(2026, "{GUID-SARAH}", "Sarah Lee", team_id=4, team_name="Sarah's Sharks", is_current_season=True)
+        res.finalize()
+
+        self.assertEqual(res.resolve("{GUID-JOHN}", "John Doe", season=2022, team_id=4), "John Doe")
+        self.assertEqual(res.resolve("{GUID-SARAH}", "Sarah Lee", season=2026, team_id=4), "Sarah Lee")
+        self.assertFalse(res.is_active("John Doe"))  # Alumni!
+        self.assertTrue(res.is_active("Sarah Lee"))  # Current manager!
+        self.assertEqual(res.review_candidates(), [])
+
+    def test_marriage_or_display_name_change_on_same_account_unifies_automatically(self):
+        from FantasyRecap.core.identity_resolver import LeagueIdentityResolver
+
+        res = LeagueIdentityResolver()
+        # Emily gets married between 2023 and 2025 on the SAME ESPN/Sleeper account GUID
+        res.observe(2022, "{GUID-EMILY}", "Emily Smith", team_id=2, team_name="Gridiron Queens")
+        res.observe(2023, "{GUID-EMILY}", "Emily Smith", team_id=2, team_name="Gridiron Queens")
+        res.observe(2025, "{GUID-EMILY}", "Emily Johnson", team_id=2, team_name="Gridiron Queens")
+        res.observe(2026, "{GUID-EMILY}", "Emily Johnson", team_id=2, team_name="Gridiron Queens", is_current_season=True)
+        res.finalize()
+
+        # 2022 history automatically resolves to Emily Johnson, recording Emily Smith in former_names!
+        self.assertEqual(res.resolve("{GUID-EMILY}", "Emily Smith", season=2022, team_id=2), "Emily Johnson")
+        self.assertEqual(res.former_names_for("Emily Johnson"), ["Emily Smith"])
+        self.assertTrue(res.is_active("Emily Johnson"))
+
+    def test_duplicate_account_merges_and_ambiguous_takeover_flags_without_false_merge(self):
+        from FantasyRecap.core.identity_resolver import LeagueIdentityResolver
+
+        # Tier 2: Tom -> Tommy Ehrlich on new account, same franchise -> auto-merges!
+        # Tier 3: Emily Smith (old GUID) -> Emily Davis (new GUID) on same franchise -> kept separate & flagged!
+        res = LeagueIdentityResolver()
+        res.observe(2022, "{GUID-TOM-1}", "Tom Ehrlich", team_id=7, team_name="Bears")
+        res.observe(2026, "{GUID-TOM-2}", "Tommy Ehrlich", team_id=7, team_name="Bears", is_current_season=True)
+        res.observe(2023, "{GUID-EM-1}", "Emily Smith", team_id=5, team_name="Victorious Secret")
+        res.observe(2026, "{GUID-EM-2}", "Emily Davis", team_id=5, team_name="Victorious Secret", is_current_season=True)
+        res.finalize()
+
+        self.assertEqual(res.resolve("{GUID-TOM-1}", "Tom Ehrlich", season=2022, team_id=7), "Tommy Ehrlich")
+        self.assertTrue(res.is_active("Tommy Ehrlich"))
+
+        # Ambiguous Emily Smith vs Emily Davis on different GUIDs MUST NOT blindly merge!
+        self.assertEqual(res.resolve("{GUID-EM-1}", "Emily Smith", season=2023, team_id=5), "Emily Smith")
+        self.assertEqual(res.resolve("{GUID-EM-2}", "Emily Davis", season=2026, team_id=5), "Emily Davis")
+        cands = res.review_candidates()
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0]["prior_owner"], "Emily Smith")
+        self.assertEqual(cands[0]["new_owner"], "Emily Davis")
+
+        # When commissioner confirms via owner_aliases, they unify cleanly!
+        res2 = LeagueIdentityResolver(owner_aliases={"Emily Smith": "Emily Davis"})
+        res2.observe(2023, "{GUID-EM-1}", "Emily Smith", team_id=5, team_name="Victorious Secret")
+        res2.observe(2026, "{GUID-EM-2}", "Emily Davis", team_id=5, team_name="Victorious Secret", is_current_season=True)
+        res2.finalize()
+        self.assertEqual(res2.resolve("{GUID-EM-1}", "Emily Smith", season=2023, team_id=5), "Emily Davis")
+
+    def test_orphan_teams_across_different_seasons_do_not_collide(self):
+        from FantasyRecap.core.identity_resolver import LeagueIdentityResolver
+
+        res = LeagueIdentityResolver()
+        res.observe(2023, None, "", team_id=3, team_name="")
+        res.observe(2025, None, "", team_id=3, team_name="")
+        res.finalize()
+        o23 = res.resolve(None, "", season=2023, team_id=3)
+        o25 = res.resolve(None, "", season=2025, team_id=3)
+        self.assertNotEqual(o23, o25)
+
+
 if __name__ == "__main__":
     unittest.main()

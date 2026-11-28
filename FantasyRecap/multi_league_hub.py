@@ -41,6 +41,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from FantasyRecap.core.identity_resolver import LeagueIdentityResolver
 from FantasyRecap.core.manifest import dedupe_co_owners, extract_credited_owners, get_espn_credentials, load_project_env
 from FantasyRecap.core.security import validate_league_id, validate_slug
 load_project_env()
@@ -416,10 +417,24 @@ def discover_league_settings(league_id: str, cookies: dict, season: int, slug: s
     return config, raw
 
 
-def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: int) -> Dict[int, dict]:
+def _load_optional_owner_aliases(slug: str) -> Dict[str, str]:
+    cfg_p = SCRIPT_DIR / "leagues" / f"{slug}_podcast_config.json"
+    if cfg_p.exists():
+        try:
+            return dict(json.loads(cfg_p.read_text(encoding="utf-8")).get("owner_aliases") or {})
+        except Exception:
+            pass
+    return {}
+
+
+def sync_generic_league_db(
+    db_path: Path, config: dict, cookies: dict, season: int
+) -> Tuple[Dict[int, dict], LeagueIdentityResolver]:
     """
     Syncs games, weekly player_boxscores, team_seasons, draft_picks, and trades for ANY ESPN league.
-    Returns `season_rules_by_yr` capturing per-season rule evolution (Snake -> Auction, 10T -> 12T, 1QB -> SF, PPR shifts).
+    Uses 3-tier `LeagueIdentityResolver` across seasons so:
+      - Replaced managers stay strictly separated (tagged Alumni).
+      - Marriage / name changes on the same ESPN GUID unify automatically.
     """
     conn = sqlite3.connect(db_path)
     init_db(conn)
@@ -428,10 +443,14 @@ def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: i
     lid = config["league_id"]
     seasons_to_sync = sorted(set(config["previous_seasons"] + [int(season)]))
     season_rules_by_yr: Dict[int, dict] = {}
+    resolver = LeagueIdentityResolver(
+        owner_aliases=_load_optional_owner_aliases(config["slug"]),
+        name_normalizer=normalize_generic_owner_name,
+    )
 
+    # Pass 1: Fetch all season summaries & register every `(season, member_id, raw_name, team_id)` observation
+    raw_by_yr: Dict[int, dict] = {}
     for yr in seasons_to_sync:
-        is_curr = (yr == int(season))
-        # Fetch summary + draft + schedule
         url = (
             f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{yr}"
             f"/segments/0/leagues/{lid}?view=mMatchupScore&view=mTeam&view=mSettings&view=mMembers&view=mDraftDetail"
@@ -440,6 +459,25 @@ def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: i
         if r.status_code != 200:
             continue
         data = r.json()
+        raw_by_yr[yr] = data
+        is_curr = (yr == int(season))
+        m_raw = {}
+        for m in data.get("members", []):
+            full = f"{m.get('firstName', '').strip()} {m.get('lastName', '').strip()}".strip() or m.get("displayName", "").strip()
+            m_raw[m["id"]] = normalize_generic_owner_name(full)
+        for t in data.get("teams", []):
+            tid = int(t["id"])
+            tname = (t.get("name") or f"{t.get('location', '')} {t.get('nickname', '')}").strip() or f"Team {tid}"
+            p_oid = t.get("primaryOwner") or (t.get("owners") or [None])[0]
+            resolver.observe(yr, p_oid, m_raw.get(p_oid, ""), team_id=tid, team_name=tname, is_current_season=is_curr)
+            for oid in (t.get("owners") or []):
+                if oid and oid != p_oid and oid in m_raw:
+                    resolver.observe(yr, oid, m_raw[oid], team_id=0, team_name="", is_current_season=is_curr)
+
+    resolver.finalize()
+
+    for yr, data in sorted(raw_by_yr.items()):
+        is_curr = (yr == int(season))
         settings = data.get("settings", {})
         sched_set = settings.get("scheduleSettings", {})
         roster_set = settings.get("rosterSettings", {})
@@ -493,8 +531,8 @@ def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: i
             tid = int(t["id"])
             tname = (t.get("name") or f"{t.get('location', '')} {t.get('nickname', '')}").strip() or f"Team {tid}"
             p_oid = t.get("primaryOwner") or (t.get("owners") or [None])[0]
-            p_own = members.get(p_oid, tname)
-            co = dedupe_co_owners([p_own] + [members.get(oid, "") for oid in (t.get("owners") or [])])
+            p_own = resolver.resolve(p_oid, members.get(p_oid, ""), season=yr, team_id=tid)
+            co = dedupe_co_owners([p_own] + [resolver.resolve(oid, members.get(oid, ""), season=yr) for oid in (t.get("owners") or []) if oid in members])
             tmap[tid] = {
                 "id": tid,
                 "name": tname,
@@ -504,6 +542,9 @@ def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: i
                 "div_name": div_id_map.get(int(t.get("divisionId", 0)), "") if has_divs else "",
                 "raw": t,
             }
+            if is_curr and tid in config["teams_by_id"]:
+                config["teams_by_id"][tid]["owner"] = p_own
+                config["teams_by_id"][tid]["co_owners"] = ", ".join(co)
 
         # 1. Games table
         cur.execute("DELETE FROM games WHERE season = ?", (yr,))
@@ -716,7 +757,7 @@ def sync_generic_league_db(db_path: Path, config: dict, cookies: dict, season: i
         print(f"✅ Synced {config['name']} Season {yr}: {len(trades)} trades, {len(picks_raw)} draft picks, {len(target_wks)} boxscore weeks")
 
     conn.close()
-    return season_rules_by_yr
+    return season_rules_by_yr, resolver
 
 
 def run_generic_playoff_simulation(
@@ -919,7 +960,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     )
 
     db_path = LEAGUES_DB_DIR / f"{slug}_history.db"
-    season_rules_by_yr = sync_generic_league_db(db_path, config, cookies, season)
+    season_rules_by_yr, resolver = sync_generic_league_db(db_path, config, cookies, season)
 
     tmap = config["teams_by_id"]
     owners = [t["owner"] for t in tmap.values()]
@@ -1008,6 +1049,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         gp = max(1, ca["w"] + ca["l"])
         career.append({
             "owner": own, "code": own.split()[0], "division": owner_div.get(own, ""), "team_name": owner_tname.get(own, ""),
+            "is_active": own in owner_tname, "former_names": resolver.former_names_for(own),
             "seasons": len(ca["seasons"]), "first_season": ca["first"], "wins": ca["w"], "losses": ca["l"],
             "win_pct": round((ca["w"] / gp) * 100.0, 1), "po_wins": ca["pw"], "po_losses": ca["pl"],
             "avg_pf": round(ca["pf"] / gp, 2), "avg_pa": round(ca["pa"] / gp, 2), "high_score": round(ca["hi"], 2),
@@ -1296,9 +1338,13 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             }
             for r in cur.execute("SELECT season, team_name, division_name, wins, losses, points_for, final_rank, is_season_complete FROM team_seasons WHERE owner = ? ORDER BY season DESC", (o,)).fetchall()
         ]
+        is_act = o in owner_tname
+        if not is_act:
+            badges.insert(0, "Alumni")
         dossiers.append({
-            "owner": o, "code": c["code"], "division": c["division"], "team_name": c["team_name"],
-            "first_season": c["first_season"], "seasons_played": c["seasons"], "completed_seasons": 0,
+            "owner": o, "code": c["code"], "division": c["division"], "team_name": c["team_name"] or (ts_tl[0]["team_name"] if ts_tl else o),
+            "is_active": is_act, "former_names": resolver.former_names_for(o),
+            "first_season": c["first_season"], "seasons_played": c["seasons"], "completed_seasons": sum(1 for s in ts_tl if s["is_complete"]),
             "rings": 0, "champ_years": [], "runner_up_years": [], "div_titles": 0, "po_apps": 0,
             "reg_w": c["wins"], "reg_l": c["losses"], "reg_pct": c["win_pct"], "po_w": 0, "po_l": 0, "po_pct": 0.0,
             "ap_pct": lk.get("ap_pct", 50.0), "luck_delta": lk.get("luck_delta", 0.0),
@@ -1309,6 +1355,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "trade": {"deals": tc.get("trades", 0), "wins": tc.get("wins", 0), "losses": tc.get("losses", 0), "pushes": tc.get("pushes", 0), "net_vorp": tc.get("net_vorp", 0.0), "best_trade": tc.get("best_trade"), "worst_trade": tc.get("worst_trade")},
             "timeline": ts_tl,
         })
+    dossiers.sort(key=lambda d: (0 if d["is_active"] else 1, -d["rings"], -d["reg_pct"]))
     conn.close()
 
     teams_info = []
@@ -1389,6 +1436,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "drafts": drafts,
             "draft_seasons": draft_seasons,
             "season_rules": {str(yr): {k: v for k, v in info.items() if k != "repl_ranks"} for yr, info in sorted(season_rules_by_yr.items())},
+            "identity_review_candidates": resolver.review_candidates(),
         },
         "trades": {
             "all_time": {"seasons": [], "trade_count": len(eval_all), "trades": eval_all, "owner_cards": all_cards},

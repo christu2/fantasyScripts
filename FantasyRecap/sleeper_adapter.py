@@ -47,6 +47,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from FantasyRecap.bfl_history_db import init_db
+from FantasyRecap.core.identity_resolver import LeagueIdentityResolver
 from FantasyRecap.core.manifest import dedupe_co_owners
 from FantasyRecap.core.security import validate_league_id, validate_slug
 from FantasyRecap.multi_league_hub import (
@@ -56,6 +57,7 @@ from FantasyRecap.multi_league_hub import (
     TIE_MARGIN_VORP,
     WEB_HUB_DIR,
     _compute_generic_repl_baselines,
+    _load_optional_owner_aliases,
     compute_dynamic_replacement_ranks,
     deploy_multi_league_to_gcs,
     make_league_badge,
@@ -422,17 +424,28 @@ def build_sleeper_hub_data(
     curr_cfg["first_season"] = first_season
     curr_cfg["is_first_year"] = len(chain) == 1
 
-    # Map `owner_id` -> canonical current display name so renamed managers link cleanly across years!
-    canonical_uid_owner = {
-        t["owner_id"]: t["owner"]
-        for t in curr_cfg["teams_by_id"].values()
-        if t.get("owner_id")
-    }
-    for hist_cfg in chain[:-1]:
-        for t in hist_cfg["teams_by_id"].values():
-            uid = t.get("owner_id")
-            if uid and uid in canonical_uid_owner:
-                t["owner"] = canonical_uid_owner[uid]
+    # 3-Tier Identity Resolution across seasons: separates replaced managers (Alumni),
+    # unifies same-account handle/married-name changes, and flags ambiguous slot transitions!
+    resolver = LeagueIdentityResolver(
+        owner_aliases=_load_optional_owner_aliases(slug),
+        name_normalizer=normalize_generic_owner_name,
+    )
+    for cfg in chain:
+        is_c = (cfg["season"] == curr_season)
+        for rid, t in cfg["teams_by_id"].items():
+            raw_nm = t["owner"] if t.get("owner_id") else ""
+            resolver.observe(cfg["season"], t.get("owner_id"), raw_nm, team_id=rid, team_name=t["name"], is_current_season=is_c)
+    resolver.finalize()
+    for cfg in chain:
+        for rid, t in cfg["teams_by_id"].items():
+            raw_nm = t["owner"] if t.get("owner_id") else ""
+            t["owner"] = resolver.resolve(t.get("owner_id"), raw_nm, season=cfg["season"], team_id=rid)
+        if cfg["has_divisions"]:
+            new_divs: Dict[str, List[str]] = {}
+            for t in cfg["teams_by_id"].values():
+                if t["division"]:
+                    new_divs.setdefault(t["division"], []).append(t["owner"])
+            cfg["divisions"] = new_divs
 
     db_path = LEAGUES_DB_DIR / f"{slug}_sleeper_history.db"
     if db_path.exists():
@@ -791,6 +804,7 @@ def build_sleeper_hub_data(
         gp = max(1, ca["w"] + ca["l"])
         career.append({
             "owner": own, "code": own.split()[0], "division": owner_div.get(own, ""), "team_name": owner_tname.get(own, ""),
+            "is_active": own in owner_tname, "former_names": resolver.former_names_for(own),
             "seasons": len(ca["seasons"]), "first_season": ca["first"], "wins": ca["w"], "losses": ca["l"],
             "win_pct": round((ca["w"] / gp) * 100.0, 1), "po_wins": ca["pw"], "po_losses": ca["pl"],
             "avg_pf": round(ca["pf"] / gp, 2), "avg_pa": round(ca["pa"] / gp, 2), "high_score": round(ca["hi"], 2),
@@ -1076,20 +1090,22 @@ def build_sleeper_hub_data(
     dossiers = []
     for c in career:
         o = c["owner"]
-        if o not in owner_tname:
-            continue
+        is_act = o in owner_tname
         lk = luck_map.get(o, {})
         tc = tc_map.get(o, {})
         my_dp = [x for x in scored_dp if x["owner"] == o]
         bs = max((x for x in my_dp if ((x.get("bid", 0) <= 15) if x.get("draft_mode") == "AUCTION" else (x["round"] >= 2 if x.get("draft_mode") == "LINEAR" else x["round"] >= 4)) and x["delta"] > 0), key=lambda x: x["delta"], default=None)
         wb = min((x for x in my_dp if ((x.get("bid", 0) >= 20) if x.get("draft_mode") == "AUCTION" else (x["round"] == 1 if x.get("draft_mode") == "LINEAR" else x["round"] <= 5)) and x["delta"] < 0), key=lambda x: x["delta"], default=None)
         badges = []
+        if not is_act: badges.append("Alumni")
         if c["rings"] > 0: badges.append(f"{c['rings']}x Champion")
         if (lk.get("pf_plus") or 100.0) >= 105.0: badges.append("Era Scorer")
         if (lk.get("luck_delta") or 0.0) >= 1.5: badges.append("Schedule Blessed")
         elif (lk.get("luck_delta") or 0.0) <= -1.5: badges.append("Schedule Cursed")
         if tc.get("net_vorp", 0.0) >= 35.0: badges.append("Trade Shark")
-        if not badges: badges.append(f"{curr_cfg['badge']} Contender")
+        if not badges or badges == ["Alumni"]:
+            if is_act:
+                badges.append(f"{curr_cfg['badge']} Contender")
         ts_tl = [
             {
                 "season": int(r[0]), "team_name": r[1], "division": r[2],
@@ -1101,7 +1117,8 @@ def build_sleeper_hub_data(
             for r in cur.execute("SELECT season, team_name, division_name, wins, losses, points_for, final_rank, made_playoffs, won_championship, runner_up, is_season_complete FROM team_seasons WHERE owner = ? ORDER BY season DESC", (o,)).fetchall()
         ]
         dossiers.append({
-            "owner": o, "code": c["code"], "division": c["division"], "team_name": c["team_name"],
+            "owner": o, "code": c["code"], "division": c["division"], "team_name": c["team_name"] or (ts_tl[0]["team_name"] if ts_tl else o),
+            "is_active": is_act, "former_names": resolver.former_names_for(o),
             "first_season": c["first_season"], "seasons_played": c["seasons"], "completed_seasons": sum(1 for s in ts_tl if s["is_complete"]),
             "rings": c["rings"], "champ_years": c["champ_years"], "runner_up_years": c["runner_up_years"], "div_titles": 0, "po_apps": sum(1 for s in ts_tl if s["made_playoffs"]),
             "reg_w": c["wins"], "reg_l": c["losses"], "reg_pct": c["win_pct"], "po_w": c["po_wins"], "po_l": c["po_losses"], "po_pct": round((c["po_wins"] / max(1, c["po_wins"] + c["po_losses"])) * 100.0, 1) if (c["po_wins"] + c["po_losses"]) else 0.0,
@@ -1113,6 +1130,7 @@ def build_sleeper_hub_data(
             "trade": {"deals": tc.get("trades", 0), "wins": tc.get("wins", 0), "losses": tc.get("losses", 0), "pushes": tc.get("pushes", 0), "net_vorp": tc.get("net_vorp", 0.0), "best_trade": tc.get("best_trade"), "worst_trade": tc.get("worst_trade")},
             "timeline": ts_tl,
         })
+    dossiers.sort(key=lambda d: (0 if d["is_active"] else 1, -d["rings"], -d["reg_pct"]))
     conn.close()
 
     teams_info = []
@@ -1179,12 +1197,13 @@ def build_sleeper_hub_data(
         "weekly_projections": weekly_proj_export,
         "awards": awards_data,
         "history": {
-            "career": [c for c in career if c["owner"] in owner_tname],
+            "career": career,
             "h2h": h2h_summary,
             "championships": sorted(championships_log, key=lambda x: -int(x["year"])),
             "drafts": drafts,
             "draft_seasons": draft_seasons,
             "season_rules": {str(yr): {k: v for k, v in info.items() if k != "repl_ranks"} for yr, info in sorted(season_rules_by_yr.items())},
+            "identity_review_candidates": resolver.review_candidates(),
         },
         "trades": {
             "all_time": {"seasons": sorted({t["season"] for t in eval_all}, reverse=True), "trade_count": len(eval_all), "trades": eval_all, "owner_cards": all_cards},
