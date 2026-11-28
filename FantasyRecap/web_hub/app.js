@@ -567,10 +567,10 @@ function renderRootingGuide(owner, odds, cond, unlockedCount) {
   if (sel && sel.options.length === 0) {
     sel.innerHTML = HUB.teams.map(t => t.owner).sort().map(o => `<option value="${esc(o)}">${escDisplayName(o)}</option>`).join("");
     sel.value = owner;
-    sel.addEventListener("change", () => {
+    sel.onchange = () => {
       ROOTING_OWNER = sel.value;
       renderPlayoffMachine();
-    });
+    };
   } else if (sel) {
     sel.value = owner;
   }
@@ -1091,8 +1091,8 @@ function renderHistoryTab() {
       </div>
     `;
   };
-  sel1.addEventListener("change", drawRivalry);
-  sel2.addEventListener("change", drawRivalry);
+  sel1.onchange = drawRivalry;
+  sel2.onchange = drawRivalry;
   drawRivalry();
 
   // Career table (preserves Alumni / replaced former managers with subtle Alumni badge!)
@@ -1112,7 +1112,7 @@ function renderHistoryTab() {
   `;
   }).join("");
 
-  // Championships log (gracefully hide card for Year-1 leagues with no past champions)
+  // Championships log (gracefully hide card for Year-1 leagues with no past champions, restore when present)
   const champs = HUB.history.championships || [];
   const champsCard = document.getElementById("champsTable").closest(".card");
   if (!champs.length && champsCard) {
@@ -1120,6 +1120,11 @@ function renderHistoryTab() {
     const grid = champsCard.parentElement;
     if (grid) grid.style.gridTemplateColumns = "1fr";
   } else {
+    if (champsCard) {
+      champsCard.style.display = "";
+      const grid = champsCard.parentElement;
+      if (grid) grid.style.gridTemplateColumns = "";
+    }
     document.querySelector("#champsTable tbody").innerHTML = champs.map(s => `
       <tr>
         <td><strong>${esc(s.year)}</strong></td>
@@ -1190,8 +1195,8 @@ function renderDraftsTab() {
     document.querySelector("#stealsTable tbody").innerHTML = fmt(pack.steals, true);
     document.querySelector("#bustsTable tbody").innerHTML = fmt(pack.busts, false);
   };
-  sSel.addEventListener("change", draw);
-  oSel.addEventListener("change", draw);
+  sSel.onchange = draw;
+  oSel.onchange = draw;
   draw();
 }
 
@@ -1216,6 +1221,10 @@ function renderTradesTab() {
     if (btnAll) btnAll.style.display = "none";
     if (btnLive) { btnLive.classList.add("active-gold"); }
   } else if (btnAll && pack.all_time) {
+    btnAll.style.display = "";
+    TRADE_ERA = "all_time";
+    btnAll.classList.add("active");
+    if (btnLive) btnLive.classList.remove("active-gold", "active");
     const yrs = pack.all_time.seasons || [];
     const span = yrs.length ? `${Math.min(...yrs)}–${Math.max(...yrs)}` : "2018–2025";
     btnAll.textContent = `All-Time Vault (${span})`;
@@ -1513,29 +1522,29 @@ function renderTradesTab() {
     }).join("");
   };
 
-  // Wire era & lens segmented controls
+  // Wire era & lens segmented controls idempotently
   document.querySelectorAll("#tradeEraGroup .seg-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.onclick = () => {
       document.querySelectorAll("#tradeEraGroup .seg-btn").forEach(b => b.classList.remove("active", "active-gold"));
       TRADE_ERA = btn.dataset.era;
       btn.classList.add(TRADE_ERA === "live" ? "active-gold" : "active");
       syncSeasonSelect();
       draw();
-    });
+    };
   });
 
   document.querySelectorAll("#tradeLensGroup .seg-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.onclick = () => {
       document.querySelectorAll("#tradeLensGroup .seg-btn").forEach(b => b.classList.remove("active"));
       TRADE_LENS = btn.dataset.lens;
       btn.classList.add("active");
       draw();
-    });
+    };
   });
 
-  catSel.addEventListener("change", draw);
-  yrSel.addEventListener("change", draw);
-  ownSel.addEventListener("change", draw);
+  catSel.onchange = draw;
+  yrSel.onchange = draw;
+  ownSel.onchange = draw;
 
   syncSeasonSelect();
   draw();
@@ -1691,12 +1700,12 @@ function renderAnalyticsLabTab() {
   };
 
   document.querySelectorAll("#trendMetricGroup .seg-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.onclick = () => {
       document.querySelectorAll("#trendMetricGroup .seg-btn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
       TREND_METRIC = btn.dataset.metric;
       drawTrendChart();
-    });
+    };
   });
   drawTrendChart();
 
@@ -1749,8 +1758,8 @@ function renderAnalyticsLabTab() {
       `;
     }).join("");
   };
-  lsSel.addEventListener("change", drawLuckTable);
-  lSortSel.addEventListener("change", drawLuckTable);
+  lsSel.onchange = drawLuckTable;
+  lSortSel.onchange = drawLuckTable;
   drawLuckTable();
 
   // --- 3. Positional Strength VORP Heatmap (dynamic columns for standard, no-K, or IDP!) ---
@@ -1951,17 +1960,33 @@ function renderDossiersTab() {
 function renderPodcastAndAwards() {
   const pList = document.getElementById("podcastList");
   const rssLink = document.getElementById("rssLink");
+  const podCard = document.getElementById("podcastCard") || (pList && pList.closest(".card"));
+  const grid = document.getElementById("podcastAwardsGrid") || (podCard && podCard.parentElement);
+  const tabBtn = document.querySelector('.tab-btn[data-tab="podcast"]');
+  const podTitle = document.getElementById("podcastCardTitle");
   const eps = (HUB.podcast && HUB.podcast.episodes) || [];
-  const podCard = pList.closest(".card");
-  if (!eps.length && (!HUB.podcast || !HUB.podcast.rss_url)) {
+  const hasPodcast = eps.length > 0 || Boolean(HUB.podcast && HUB.podcast.rss_url);
+
+  if (!hasPodcast) {
     if (podCard) podCard.style.display = "none";
-    const grid = podCard && podCard.parentElement;
     if (grid) grid.style.gridTemplateColumns = "1fr";
-    const tabBtn = document.querySelector('.tab-btn[data-tab="podcast"]');
     if (tabBtn) tabBtn.textContent = "Weekly Awards";
+    if (pList) pList.innerHTML = "";
+    if (rssLink) rssLink.removeAttribute("href");
   } else {
+    if (podCard) podCard.style.display = "";
+    if (grid) grid.style.gridTemplateColumns = "";
+    if (tabBtn) tabBtn.textContent = "Podcast & Awards";
+    const meta = getLeagueMeta();
+    if (podTitle) {
+      podTitle.textContent = (HUB.podcast && HUB.podcast.show_title) ||
+        (meta.badge === "BFL" ? "Tuesday Morning Hangover — Episodes" : `${meta.badge} Audio Episodes`);
+    }
     const validRss = safeUrl(HUB.podcast && HUB.podcast.rss_url);
-    if (rssLink && validRss) rssLink.href = validRss;
+    if (rssLink) {
+      rssLink.textContent = "Apple Podcasts RSS";
+      if (validRss) rssLink.href = validRss;
+    }
     if (!eps.length) {
       pList.innerHTML = `<p class="muted">No episodes published yet.</p>`;
     } else {
@@ -2000,19 +2025,41 @@ function renderPodcastAndAwards() {
   }
 }
 
-/* ---------- BOOTSTRAP ---------- */
+/* ---------- DYNAMIC LEAGUE APPLICATION & SELF-SERVE ONBOARDING ---------- */
 
-async function init() {
-  const resp = await fetch("hub_data.json", { cache: "no-store" });
-  HUB = await resp.json();
+function getApiBase() {
+  const metaEl = document.querySelector('meta[name="frecap-api-base"]');
+  const raw = metaEl ? metaEl.getAttribute("content") : "";
+  return safeUrl(raw).replace(/\/+$/, "");
+}
 
-  // Apply dynamic league branding from `league_config` (works for BFL, JFF, and any future ESPN/Sleeper league!)
+function extractClientLeagueId(rawInput) {
+  const s = String(rawInput || "").trim();
+  if (/^[0-9]{1,20}$/.test(s)) return s;
+  const mParam = s.match(/[?&]leagueId=([0-9]{1,20})(?:&|$)/i);
+  if (mParam) return mParam[1];
+  const mPath = s.match(/\/leagues\/([0-9]{1,20})(?:\/|\?|$)/i);
+  if (mPath) return mPath[1];
+  throw new Error("Enter a valid numeric League ID (or paste your Sleeper / ESPN league URL).");
+}
+
+function applyHubData(hubObj, shareParams) {
+  HUB = hubObj;
+  for (const k of Object.keys(LOCKED_PICKS)) delete LOCKED_PICKS[k];
+  for (const k of Object.keys(CUSTOM_SCORES)) delete CUSTOM_SCORES[k];
+  TREND_SPOTLIGHT = null;
+  ROOTING_OWNER = null;
+  const rootSel = document.getElementById("rootingOwnerSelect");
+  if (rootSel) rootSel.innerHTML = "";
+
   const meta = getLeagueMeta();
+  const isDemo = Boolean(HUB.league_config && HUB.league_config.is_demo);
   document.title = `${meta.name} Hub`;
   const badgeEl = document.querySelector(".brand-badge");
   if (badgeEl) badgeEl.textContent = meta.badge;
   const h1El = document.querySelector(".brand h1");
-  if (h1El) h1El.textContent = `${meta.name} Hub`;
+  if (h1El) h1El.textContent = meta.name.endsWith(")") ? meta.name : `${meta.name} Hub`;
+
   const yrSpan = HUB.season - meta.firstSeason + 1;
   const histTxt = yrSpan > 1 ? `${yrSpan}-Year History` : `Inaugural Season`;
   const scoreTxt = meta.scoringLabel ? ` • ${meta.scoringLabel}` : "";
@@ -2028,16 +2075,280 @@ async function init() {
       : `Top ${meta.playoffTeams} of ${HUB.teams.length} Teams qualify (No Divisions • ${esc(tb.first_round_bye || (meta.playoffByes > 0 ? `Top ${meta.playoffByes} earn 1st-Round Byes` : "No Byes"))}).`;
     rulesEl.innerHTML = `${fieldDesc} Official ${esc(meta.badge)} Tiebreakers: <strong>${esc(tb.order || "Overall Record -> Points For (PF)")}</strong>.`;
   }
+
+  const spanLabel = yrSpan > 1 ? `(${meta.firstSeason}–Present)` : `(${HUB.season} Season)`;
   const pmTitle = document.querySelector("#tab-playoff .hero-bar h2");
   if (pmTitle) pmTitle.textContent = `Interactive ${meta.badge} Playoff Machine`;
   const anTitle = document.querySelector("#tab-analytics .hero-bar h2");
   if (anTitle) anTitle.textContent = `${meta.badge} Analytics Lab — Storylines, Schedule Luck & Roster DNA`;
+  const dosTitle = document.getElementById("dossiersHeroTitle");
+  if (dosTitle) dosTitle.textContent = `Franchise Dossiers & Trophy Room ${spanLabel}`;
+  const dosBlurb = document.getElementById("dossiersHeroBlurb");
+  if (dosBlurb) {
+    dosBlurb.textContent = `Select any of the ${HUB.teams.length} ${meta.badge} franchises to inspect their trophy case, archetype badges, H2H rivals, best/worst drafts & trades, and season timeline.`;
+  }
+  const rivTitle = document.getElementById("rivalryExplorerTitle");
+  if (rivTitle) rivTitle.textContent = `Head-to-Head Rivalry Explorer ${spanLabel}`;
+  const carTitle = document.getElementById("careerTableTitle");
+  if (carTitle) carTitle.textContent = `All-Time Franchise Leaderboard ${spanLabel}`;
+  const chTitle = document.getElementById("champsCardTitle");
+  if (chTitle) {
+    chTitle.textContent = meta.badge === "BFL" ? "The Jabroni Trophy — Championship Log" : "Championship Trophy Log";
+  }
+
   const footerLeft = document.querySelector(".footer span:first-child");
-  if (footerLeft) footerLeft.textContent = `${meta.name} (Est. ${meta.firstSeason}) • Hosted on Google Cloud Storage Free Tier`;
+  if (footerLeft) {
+    footerLeft.textContent = isDemo
+      ? `${meta.name} • Zero-Login Sleeper & Public ESPN Analytics`
+      : `${meta.name} (Est. ${meta.firstSeason}) • Zero-Login Fantasy Analytics Hub`;
+  }
   document.getElementById("footerTimestamp").textContent =
     `Updated ${new Date(HUB.generated_at).toLocaleString()}`;
 
-  // Tab navigation
+  const shareBtn = document.getElementById("btnShareLeague");
+  if (shareBtn) {
+    if (shareParams && shareParams.platform && shareParams.league) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("demo");
+      url.searchParams.delete("onboard");
+      url.searchParams.set("platform", shareParams.platform);
+      url.searchParams.set("league", shareParams.league);
+      window.history.replaceState({}, "", url.toString());
+      shareBtn.style.display = "inline-flex";
+    } else if (isDemo) {
+      shareBtn.style.display = "none";
+    }
+  }
+
+  renderPlayoffMachine();
+  renderAnalyticsLabTab();
+  renderDossiersTab();
+  renderHistoryTab();
+  renderDraftsTab();
+  renderTradesTab();
+  renderPodcastAndAwards();
+}
+
+function setOnboardStatus(msg, isError = false) {
+  const el = document.getElementById("onboardStatus");
+  if (!el) return;
+  if (!msg) {
+    el.style.display = "none";
+    el.textContent = "";
+    return;
+  }
+  el.style.display = "block";
+  el.className = isError ? "onboard-status error" : "onboard-status";
+  el.textContent = msg;
+}
+
+async function loadRemoteLeague(platform, rawInput) {
+  let lid = "";
+  try {
+    lid = extractClientLeagueId(rawInput);
+  } catch (err) {
+    setOnboardStatus(err.message, true);
+    return;
+  }
+  const apiBase = getApiBase();
+  const endpoint = platform === "espn"
+    ? `${apiBase}/api/v1/hub/espn/${encodeURIComponent(lid)}`
+    : `${apiBase}/api/v1/hub/sleeper/${encodeURIComponent(lid)}`;
+
+  setOnboardStatus(`Analyzing ${platform.toUpperCase()} League ${lid} (syncing multi-year history, VORP & 4,000 CRN simulations)...`, false);
+  try {
+    const resp = await fetch(endpoint);
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data || data.ok === false) {
+      const msg = (data && data.message) || `Failed to load league (HTTP ${resp.status}).`;
+      setOnboardStatus(msg, true);
+      return;
+    }
+    applyHubData(data, { platform, league: lid });
+    setOnboardStatus(`Loaded ${data.league_config ? data.league_config.name : "League"}! Share the URL above with your league-mates.`, false);
+  } catch (err) {
+    setOnboardStatus(`Network error contacting league analyzer: ${err.message}`, true);
+  }
+}
+
+async function lookupSleeperUsernameClient(rawUsername) {
+  const clean = String(rawUsername || "").trim().replace(/^@/, "");
+  if (!/^[A-Za-z0-9_]{1,32}$/.test(clean)) {
+    setOnboardStatus("Enter a valid Sleeper username (letters, numbers, underscores).", true);
+    return;
+  }
+  const listEl = document.getElementById("sleeperUserLeagues");
+  if (listEl) { listEl.style.display = "none"; listEl.innerHTML = ""; }
+  setOnboardStatus(`Looking up 2026 Sleeper leagues for @${clean}...`, false);
+
+  let leagues = null;
+  const seasonYr = (HUB && HUB.season) || 2026;
+  // Fast zero-cost path: query Sleeper's CORS-enabled public API directly from the user's browser!
+  try {
+    const uResp = await fetch(`https://api.sleeper.app/v1/user/${encodeURIComponent(clean)}`);
+    if (uResp.ok) {
+      const uObj = await uResp.json();
+      if (uObj && uObj.user_id) {
+        const lResp = await fetch(`https://api.sleeper.app/v1/user/${encodeURIComponent(uObj.user_id)}/leagues/nfl/${seasonYr}`);
+        if (lResp.ok) {
+          const rawList = (await lResp.json()) || [];
+          leagues = rawList.filter(lg => lg && /^[0-9]{1,20}$/.test(String(lg.league_id || ""))).map(lg => {
+            const set = lg.settings || {};
+            const sc = lg.scoring_settings || {};
+            const rpos = (lg.roster_positions || []).map(x => String(x).toUpperCase());
+            const ltype = Number(set.type || 0);
+            const fmt = ltype === 2 ? "Dynasty" : (ltype === 1 ? "Keeper" : "Redraft");
+            const rec = Number(sc.rec || 0);
+            let scLbl = rec >= 0.9 ? "Full PPR" : (rec >= 0.4 ? "Half PPR" : "Standard");
+            if (rpos.includes("SUPER_FLEX")) scLbl += " • SF";
+            if (Number(set.league_average_match || 0) === 1) scLbl += " • Median";
+            return {
+              league_id: String(lg.league_id),
+              name: String(lg.name || `League ${lg.league_id}`).trim(),
+              total_rosters: Number(lg.total_rosters || set.num_teams || 12),
+              format_label: fmt,
+              scoring_label: scLbl,
+            };
+          });
+        }
+      }
+    }
+  } catch (_directErr) {
+    leagues = null;
+  }
+
+  // Fallback to backend `/api/v1/sleeper/user/<username>` if browser direct call was blocked/offline
+  if (leagues === null) {
+    try {
+      const apiBase = getApiBase();
+      const bResp = await fetch(`${apiBase}/api/v1/sleeper/user/${encodeURIComponent(clean)}?season=${seasonYr}`);
+      const bData = await bResp.json().catch(() => null);
+      if (!bResp.ok || !bData || bData.ok === false) {
+        setOnboardStatus((bData && bData.message) || `Sleeper user '@${clean}' not found.`, true);
+        return;
+      }
+      leagues = bData.leagues || [];
+    } catch (err) {
+      setOnboardStatus(`Could not look up Sleeper user '@${clean}': ${err.message}`, true);
+      return;
+    }
+  }
+
+  if (!leagues.length) {
+    setOnboardStatus(`No ${seasonYr} NFL leagues found for Sleeper user '@${clean}'.`, true);
+    return;
+  }
+
+  setOnboardStatus(`Found ${leagues.length} league${leagues.length === 1 ? "" : "s"} for @${clean} — click one to load:`, false);
+  if (listEl) {
+    listEl.style.display = "flex";
+    listEl.innerHTML = leagues.map(lg => `
+      <button type="button" class="league-choice-btn" data-lid="${esc(lg.league_id)}">
+        <strong>${esc(lg.name)}</strong>
+        <span class="tie-note">${Number(lg.total_rosters)}T &bull; ${esc(lg.format_label)} &bull; ${esc(lg.scoring_label)}</span>
+      </button>
+    `).join("");
+    listEl.querySelectorAll(".league-choice-btn").forEach(btn => {
+      btn.onclick = () => {
+        const lid = btn.dataset.lid;
+        const inp = document.getElementById("sleeperLeagueInput");
+        if (inp) inp.value = lid;
+        loadRemoteLeague("sleeper", lid);
+      };
+    });
+  }
+}
+
+function setupOnboarding() {
+  const panel = document.getElementById("onboardPanel");
+  const openBtn = document.getElementById("btnOpenOnboard");
+  const closeBtn = document.getElementById("btnCloseOnboard");
+  const demoBtn = document.getElementById("btnLoadDemo");
+  const shareBtn = document.getElementById("btnShareLeague");
+  if (!panel) return;
+
+  if (openBtn) {
+    openBtn.onclick = () => {
+      panel.style.display = panel.style.display === "none" ? "block" : "none";
+    };
+  }
+  if (closeBtn) {
+    closeBtn.onclick = () => { panel.style.display = "none"; };
+  }
+  if (demoBtn) {
+    demoBtn.onclick = async () => {
+      setOnboardStatus("Loading 16-Team Live Demo League...", false);
+      try {
+        let r = await fetch("demo_hub_data.json", { cache: "no-store" });
+        if (!r.ok) {
+          r = await fetch(`${getApiBase()}/api/v1/demo`);
+        }
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const dObj = await r.json();
+        const url = new URL(window.location.href);
+        url.searchParams.delete("platform");
+        url.searchParams.delete("league");
+        url.searchParams.set("demo", "1");
+        window.history.replaceState({}, "", url.toString());
+        applyHubData(dObj, null);
+        setOnboardStatus("Viewing 16-Team Live Demo (18-Year History). Paste your Sleeper or ESPN League ID above anytime!", false);
+      } catch (e) {
+        setOnboardStatus(`Demo bundle unavailable: ${e.message}`, true);
+      }
+    };
+  }
+  if (shareBtn) {
+    shareBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        const orig = shareBtn.textContent;
+        shareBtn.textContent = "Copied Link!";
+        setTimeout(() => { shareBtn.textContent = orig; }, 1800);
+      } catch (_e) {
+        window.prompt("Copy link to share with your league:", window.location.href);
+      }
+    };
+  }
+
+  document.querySelectorAll("#onboardPlatformGroup .seg-btn").forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll("#onboardPlatformGroup .seg-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const isEspn = btn.dataset.platform === "espn";
+      const sBox = document.getElementById("onboardSleeperBox");
+      const eBox = document.getElementById("onboardEspnBox");
+      if (sBox) sBox.style.display = isEspn ? "none" : "block";
+      if (eBox) eBox.style.display = isEspn ? "block" : "none";
+      setOnboardStatus("");
+    };
+  });
+
+  const btnUser = document.getElementById("btnLookupSleeperUser");
+  const inpUser = document.getElementById("sleeperUserInput");
+  if (btnUser && inpUser) {
+    btnUser.onclick = () => lookupSleeperUsernameClient(inpUser.value);
+    inpUser.addEventListener("keydown", e => { if (e.key === "Enter") lookupSleeperUsernameClient(inpUser.value); });
+  }
+
+  const btnSlp = document.getElementById("btnLoadSleeperLeague");
+  const inpSlp = document.getElementById("sleeperLeagueInput");
+  if (btnSlp && inpSlp) {
+    btnSlp.onclick = () => loadRemoteLeague("sleeper", inpSlp.value);
+    inpSlp.addEventListener("keydown", e => { if (e.key === "Enter") loadRemoteLeague("sleeper", inpSlp.value); });
+  }
+
+  const btnEspn = document.getElementById("btnLoadEspnLeague");
+  const inpEspn = document.getElementById("espnLeagueInput");
+  if (btnEspn && inpEspn) {
+    btnEspn.onclick = () => loadRemoteLeague("espn", inpEspn.value);
+    inpEspn.addEventListener("keydown", e => { if (e.key === "Enter") loadRemoteLeague("espn", inpEspn.value); });
+  }
+}
+
+/* ---------- BOOTSTRAP ---------- */
+
+async function init() {
+  // Bind static tab & Playoff Machine controls once
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -2047,7 +2358,6 @@ async function init() {
     });
   });
 
-  // Playoff Machine presets & scoring model controls
   document.getElementById("modelModeSelect").addEventListener("change", (e) => {
     MODEL_MODE = e.target.value;
     renderPlayoffMachine();
@@ -2083,13 +2393,50 @@ async function init() {
     renderPlayoffMachine();
   });
 
-  renderPlayoffMachine();
-  renderAnalyticsLabTab();
-  renderDossiersTab();
-  renderHistoryTab();
-  renderDraftsTab();
-  renderTradesTab();
-  renderPodcastAndAwards();
+  setupOnboarding();
+
+  const params = new URLSearchParams(window.location.search);
+  const qPlatform = (params.get("platform") || "").toLowerCase();
+  const qLeague = params.get("league") || "";
+  const forceDemo = params.get("demo") === "1";
+  const forceOnboard = params.get("onboard") === "1";
+  const panel = document.getElementById("onboardPanel");
+
+  if ((qPlatform === "sleeper" || qPlatform === "espn") && qLeague) {
+    if (panel) panel.style.display = "block";
+    await loadRemoteLeague(qPlatform, qLeague);
+    if (HUB) return;
+  }
+
+  let initialHub = null;
+  const defMeta = document.querySelector('meta[name="frecap-default-bundle"]');
+  const defaultBundle = (defMeta && defMeta.getAttribute("content")) || "hub_data.json";
+
+  if (!forceDemo) {
+    try {
+      const resp = await fetch(defaultBundle, { cache: "no-store" });
+      if (resp.ok) initialHub = await resp.json();
+    } catch (_e) {
+      initialHub = null;
+    }
+  }
+
+  if (!initialHub) {
+    let dResp = await fetch("demo_hub_data.json", { cache: "no-store" }).catch(() => null);
+    if (!dResp || !dResp.ok) {
+      dResp = await fetch(`${getApiBase()}/api/v1/demo`);
+    }
+    if (!dResp || !dResp.ok) {
+      throw new Error("League data bundle not found.");
+    }
+    initialHub = await dResp.json();
+  }
+
+  applyHubData(initialHub, null);
+  const isDemo = Boolean(initialHub.league_config && initialHub.league_config.is_demo);
+  if (panel && (isDemo || forceOnboard)) {
+    panel.style.display = "block";
+  }
 }
 
 init().catch(err => {

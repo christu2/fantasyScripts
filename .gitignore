@@ -107,5 +107,11 @@ FantasyRecap/output/
 !FantasyRecap/README.md
 archive_2025_draft/
 
-# Historical SQLite database (auto-built locally via bfl_history_db.py --sync)
+# Historical SQLite database & generated web hub runtime bundles
 FantasyRecap/live_state/*.db
+FantasyRecap/live_state/leagues/
+FantasyRecap/live_state/sleeper_players_slim.json
+FantasyRecap/web_hub/hub_data.json
+FantasyRecap/web_hub/demo_hub_data.json
+FantasyRecap/web_hub/leagues/
+FantasyRecap/dist_public/

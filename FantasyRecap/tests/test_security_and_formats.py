@@ -298,5 +298,169 @@ class TestLeagueIdentityResolver(unittest.TestCase):
         self.assertNotEqual(o23, o25)
 
 
+class TestPublicAPIAndAnonymizerSecurity(unittest.TestCase):
+    def test_league_id_extractor_username_validator_and_bounded_rate_limiter(self):
+        from FantasyRecap.core.security import (
+            SlidingWindowRateLimiter,
+            extract_league_id_from_input,
+            validate_sleeper_username,
+        )
+
+        self.assertEqual(extract_league_id_from_input("755112359"), "755112359")
+        self.assertEqual(
+            extract_league_id_from_input("https://fantasy.espn.com/football/league?leagueId=755112359&seasonId=2026"),
+            "755112359",
+        )
+        self.assertEqual(
+            extract_league_id_from_input("https://sleeper.com/leagues/1313213902351273984/matchup"),
+            "1313213902351273984",
+        )
+        for bad in ("../../etc/passwd", "http://169.254.169.254/leagues/abc", "javascript:alert(1)", ""):
+            with self.assertRaises(ValueError):
+                extract_league_id_from_input(bad)
+
+        self.assertEqual(validate_sleeper_username("@Valid_User_99"), "Valid_User_99")
+        for bad_u in ("../admin", "user?foo=1", "a" * 40, "bad space", ""):
+            with self.assertRaises(ValueError):
+                validate_sleeper_username(bad_u)
+
+        now = [1000.0]
+        lim = SlidingWindowRateLimiter(max_requests=2, window_seconds=60.0, max_keys=64, clock=lambda: now[0])
+        self.assertEqual(lim.allow("1.2.3.4"), (True, 0))
+        self.assertEqual(lim.allow("1.2.3.4"), (True, 0))
+        allowed, retry = lim.allow("1.2.3.4")
+        self.assertFalse(allowed)
+        self.assertGreaterEqual(retry, 1)
+        now[0] += 61.0
+        self.assertEqual(lim.allow("1.2.3.4"), (True, 0))
+
+        # Memory-bound check against spoofed-IP flood
+        for idx in range(200):
+            lim.allow(f"10.0.0.{idx}")
+        self.assertLessEqual(len(lim._hits), 64)
+
+    def test_public_api_confused_deputy_rate_limit_singleflight_and_owasp_headers(self):
+        import gzip
+        import json
+        import threading
+        import time
+        import urllib.error
+        import urllib.request
+        import requests
+        from FantasyRecap.public_api_server import PublicAPIService, create_server
+
+        espn_calls = []
+        sleeper_calls = []
+
+        def fake_espn_builder(lid, slug, season, **kwargs):
+            espn_calls.append((lid, kwargs))
+            if lid == "157057":
+                resp = requests.Response()
+                resp.status_code = 401
+                raise requests.HTTPError("401 Unauthorized", response=resp)
+            return {"league_config": {"name": "Public ESPN", "badge": "ESP"}, "teams": []}, None
+
+        def fake_sleeper_builder(lid, slug, **kwargs):
+            sleeper_calls.append((lid, kwargs))
+            time.sleep(0.06)
+            return {"league_config": {"name": f"Sleeper {lid}", "badge": "SLP"}, "teams": []}, None
+
+        svc = PublicAPIService(
+            max_builds_per_min_ip=2,
+            max_lookups_per_min_ip=3,
+            max_concurrent_builds=2,
+            sleeper_builder=fake_sleeper_builder,
+            espn_builder=fake_espn_builder,
+            sleeper_user_lookup=lambda u, yr: {"username": u, "season": yr, "leagues": [{"league_id": "111", "name": "Test"}]},
+        )
+        srv = create_server(host="127.0.0.1", port=0, service=svc)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        base = f"http://127.0.0.1:{port}"
+        try:
+            # 1. OWASP headers + POST blocked (405) + personal `hub_data.json` blocked (404)!
+            r_health = urllib.request.urlopen(f"{base}/api/v1/health")
+            self.assertEqual(r_health.headers.get("X-Content-Type-Options"), "nosniff")
+            self.assertEqual(r_health.headers.get("X-Frame-Options"), "DENY")
+
+            req_post = urllib.request.Request(f"{base}/api/v1/health", data=b"{}", method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as ctx_post:
+                urllib.request.urlopen(req_post)
+            self.assertEqual(ctx_post.exception.code, 405)
+
+            for forbidden_path in ("/hub_data.json", "/../.env", "/leagues/jff/hub_data.json"):
+                with self.assertRaises(urllib.error.HTTPError) as ctx_404:
+                    urllib.request.urlopen(f"{base}{forbidden_path}")
+                self.assertEqual(ctx_404.exception.code, 404)
+
+            # 2. Confused-Deputy proof: private ESPN league returns 403 and strictly sets public_only=True & ephemeral=True
+            with self.assertRaises(urllib.error.HTTPError) as ctx_priv:
+                urllib.request.urlopen(f"{base}/api/v1/hub/espn/157057")
+            self.assertEqual(ctx_priv.exception.code, 403)
+            err_body = json.loads(ctx_priv.exception.read().decode("utf-8"))
+            self.assertEqual(err_body["error"], "private_league")
+            self.assertTrue(espn_calls[0][1]["public_only"])
+            self.assertTrue(espn_calls[0][1]["ephemeral"])
+
+            # 3. Singleflight coalescing + gzip edge-cacheable response!
+            results = []
+            def _fetch_slp():
+                req = urllib.request.Request(
+                    f"{base}/api/v1/hub/sleeper/999001",
+                    headers={"Accept-Encoding": "gzip", "CF-Connecting-IP": "203.0.113.10"},
+                )
+                with urllib.request.urlopen(req) as resp:
+                    raw = gzip.decompress(resp.read()) if resp.headers.get("Content-Encoding") == "gzip" else resp.read()
+                    results.append((resp.status, resp.headers.get("Cache-Control"), json.loads(raw)))
+
+            threads = [threading.Thread(target=_fetch_slp) for _ in range(3)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            self.assertEqual(len(results), 3)
+            self.assertEqual(len(sleeper_calls), 1)  # Coalesced 3 concurrent misses into 1 upstream build!
+            self.assertIn("s-maxage=900", results[0][1])
+
+            # 4. Cached HITs do not burn rate limit, whereas uncached floods trigger HTTP 429 Retry-After!
+            for _ in range(5):
+                req_hit = urllib.request.Request(f"{base}/api/v1/hub/sleeper/999001", headers={"CF-Connecting-IP": "198.51.100.7"})
+                with urllib.request.urlopen(req_hit) as r_hit:
+                    self.assertEqual(r_hit.headers.get("X-Hub-Cache"), "HIT")
+
+            for lid_miss in ("8001", "8002"):
+                req_m = urllib.request.Request(f"{base}/api/v1/hub/sleeper/{lid_miss}", headers={"CF-Connecting-IP": "198.51.100.7"})
+                urllib.request.urlopen(req_m).read()
+            with self.assertRaises(urllib.error.HTTPError) as ctx_429:
+                req_flood = urllib.request.Request(f"{base}/api/v1/hub/sleeper/8003", headers={"CF-Connecting-IP": "198.51.100.7"})
+                urllib.request.urlopen(req_flood)
+            self.assertEqual(ctx_429.exception.code, 429)
+            self.assertIsNotNone(ctx_429.exception.headers.get("Retry-After"))
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_bfl_anonymizer_zero_pii_and_h2h_key_invariants(self):
+        from pathlib import Path
+        import tempfile
+        from FantasyRecap.anonymize_bfl_demo import build_anonymized_demo
+
+        src = Path(__file__).resolve().parent.parent / "web_hub" / "hub_data.json"
+        if not src.exists():
+            self.skipTest("Local BFL hub_data.json not present in CI")
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "demo_hub_data.json"
+            demo = build_anonymized_demo(src_path=src, out_path=out)
+            self.assertTrue(demo["league_config"]["is_demo"])
+            self.assertEqual(demo["podcast"]["episodes"], [])
+            self.assertEqual(demo["podcast"]["rss_url"], "")
+            for key, rec in demo["history"]["h2h"].items():
+                o1, o2 = key.split("|||")
+                self.assertLessEqual(o1, o2)
+                self.assertEqual(rec["o1"], o1)
+                self.assertEqual(rec["o2"], o2)
+
+
 if __name__ == "__main__":
     unittest.main()

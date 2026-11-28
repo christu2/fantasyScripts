@@ -943,13 +943,65 @@ def _compute_generic_repl_baselines(conn: sqlite3.Connection, season: int, repl_
     return out
 
 
-def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: int = 0) -> Tuple[dict, Path]:
-    """Builds the complete `hub_data.json` for ANY ESPN league using dynamic N-team rules."""
-    creds = get_espn_credentials()
+def build_generic_hub_data(
+    league_id: str,
+    slug: str,
+    season: int,
+    force_week: int = 0,
+    *,
+    public_only: bool = False,
+    ephemeral: bool = False,
+    max_history_years: int = 0,
+) -> Tuple[dict, Optional[Path]]:
+    """
+    Builds the complete `hub_data.json` for ANY ESPN league using dynamic N-team rules.
+    - `public_only=True`: Strictly enforces empty cookies (`{}`) so server credentials are NEVER sent
+      (OWASP A01 Confused-Deputy guard) and skips private podcast RSS probing.
+    - `ephemeral=True`: Runs SQLite in an auto-cleaned `TemporaryDirectory` and skips writing to disk
+      so public on-demand API imports leave 0 bytes of residual storage.
+    - `max_history_years`: Caps historical season backfill for fast bounded latency on public imports.
+    """
+    import tempfile
+
+    tmp_ctx = tempfile.TemporaryDirectory(prefix="frecap_espn_") if ephemeral else None
+    try:
+        return _build_generic_hub_data_impl(
+            league_id,
+            slug,
+            season,
+            force_week=force_week,
+            public_only=public_only,
+            ephemeral=ephemeral,
+            max_history_years=max_history_years,
+            tmp_dir=Path(tmp_ctx.name) if tmp_ctx else None,
+        )
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
+
+
+def _build_generic_hub_data_impl(
+    league_id: str,
+    slug: str,
+    season: int,
+    *,
+    force_week: int = 0,
+    public_only: bool = False,
+    ephemeral: bool = False,
+    max_history_years: int = 0,
+    tmp_dir: Optional[Path] = None,
+) -> Tuple[dict, Optional[Path]]:
+    if public_only:
+        creds = {"cookies": {}, "espn_s2": "", "espn_swid": ""}
+    else:
+        creds = get_espn_credentials()
     cookies = creds["cookies"]
 
-    print(f"🔍 Auto-discovering ESPN League {league_id} ({slug}, Season {season})...")
+    print(f"🔍 Auto-discovering ESPN League {league_id} ({slug}, Season {season}, public_only={public_only})...")
     config, raw = discover_league_settings(league_id, cookies, season, slug)
+    if max_history_years > 0 and config.get("previous_seasons"):
+        keep_prev = max(0, int(max_history_years) - 1)
+        config["previous_seasons"] = config["previous_seasons"][-keep_prev:] if keep_prev > 0 else []
     if force_week > 0:
         config["completed_week"] = force_week
     completed_week = config["completed_week"]
@@ -959,7 +1011,9 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         f"{config['playoff_teams']} Playoff Teams ({config['playoff_byes']} Byes) | Tiebreaker: {config['tiebreaker_rule']} | Completed Wk {completed_week}"
     )
 
-    db_path = LEAGUES_DB_DIR / f"{slug}_history.db"
+    db_path = (tmp_dir / f"{slug}_history.db") if tmp_dir else (LEAGUES_DB_DIR / f"{slug}_history.db")
+    if ephemeral and db_path.exists():
+        db_path.unlink()
     season_rules_by_yr, resolver = sync_generic_league_db(db_path, config, cookies, season)
 
     tmap = config["teams_by_id"]
@@ -1005,6 +1059,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         teams_by_id=tmap,
         league_id=league_id,
         owner_canon_fn=normalize_generic_owner_name,
+        public_only=public_only,
     )
     baseline_odds = run_generic_playoff_simulation(
         config, completed_games, full_schedule, team_power, weekly_projections=weekly_proj, n_sims=4000
@@ -1384,14 +1439,19 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
     }
 
     tb_order = "Overall Record -> Total Points For (PF)" if config["tiebreaker_rule"] == "TOTAL_POINTS_SCORED" else "Overall Record -> Head-to-Head -> Total Points For (PF)"
-    # Auto-check if this league has an isolated per-league Podcast RSS feed on GCS
+    # Auto-check if this league has an isolated per-league Podcast RSS feed on GCS (skipped on public_only imports)
     rss_url = f"https://storage.googleapis.com/bfl-podcast-7x9k2/{slug}/feed.xml"
     episodes = []
-    try:
-        from FantasyRecap.build_league_hub import fetch_rss_episodes
-        episodes = fetch_rss_episodes(rss_url)
-    except Exception:
-        episodes = []
+    if not public_only:
+        try:
+            from FantasyRecap.build_league_hub import fetch_rss_episodes
+            episodes = fetch_rss_episodes(rss_url)
+        except Exception:
+            episodes = []
+
+    luck_seasons = sorted({r[0] for r in valid_w}, reverse=True) or [season]
+    luck_by_season = {str(yr): _calc_luck(yr) for yr in luck_seasons}
+    luck_by_season["all"] = luck_all
 
     hub_data = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1399,6 +1459,7 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
         "completed_week": completed_week,
         "regular_season_weeks": reg_wks,
         "league_config": {
+            "platform": "espn",
             "league_id": str(league_id),
             "slug": slug,
             "name": config["name"],
@@ -1439,17 +1500,20 @@ def build_generic_hub_data(league_id: str, slug: str, season: int, force_week: i
             "identity_review_candidates": resolver.review_candidates(),
         },
         "trades": {
-            "all_time": {"seasons": [], "trade_count": len(eval_all), "trades": eval_all, "owner_cards": all_cards},
+            "all_time": {"seasons": sorted({t["season"] for t in eval_all}, reverse=True), "trade_count": len(eval_all), "trades": eval_all, "owner_cards": all_cards},
             "live": {"season": season, "trade_count": len(eval_live), "trades": eval_live, "owner_cards": live_cards},
         },
         "analytics": {
-            "luck": {"seasons": [season], "by_season": {str(season): luck_2026, "all": luck_all}},
+            "luck": {"seasons": luck_seasons, "by_season": luck_by_season},
             "trends": {"season": season, "weeks": weeks_list, "series": series},
             "heatmap": {"season": season, "positions": list(active_pos), "baselines": baselines, "bounds": hm_bounds, "rows": hm_rows},
         },
         "dossiers": dossiers,
         "podcast": {"rss_url": rss_url if episodes else "", "episodes": episodes},
     }
+
+    if ephemeral:
+        return hub_data, None
 
     out_dir = WEB_HUB_DIR / "leagues" / slug
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1484,8 +1548,8 @@ def render_league_index_html(hub_data: dict, out_dir: Path) -> Path:
     tpl = re.sub(r"<title>.*?</title>", f"<title>{title_txt}</title>", tpl, count=1)
     tpl = re.sub(r'property="og:title" content=".*?"', f'property="og:title" content="{title_txt}"', tpl, count=1)
     tpl = re.sub(r'property="og:description" content=".*?"', f'property="og:description" content="{desc_txt}"', tpl, count=1)
-    tpl = tpl.replace('<span class="brand-badge">BFL</span>', f'<span class="brand-badge">{badge}</span>', 1)
-    tpl = tpl.replace("<h1>Beasts Football League Hub</h1>", f"<h1>{name} Hub</h1>", 1)
+    tpl = re.sub(r'<span class="brand-badge">.*?</span>', f'<span class="brand-badge">{badge}</span>', tpl, count=1)
+    tpl = re.sub(r"<h1>.*?</h1>", f"<h1>{name} Hub</h1>", tpl, count=1)
 
     idx_path = out_dir / "index.html"
     idx_path.write_text(tpl, encoding="utf-8")

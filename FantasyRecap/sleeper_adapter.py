@@ -49,7 +49,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from FantasyRecap.bfl_history_db import init_db
 from FantasyRecap.core.identity_resolver import LeagueIdentityResolver
 from FantasyRecap.core.manifest import dedupe_co_owners
-from FantasyRecap.core.security import validate_league_id, validate_slug
+from FantasyRecap.core.security import validate_league_id, validate_sleeper_username, validate_slug
 from FantasyRecap.multi_league_hub import (
     FALLBACK_REPLACEMENT_PPG,
     LEAGUES_DB_DIR,
@@ -398,17 +398,89 @@ def fetch_sleeper_live_matchups(league_id: str, week: int) -> List[dict]:
     return out
 
 
+def lookup_sleeper_user_leagues(username: str, season: int = 2026) -> dict:
+    """
+    Zero-auth lookup of a Sleeper user's NFL fantasy leagues for `season`.
+    Strictly validates `username` against `SLEEPER_USERNAME_RE` before outbound call.
+    """
+    clean_user = validate_sleeper_username(username)
+    u = _sleeper_get(f"user/{clean_user}", timeout=8.0)
+    if not u or not u.get("user_id"):
+        raise LookupError(f"Sleeper user '{clean_user}' not found.")
+    uid = str(u["user_id"])
+    raw_leagues = _sleeper_get(f"user/{uid}/leagues/nfl/{int(season)}", timeout=10.0) or []
+    leagues_out = []
+    for lg in raw_leagues:
+        lid = str(lg.get("league_id") or "").strip()
+        if not lid.isdigit():
+            continue
+        settings = lg.get("settings") or {}
+        scoring = lg.get("scoring_settings") or {}
+        rpos = [str(p).upper() for p in (lg.get("roster_positions") or [])]
+        ltype = int(settings.get("type") or 0)
+        fmt = "Dynasty" if ltype == 2 else ("Keeper" if ltype == 1 else "Redraft")
+        rec = float(scoring.get("rec") or 0.0)
+        sc_lbl = "Full PPR" if rec >= 0.9 else ("Half PPR" if rec >= 0.4 else "Standard")
+        if "SUPER_FLEX" in rpos:
+            sc_lbl += " • SF"
+        if int(settings.get("league_average_match") or 0) == 1:
+            sc_lbl += " • Median"
+        leagues_out.append({
+            "league_id": lid,
+            "name": (lg.get("name") or f"Sleeper League {lid}").strip(),
+            "season": int(lg.get("season") or season),
+            "total_rosters": int(lg.get("total_rosters") or settings.get("num_teams") or 12),
+            "format_label": fmt,
+            "scoring_label": sc_lbl,
+            "status": str(lg.get("status") or ""),
+        })
+    return {
+        "username": u.get("username") or clean_user,
+        "display_name": u.get("display_name") or clean_user,
+        "season": int(season),
+        "leagues": leagues_out,
+    }
+
+
 def build_sleeper_hub_data(
     league_id: str,
     slug: str,
     *,
     force_week: int = 0,
     max_history_years: int = 5,
-) -> Tuple[dict, Path]:
+    ephemeral: bool = False,
+) -> Tuple[dict, Optional[Path]]:
     """
     Auto-discovers ANY Sleeper league (and its historical `previous_league_id` chain),
     syncs an isolated SQLite warehouse, and outputs a complete universal `hub_data.json`.
+    When `ephemeral=True`, uses an auto-cleaned `TemporaryDirectory` so 0 bytes remain on disk.
     """
+    import tempfile
+
+    tmp_ctx = tempfile.TemporaryDirectory(prefix="frecap_sleeper_") if ephemeral else None
+    try:
+        return _build_sleeper_hub_data_impl(
+            league_id,
+            slug,
+            force_week=force_week,
+            max_history_years=max_history_years,
+            ephemeral=ephemeral,
+            tmp_dir=Path(tmp_ctx.name) if tmp_ctx else None,
+        )
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
+
+
+def _build_sleeper_hub_data_impl(
+    league_id: str,
+    slug: str,
+    *,
+    force_week: int = 0,
+    max_history_years: int = 5,
+    ephemeral: bool = False,
+    tmp_dir: Optional[Path] = None,
+) -> Tuple[dict, Optional[Path]]:
     lid = validate_league_id(league_id)
     slug = validate_slug(slug)
     pdir = load_sleeper_players_directory()
@@ -416,7 +488,7 @@ def build_sleeper_hub_data(
     print(f"🔍 Auto-discovering Sleeper League {lid} ({slug})...")
     chain = _discover_sleeper_history_chain(lid, slug, max_years=max_history_years)
     if not chain:
-        raise RuntimeError(f"Sleeper league {lid} not found.")
+        raise LookupError(f"Sleeper league {lid} not found.")
 
     curr_cfg = chain[-1]
     curr_season = curr_cfg["season"]
@@ -427,7 +499,7 @@ def build_sleeper_hub_data(
     # 3-Tier Identity Resolution across seasons: separates replaced managers (Alumni),
     # unifies same-account handle/married-name changes, and flags ambiguous slot transitions!
     resolver = LeagueIdentityResolver(
-        owner_aliases=_load_optional_owner_aliases(slug),
+        owner_aliases={} if ephemeral else _load_optional_owner_aliases(slug),
         name_normalizer=normalize_generic_owner_name,
     )
     for cfg in chain:
@@ -447,7 +519,7 @@ def build_sleeper_hub_data(
                     new_divs.setdefault(t["division"], []).append(t["owner"])
             cfg["divisions"] = new_divs
 
-    db_path = LEAGUES_DB_DIR / f"{slug}_sleeper_history.db"
+    db_path = (tmp_dir / f"{slug}_sleeper_history.db") if tmp_dir else (LEAGUES_DB_DIR / f"{slug}_sleeper_history.db")
     if db_path.exists():
         db_path.unlink()
     conn = sqlite3.connect(db_path)
@@ -1217,6 +1289,9 @@ def build_sleeper_hub_data(
         "dossiers": dossiers,
         "podcast": {"rss_url": "", "episodes": []},
     }
+
+    if ephemeral:
+        return hub_data, None
 
     out_dir = WEB_HUB_DIR / "leagues" / slug
     out_dir.mkdir(parents=True, exist_ok=True)

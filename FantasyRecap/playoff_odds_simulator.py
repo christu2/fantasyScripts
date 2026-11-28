@@ -220,18 +220,25 @@ POS_ID_TO_NAME = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "D/ST"}
 UNAVAILABLE_INJURY_STATUSES = {"OUT", "INJURY_RESERVE", "IR", "DOUBTFUL", "SUSPENSION"}
 
 
-def fetch_top_free_agent_baselines(season: int, week_num: int, *, league_id: str = None) -> dict:
+def fetch_top_free_agent_baselines(
+    season: int,
+    week_num: int,
+    *,
+    league_id: str = None,
+    public_only: bool = False,
+) -> dict:
     """
     Fetches the best available healthy Free Agent projected score at each position
     (`QB`, `RB`, `WR`, `TE`, `K`, `D/ST`) for `week_num` from ESPN `kona_player_info`.
     Falls back cleanly to `FA_REPLACEMENT_FALLBACK` on timeout/offline.
+    When `public_only=True`, strictly sends empty cookies (OWASP A01 Confused-Deputy guard).
     """
     baselines = dict(FA_REPLACEMENT_FALLBACK)
-    if not (ESPN_S2 and ESPN_SWID):
+    if not public_only and not (ESPN_S2 and ESPN_SWID):
         return baselines
     eff_lid = str(league_id or ESPN_LEAGUE_ID)
     try:
-        cookies = {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
+        cookies = {} if public_only else {"espn_s2": ESPN_S2, "SWID": ESPN_SWID}
         flt = {
             "players": {
                 "filterStatus": {"value": ["FREEAGENT", "WAIVERS"]},
@@ -362,6 +369,7 @@ def build_future_week_optimal_projections(
     teams_by_id: dict = None,
     league_id: str = None,
     owner_canon_fn=None,
+    public_only: bool = False,
 ) -> dict:
     """
     Fetches each remaining regular-season week (`future_weeks`, e.g. `[12, 13, 14]`) from ESPN,
@@ -370,14 +378,16 @@ def build_future_week_optimal_projections(
     `totalProjectedPointsLive` so mid-week deploys reflect real-time scores & tightened variance!
     """
     eff_lid = str(league_id or ESPN_LEAGUE_ID)
+    eff_s2 = "" if public_only else ESPN_S2
+    eff_swid = "" if public_only else ESPN_SWID
     weekly_proj = {}
     for wk in future_weeks:
         if wk < 1 or wk > 18:
             continue
         try:
-            wk_data = fetch_espn_week_data(eff_lid, str(season), wk, ESPN_S2, ESPN_SWID)
+            wk_data = fetch_espn_week_data(eff_lid, str(season), wk, eff_s2, eff_swid)
             tmap = teams_by_id or parse_league_members_and_teams(wk_data)
-            fa_base = fetch_top_free_agent_baselines(season, wk, league_id=eff_lid)
+            fa_base = fetch_top_free_agent_baselines(season, wk, league_id=eff_lid, public_only=public_only)
 
             # Extract live in-progress scores & live ESPN projections for week `wk`
             live_by_tid = {}

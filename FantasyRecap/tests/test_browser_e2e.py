@@ -290,6 +290,116 @@ class TestWebHubBrowserE2E(unittest.TestCase):
             self.assertEqual(page_errors, [], f"Uncaught page errors: {page_errors}")
             self.assertEqual(console_errors, [], f"Console errors: {console_errors}")
 
+    @unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed")
+    def test_self_serve_onboarding_sleeper_lookup_podcast_autohide_and_private_espn_error(self):
+        import shutil
+        import requests
+        from FantasyRecap.public_api_server import PublicAPIService, create_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            for fname in ("index.html", "styles.css", "app.js"):
+                shutil.copyfile(WEB_HUB_DIR / fname, tmp_path / fname)
+
+            demo_hub = _build_adversarial_multiformat_hub()
+            demo_hub["league_config"]["name"] = "Gridiron Premier League (Live Demo)"
+            demo_hub["league_config"]["badge"] = "GPL"
+            demo_hub["league_config"]["is_demo"] = True
+            demo_hub["podcast"] = {"rss_url": "", "episodes": []}
+            (tmp_path / "demo_hub_data.json").write_text(json.dumps(demo_hub), encoding="utf-8")
+
+            imported_hub = _build_adversarial_multiformat_hub()
+            imported_hub["league_config"]["name"] = "Sleeper Loaded Dynasty"
+            imported_hub["league_config"]["badge"] = "SLD"
+            imported_hub["podcast"] = {"rss_url": "", "episodes": []}
+
+            def fake_espn(lid, slug, season, **kwargs):
+                resp = requests.Response()
+                resp.status_code = 401
+                raise requests.HTTPError("401 Private", response=resp)
+
+            svc = PublicAPIService(
+                static_dir=tmp_path,
+                sleeper_builder=lambda lid, slug, **kw: (imported_hub, None),
+                espn_builder=fake_espn,
+            )
+            srv = create_server(host="127.0.0.1", port=0, service=svc)
+            port = srv.server_address[1]
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+
+            page_errors = []
+            console_errors = []
+            try:
+                with sync_playwright() as p:
+                    browser = None
+                    try:
+                        browser = p.chromium.launch(headless=True)
+                    except Exception:
+                        try:
+                            browser = p.chromium.launch(headless=True, channel="chrome")
+                        except Exception as exc:
+                            self.skipTest(f"No headless Chromium/Chrome binary available: {exc}")
+
+                    page = browser.new_page()
+                    page.on("pageerror", lambda err: page_errors.append(str(err)))
+                    page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
+                    # Mock browser-direct Sleeper CORS username lookup with an XSS-laced league name!
+                    def _mock_sleeper_cors(route):
+                        url = route.request.url
+                        if "/v1/user/testcommish" in url and "/leagues/" not in url:
+                            route.fulfill(status=200, content_type="application/json", body=json.dumps({"user_id": "u99", "username": "testcommish"}))
+                        elif "/leagues/nfl/" in url:
+                            route.fulfill(status=200, content_type="application/json", body=json.dumps([{
+                                "league_id": "1313213902351273984",
+                                "name": 'Dynasty <img src=x onerror="window.__XSS_PWNED=77"> League',
+                                "total_rosters": 12,
+                                "settings": {"type": 2, "league_average_match": 1},
+                                "scoring_settings": {"rec": 1.0},
+                                "roster_positions": ["QB", "SUPER_FLEX"],
+                            }]))
+                        else:
+                            route.fulfill(status=200, content_type="application/json", body="null")
+
+                    page.route("https://api.sleeper.app/**", _mock_sleeper_cors)
+
+                    # 1. Open public landing root -> Demo loads, Onboarding Drawer auto-opens, Podcast is 100% hidden!
+                    page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+                    page.wait_for_selector("#playoffTable tbody tr")
+                    self.assertTrue(page.locator("#onboardPanel").is_visible())
+                    self.assertEqual(page.locator('.tab-btn[data-tab="podcast"]').inner_text(), "Weekly Awards")
+                    self.assertFalse(page.locator("#podcastCard").is_visible())
+
+                    # 2. Type Sleeper username -> pick league -> loads remote Sleeper Hub dynamically & updates URL!
+                    page.fill("#sleeperUserInput", "testcommish")
+                    page.click("#btnLookupSleeperUser")
+                    page.wait_for_selector(".league-choice-btn")
+                    self.assertIn("12T • Dynasty • Full PPR • SF • Median", page.locator("#sleeperUserLeagues").inner_text())
+                    page.locator(".league-choice-btn").first.click()
+                    page.wait_for_function("() => document.querySelector('.brand h1').textContent.includes('Sleeper Loaded Dynasty')")
+                    self.assertIn("platform=sleeper", page.url)
+                    self.assertIn("league=1313213902351273984", page.url)
+                    self.assertTrue(page.locator("#btnShareLeague").is_visible())
+                    self.assertFalse(page.locator("#podcastCard").is_visible())
+
+                    # 3. Switch to ESPN tab & test Private League error guidance (note: 403 fetch logs browser resource msg, check UI banner)
+                    console_errors_before_403 = list(console_errors)
+                    page.click('#onboardPlatformGroup [data-platform="espn"]')
+                    page.fill("#espnLeagueInput", "https://fantasy.espn.com/football/league?leagueId=157057")
+                    page.click("#btnLoadEspnLeague")
+                    page.wait_for_function("() => document.getElementById('onboardStatus').textContent.includes('Make League Viewable to Public')")
+
+                    pwned = page.evaluate("() => window.__XSS_PWNED")
+                    self.assertIsNone(pwned, f"XSS executed during onboarding! __XSS_PWNED={pwned}")
+                    browser.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+            self.assertEqual(page_errors, [], f"Uncaught page errors: {page_errors}")
+            self.assertEqual(console_errors_before_403, [], f"Console errors before intentional 403 test: {console_errors_before_403}")
+
 
 if __name__ == "__main__":
     unittest.main()

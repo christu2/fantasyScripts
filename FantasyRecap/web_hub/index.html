@@ -3,10 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' https:; connect-src 'self' https://storage.googleapis.com; object-src 'none'; base-uri 'self';" />
-  <title>BFL League Hub — Beasts Football League</title>
-  <meta property="og:title" content="BFL League Hub — Beasts Football League" />
-  <meta property="og:description" content="Interactive Playoff Machine, 18-Year Record Book, Draft VORP Hall, Trade Vault &amp; Analytics Lab." />
+  <meta name="frecap-api-base" content="" />
+  <meta name="frecap-default-bundle" content="hub_data.json" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' https:; connect-src 'self' https://api.sleeper.app https://storage.googleapis.com https://*.run.app; object-src 'none'; base-uri 'self';" />
+  <title>Fantasy League Hub — Playoff Machine, Rooting Guide &amp; League History</title>
+  <meta property="og:title" content="Fantasy League Hub — Playoff Machine, Rooting Guide &amp; League History" />
+  <meta property="og:description" content="Zero-login Playoff Machine, Exact CRN Rooting Guide, Multi-Year Record Book, Draft VORP Hall &amp; Trade Vault for Sleeper &amp; ESPN." />
   <meta property="og:type" content="website" />
   <meta name="theme-color" content="#0b0f17" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0f17'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle'%3E%F0%9F%8F%88%3C/text%3E%3C/svg%3E" />
@@ -16,23 +18,86 @@
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
-        <span class="brand-badge">BFL</span>
+        <span class="brand-badge">FFL</span>
         <div>
-          <h1>Beasts Football League Hub</h1>
+          <h1>Fantasy League Hub</h1>
           <p id="hubSubtitle" class="subtitle">Loading league telemetry...</p>
         </div>
       </div>
-      <nav class="tabs" role="tablist">
-        <button class="tab-btn active" data-tab="playoff" role="tab">Playoff Machine</button>
-        <button class="tab-btn" data-tab="analytics" role="tab">Analytics Lab</button>
-        <button class="tab-btn" data-tab="dossiers" role="tab">Franchise Dossiers</button>
-        <button class="tab-btn" data-tab="history" role="tab">Record Book &amp; H2H</button>
-        <button class="tab-btn" data-tab="drafts" role="tab">Draft Hall</button>
-        <button class="tab-btn" data-tab="trades" role="tab">Trade Vault</button>
-        <button class="tab-btn" data-tab="podcast" role="tab">Podcast &amp; Awards</button>
-      </nav>
+      <div class="nav-wrap">
+        <nav class="tabs" role="tablist">
+          <button class="tab-btn active" data-tab="playoff" role="tab">Playoff Machine</button>
+          <button class="tab-btn" data-tab="analytics" role="tab">Analytics Lab</button>
+          <button class="tab-btn" data-tab="dossiers" role="tab">Franchise Dossiers</button>
+          <button class="tab-btn" data-tab="history" role="tab">Record Book &amp; H2H</button>
+          <button class="tab-btn" data-tab="drafts" role="tab">Draft Hall</button>
+          <button class="tab-btn" data-tab="trades" role="tab">Trade Vault</button>
+          <button class="tab-btn" data-tab="podcast" role="tab">Weekly Awards</button>
+        </nav>
+        <div class="header-actions">
+          <button id="btnShareLeague" class="btn btn-secondary btn-sm" style="display:none" title="Copy direct link to this league">Share Link</button>
+          <button id="btnOpenOnboard" class="btn btn-sm" type="button">Analyze Your League</button>
+        </div>
+      </div>
     </div>
   </header>
+
+  <section id="onboardPanel" class="onboard-shell" style="display:none" aria-label="Import Your Fantasy League">
+    <div class="onboard-inner">
+      <div class="onboard-head">
+        <div>
+          <span class="pill pill-blue">100% Free &bull; Zero Login &bull; Zero Cookies</span>
+          <h2 style="margin-top:6px;font-size:1.25rem;font-weight:800">Load Your Fantasy League in Seconds</h2>
+          <p class="muted small">Interactive Playoff Machine, Exact CRN Rooting Guide, Schedule Luck, Position-Normalized Draft VORP &amp; Multi-Year Trade Vault.</p>
+        </div>
+        <div class="controls">
+          <button id="btnLoadDemo" class="btn btn-secondary btn-sm" type="button">16-Team Live Demo</button>
+          <button id="btnCloseOnboard" class="btn btn-secondary btn-sm" type="button">Hide</button>
+        </div>
+      </div>
+
+      <div class="onboard-grid">
+        <div class="onboard-box">
+          <div class="seg-group" id="onboardPlatformGroup" role="group" aria-label="Select Platform">
+            <button class="seg-btn active" data-platform="sleeper" type="button">Sleeper (Username or ID)</button>
+            <button class="seg-btn" data-platform="espn" type="button">Public ESPN (League ID)</button>
+          </div>
+
+          <div id="onboardSleeperBox" style="margin-top:12px">
+            <label class="muted small" for="sleeperUserInput" style="display:block;margin-bottom:5px">Option A: Enter your <strong>Sleeper Username</strong> to pick from your 2026 leagues</label>
+            <div class="onboard-row">
+              <input id="sleeperUserInput" class="input-text" type="text" maxlength="32" placeholder="e.g. sleeper_username" autocomplete="off" />
+              <button id="btnLookupSleeperUser" class="btn btn-secondary" type="button">Find My Leagues</button>
+            </div>
+            <div id="sleeperUserLeagues" class="user-leagues-list" style="display:none"></div>
+
+            <label class="muted small" for="sleeperLeagueInput" style="display:block;margin:10px 0 5px">Option B: Or paste a <strong>Sleeper League ID / URL</strong> directly</label>
+            <div class="onboard-row">
+              <input id="sleeperLeagueInput" class="input-text" type="text" maxlength="120" placeholder="e.g. 1313213902351273984 or sleeper.com/leagues/..." autocomplete="off" />
+              <button id="btnLoadSleeperLeague" class="btn" type="button">Load Sleeper Hub</button>
+            </div>
+          </div>
+
+          <div id="onboardEspnBox" style="display:none;margin-top:12px">
+            <label class="muted small" for="espnLeagueInput" style="display:block;margin-bottom:5px">Paste your <strong>Public ESPN League ID or League URL</strong></label>
+            <div class="onboard-row">
+              <input id="espnLeagueInput" class="input-text" type="text" maxlength="140" placeholder="e.g. 755112359 or fantasy.espn.com/football/league?leagueId=..." autocomplete="off" />
+              <button id="btnLoadEspnLeague" class="btn" type="button">Load ESPN Hub</button>
+            </div>
+            <details class="espn-help">
+              <summary>Getting "Private League"? How to make ESPN viewable in 10 seconds (no passwords needed)</summary>
+              <p class="muted small" style="margin-top:6px">
+                For your security, we never ask for ESPN passwords or browser cookies. Ask your commissioner to open
+                <strong>LM Tools &rarr; Edit League Settings &rarr; Basic Settings &rarr; Make League Viewable to Public: Yes</strong>, then paste your League ID above.
+              </p>
+            </details>
+          </div>
+
+          <div id="onboardStatus" class="onboard-status" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <main class="container">
     <!-- TAB 1: INTERACTIVE PLAYOFF MACHINE -->
@@ -247,19 +312,19 @@
     <section id="tab-dossiers" class="tab-panel">
       <div class="hero-bar">
         <div>
-          <h2>Franchise Dossiers &amp; Trophy Room (2008–Present)</h2>
-          <p class="muted small">Select any of the 16 BFL franchises to view their 18-year trophy case, archetype badges, H2H rivals, best/worst drafts &amp; trades, and full season timeline.</p>
+          <h2 id="dossiersHeroTitle">Franchise Dossiers &amp; Trophy Room</h2>
+          <p class="muted small" id="dossiersHeroBlurb">Select any franchise to view their trophy case, archetype badges, H2H rivals, best/worst drafts &amp; trades, and full season timeline.</p>
         </div>
       </div>
       <div id="dossierPicker" class="dossier-picker"></div>
       <div id="dossierBody"></div>
     </section>
 
-    <!-- TAB 4: 18-YEAR RECORD BOOK & H2H -->
+    <!-- TAB 4: RECORD BOOK & H2H -->
     <section id="tab-history" class="tab-panel">
       <div class="card">
         <div class="card-head">
-          <h3>Head-to-Head Rivalry Explorer (2008–Present)</h3>
+          <h3 id="rivalryExplorerTitle">Head-to-Head Rivalry Explorer</h3>
         </div>
         <div class="rivalry-controls">
           <select id="rivOwner1" class="select"></select>
@@ -272,7 +337,7 @@
       <div class="grid-two">
         <div class="card">
           <div class="card-head">
-            <h3>All-Time Franchise Leaderboard (2008–Present)</h3>
+            <h3 id="careerTableTitle">All-Time Franchise Leaderboard</h3>
           </div>
           <div class="table-wrap">
             <table class="data-table" id="careerTable">
@@ -294,7 +359,7 @@
 
         <div class="card">
           <div class="card-head">
-            <h3>The Jabroni Trophy — Championship Log</h3>
+            <h3 id="champsCardTitle">Championship Trophy Log</h3>
           </div>
           <div class="table-wrap">
             <table class="data-table compact" id="champsTable">
@@ -426,13 +491,13 @@
       </div>
     </section>
 
-    <!-- TAB 5: PODCAST STUDIO & WEEKLY AWARDS -->
+    <!-- TAB 5: WEEKLY AWARDS (+ OPTIONAL EPISODES FOR ENABLED PRIVATE HUBS) -->
     <section id="tab-podcast" class="tab-panel">
-      <div class="grid-two">
-        <div class="card">
+      <div class="grid-two" id="podcastAwardsGrid" style="grid-template-columns:1fr">
+        <div class="card" id="podcastCard" style="display:none">
           <div class="card-head">
-            <h3>Tuesday Morning Hangover — Episodes</h3>
-            <a id="rssLink" class="btn btn-secondary btn-sm" target="_blank" rel="noopener">Apple Podcasts RSS</a>
+            <h3 id="podcastCardTitle">League Audio Episodes</h3>
+            <a id="rssLink" class="btn btn-secondary btn-sm" target="_blank" rel="noopener">RSS Feed</a>
           </div>
           <div id="podcastList" class="podcast-list"></div>
         </div>
@@ -449,7 +514,7 @@
   </main>
 
   <footer class="footer">
-    <span>Beasts Football League (Est. 2008) &bull; Hosted on Google Cloud Storage Free Tier</span>
+    <span>Fantasy League Analytics Hub &bull; Zero-Login Sleeper &amp; ESPN Playoff Lab</span>
     <span id="footerTimestamp"></span>
   </footer>
 

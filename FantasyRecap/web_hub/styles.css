@@ -53,6 +53,87 @@ body {
 .subtitle { font-size: 0.8rem; color: var(--muted); }
 
 .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.nav-wrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.header-actions { display: flex; align-items: center; gap: 6px; }
+
+.onboard-shell {
+  background: linear-gradient(180deg, rgba(26, 35, 51, 0.95), rgba(19, 26, 38, 0.95));
+  border-bottom: 1px solid var(--border);
+}
+.onboard-inner {
+  max-width: 1260px;
+  margin: 0 auto;
+  padding: 18px 20px;
+}
+.onboard-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.onboard-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.onboard-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.input-text {
+  flex: 1;
+  min-width: 220px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.88rem;
+  outline: none;
+}
+.input-text:focus { border-color: var(--accent); }
+.user-leagues-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.league-choice-btn {
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.league-choice-btn:hover { border-color: var(--accent); background: rgba(56, 189, 248, 0.1); }
+.espn-help {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.espn-help summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.onboard-status {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.1);
+  color: #bae6fd;
+}
+.onboard-status.error {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+}
 .tab-btn {
   background: transparent;
   color: var(--muted);

@@ -1,0 +1,29 @@
+# Zero-Credential, Non-Root Public API Container (`FantasyRecap` Self-Serve Hub Builder)
+# Runs strictly with `PUBLIC_ONLY=1`, `ephemeral=True`, and a zero-IAM-role service account.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PUBLIC_ONLY=1 \
+    SERVE_STATIC=1 \
+    HOST=0.0.0.0 \
+    PORT=8080
+
+WORKDIR /app
+
+COPY cloud_run/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+# Staged build context already excludes .env, FantasyConfigs, personal hub_data.json, and live_state DBs
+COPY . /app/FantasyRecap
+RUN rm -f /app/FantasyRecap/web_hub/hub_data.json && \
+    rm -rf /app/FantasyRecap/web_hub/leagues /app/FantasyRecap/live_state/leagues && \
+    mkdir -p /app/FantasyRecap/live_state && \
+    useradd --create-home --uid 10001 appuser && \
+    chown -R appuser:appuser /app/FantasyRecap/live_state
+
+USER appuser
+
+EXPOSE 8080
+
+CMD ["python3", "/app/FantasyRecap/public_api_server.py"]
