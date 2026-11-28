@@ -58,7 +58,10 @@ gcloud builds submit "${TMP_BUILD}" \
 
 echo "🚀 [4/4] Deploying ${SERVICE_NAME} (--max-instances=1, 250MB/24h egress cap, zero secrets, zero-privilege SA)..."
 MAX_DAILY_EGRESS_MB="${MAX_DAILY_EGRESS_MB:-250}"
-EDGE_SHARED_SECRET="${EDGE_SHARED_SECRET:-}"
+ENV_SPEC="^@^HOST=0.0.0.0@PUBLIC_ONLY=1@SERVE_STATIC=1@MAX_HISTORY_YEARS=5@MAX_DAILY_EGRESS_MB=${MAX_DAILY_EGRESS_MB}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}"
+if [[ -n "${EDGE_SHARED_SECRET:-}" ]]; then
+  ENV_SPEC="${ENV_SPEC}@EDGE_SHARED_SECRET=${EDGE_SHARED_SECRET}"
+fi
 gcloud run deploy "${SERVICE_NAME}" \
   --project="${PROJECT_ID}" \
   --region="${REGION}" \
@@ -73,7 +76,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --concurrency=32 \
   --timeout=25s \
   --clear-secrets \
-  --set-env-vars="^@^HOST=0.0.0.0@PUBLIC_ONLY=1@SERVE_STATIC=1@MAX_HISTORY_YEARS=5@MAX_DAILY_EGRESS_MB=${MAX_DAILY_EGRESS_MB}@EDGE_SHARED_SECRET=${EDGE_SHARED_SECRET}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}" \
+  --update-env-vars="${ENV_SPEC}" \
   --quiet
 
 SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')"

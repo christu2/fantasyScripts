@@ -128,6 +128,23 @@ def estimate_dynasty_pick_vorp(
     return round(base * discount, 1)
 
 
+def estimate_faab_trade_vorp(faab_amount: int, season_budget: int = 100) -> Tuple[float, int]:
+    """
+    Calibrates net traded Sleeper FAAB (`$`) onto our VORP scale, normalized by the league's
+    season `waiver_budget` (`$100`, `$200`, `$1000`, etc.) so `$25/$100` == `$250/$1000` (`25%`).
+    Full 100% season waiver budget = +20.0 Expected VORP (so 25% FAAB = +5.0 VORP ~ Mid 3rd pick;
+    10% FAAB = +2.0 VORP ~ 4th-round dart throw). Returns `(est_vorp, pct_of_budget_int)`.
+    """
+    amt = max(0, int(faab_amount or 0))
+    bud = max(1, int(season_budget or 100))
+    if amt <= 0:
+        return 0.0, 0
+    raw_ratio = amt / float(bud)
+    pct_int = max(1, round(raw_ratio * 100))
+    capped_ratio = min(2.0, raw_ratio)
+    return round(capped_ratio * 20.0, 1), pct_int
+
+
 def _stable_int_pid(raw_pid: str) -> int:
     """Maps Sleeper string player IDs (numeric `'4046'` or team `'PHI'`) to positive SQLite INTEGER IDs."""
     s = str(raw_pid or "").strip()
@@ -204,6 +221,7 @@ def _parse_sleeper_league_config(lg_raw: dict, users: list, rosters: list, draft
     po_reseed = int(settings.get("playoff_seed_type") or 0) == 1
     po_round_weeks = 2 if int(settings.get("playoff_round_type") or 0) == 2 else 1
     uses_median = int(settings.get("league_average_match") or 0) == 1
+    waiver_budget = max(1, int(settings.get("waiver_budget") or 100))
 
     rec_pts = float(scoring.get("rec", 0.0) or 0.0)
     tep = float(scoring.get("bonus_rec_te", 0.0) or 0.0)
@@ -307,6 +325,7 @@ def _parse_sleeper_league_config(lg_raw: dict, users: list, rosters: list, draft
         "playoff_reseed": po_reseed,
         "playoff_round_weeks": po_round_weeks,
         "uses_league_median": uses_median,
+        "waiver_budget": waiver_budget,
         "draft_type": dtype,
         "league_type": lg_type,
         "format_label": format_label,
@@ -575,6 +594,7 @@ def _build_sleeper_hub_data_impl(
     ru_years_map: Dict[str, List[int]] = defaultdict(list)
     curr_week_matchups_cache: Dict[int, list] = {}
     traded_picks_raw: Dict[str, Dict[int, List[dict]]] = defaultdict(lambda: defaultdict(list))
+    traded_faab_raw: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
     draft_orig_slot_by_yr: Dict[int, Dict[int, int]] = {}
     draft_picks_by_yr_rnd_slot: Dict[int, Dict[Tuple[int, int], dict]] = defaultdict(dict)
     draft_picks_by_yr_rnd_tid: Dict[int, Dict[Tuple[int, int], List[dict]]] = defaultdict(lambda: defaultdict(list))
@@ -597,6 +617,7 @@ def _build_sleeper_hub_data_impl(
             "draft_type": cfg["draft_type"],
             "format": cfg["format_label"],
             "superflex": cfg["roster_slots"].get("OP", 0) > 0,
+            "waiver_budget": cfg.get("waiver_budget", 100),
             "repl_ranks": cfg["replacement_ranks"],
             "summary": f"{cfg['team_count']}T • {cfg['format_label']} ({cfg['draft_type'].title()}) • {cfg['scoring_label']}{sf_tag}{med_tag}",
         }
@@ -798,12 +819,29 @@ def _build_sleeper_hub_data_impl(
                 tx_id = f"{yr}_w{twk:02d}_{tx.get('transaction_id', '')[:10]}"
                 adds = tx.get("adds") or {}
                 dp_swaps = tx.get("draft_picks") or []
-                if not adds and not dp_swaps:
+                wb_swaps = tx.get("waiver_budget") or []
+                raw_faab_a = sum(
+                    max(0, int(wb.get("amount") or 0))
+                    for wb in wb_swaps
+                    if int(wb.get("receiver") or 0) == ta and int(wb.get("sender") or 0) == tb
+                )
+                raw_faab_b = sum(
+                    max(0, int(wb.get("amount") or 0))
+                    for wb in wb_swaps
+                    if int(wb.get("receiver") or 0) == tb and int(wb.get("sender") or 0) == ta
+                )
+                net_faab_a = max(0, raw_faab_a - raw_faab_b)
+                net_faab_b = max(0, raw_faab_b - raw_faab_a)
+                if not adds and not dp_swaps and net_faab_a == 0 and net_faab_b == 0:
                     continue
                 cur.execute(
                     "INSERT OR REPLACE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (tx_id, yr, twk, twk, ta, tmap[ta]["owner"], tb, tmap[tb]["owner"], int(tx.get("status_updated") or 0), "sleeper_tx"),
                 )
+                if net_faab_a > 0:
+                    traded_faab_raw[tx_id][ta] = net_faab_a
+                if net_faab_b > 0:
+                    traded_faab_raw[tx_id][tb] = net_faab_b
                 for spid, to_rid in adds.items():
                     to_i = int(to_rid)
                     if to_i not in (ta, tb):
@@ -1292,10 +1330,13 @@ def _build_sleeper_hub_data_impl(
         b_its = [x for x in its if x["to_tid"] == tb]
         a_picks = traded_picks_raw.get(tid_s, {}).get(ta, [])
         b_picks = traded_picks_raw.get(tid_s, {}).get(tb, [])
-        if not (a_its or a_picks) or not (b_its or b_picks):
+        a_faab = int(traded_faab_raw.get(tid_s, {}).get(ta, 0))
+        b_faab = int(traded_faab_raw.get(tid_s, {}).get(tb, 0))
+        if not (a_its or a_picks or a_faab > 0) or not (b_its or b_picks or b_faab > 0):
             continue
+        yr_faab_budget = int(season_rules_by_yr.get(yr, {}).get("waiver_budget") or curr_cfg.get("waiver_budget") or 100)
 
-        def _side(s_its, acq_tid, pick_objs):
+        def _side(s_its, acq_tid, pick_objs, faab_amt):
             pout, sv_tot, rv_tot = [], 0.0, 0.0
             for it in s_its:
                 perf = _eval_player_horizon(it["pid"], it["pos"], yr, ewk, acq_tid)
@@ -1310,17 +1351,35 @@ def _build_sleeper_hub_data_impl(
                 sv_tot += pk_eval["started_vorp"]
                 rv_tot += pk_eval["ros_vorp"]
                 pout.append(pk_eval)
+            if faab_amt > 0:
+                fv, fpct = estimate_faab_trade_vorp(faab_amt, yr_faab_budget)
+                sv_tot += fv
+                rv_tot += fv
+                faab_note = f"{fpct}% Waiver Budget"
+                pout.append({
+                    "player_id": 0,
+                    "name": f"${faab_amt} FAAB",
+                    "pos": "FAAB",
+                    "pick_badge": "",
+                    "started_wks": 0, "started_pts": 0.0, "started_ppg": 0.0, "started_vorp": fv, "po_started_vorp": 0.0,
+                    "started_stat_note": faab_note,
+                    "ros_wks": 0, "ros_pts": 0.0, "ros_ppg": 0.0, "ros_vorp": fv, "po_ros_vorp": 0.0,
+                    "ros_stat_note": faab_note,
+                    "flipped": None,
+                })
             pout.sort(key=lambda z: (-z["started_vorp"], -z["ros_vorp"]))
             return pout, round(sv_tot, 1), round(rv_tot, 1)
 
-        ap, asv, arv = _side(a_its, ta, a_picks)
-        bp, bsv, brv = _side(b_its, tb, b_picks)
+        ap, asv, arv = _side(a_its, ta, a_picks, a_faab)
+        bp, bsv, brv = _side(b_its, tb, b_picks, b_faab)
 
         def _lens(av, bv):
             sw = round(av - bv, 1); ab = round(abs(sw), 1)
             w = "PUSH" if ab <= TIE_MARGIN_VORP else (oa if sw > 0 else ob)
             lo = "PUSH" if w == "PUSH" else (ob if w == oa else oa)
             tags = ["Pick Swap"] if (a_picks or b_picks) else []
+            if a_faab > 0 or b_faab > 0:
+                tags.append("FAAB Deal")
             if min(av, bv) >= 12.0 and ab <= 18.0: tags.append("Win-Win")
             return {"a_vorp": av, "b_vorp": bv, "swing_a": sw, "abs_swing": ab, "winner": w, "loser": lo, "win_playoff_vorp": 0.0, "tags": tags}
 

@@ -1264,7 +1264,7 @@ function renderTradesTab() {
 
   const tagClass = (t) => {
     if (t.includes("Title") || t.includes("Finals") || t.includes("Playoff")) return "tag-gold";
-    if (t.includes("Flipped") || t.includes("Win-Win") || t.includes("Deadline")) return "tag-green";
+    if (t.includes("Flipped") || t.includes("Win-Win") || t.includes("Deadline") || t.includes("FAAB")) return "tag-green";
     if (t.includes("Injury") || t.includes("Cut") || t.includes("Lose-Lose")) return "tag-red";
     if (t.includes("Tree")) return "tag-purple";
     return "tag-blue";
@@ -1493,10 +1493,13 @@ function renderTradesTab() {
           const rightStatHtml = statNote
             ? `${esc(statNote)} &bull; <strong style="color:${pCol}">Est. ${fmtVorp(pV)}</strong>`
             : `${wkLbl} &bull; ${pPts} pts (${pPpg}) &bull; <strong style="color:${pCol}">${fmtVorp(pV)}</strong>`;
+          const posChipStyle = p.pos === "FAAB"
+            ? ` style="background:rgba(16,185,129,0.16);color:var(--green)"`
+            : (p.pos === "PICK" ? ` style="background:rgba(245,158,11,0.16);color:var(--gold)"` : "");
           return `
             <div class="trade-player-row">
               <div>
-                <span class="pos-chip">${esc(p.pos)}</span>${pickChip}
+                <span class="pos-chip"${posChipStyle}>${esc(p.pos)}</span>${pickChip}
                 <span class="trade-player-name">${esc(p.name)}</span>${poHtml}
                 ${flipHtml}
               </div>

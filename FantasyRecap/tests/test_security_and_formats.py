@@ -616,6 +616,136 @@ class TestPublicAPIAndAnonymizerSecurity(unittest.TestCase):
             srv.shutdown()
             srv.server_close()
 
+    def test_sleeper_faab_waiver_budget_trades_and_ping_filter(self):
+        from unittest.mock import patch
+        from FantasyRecap.sleeper_adapter import build_sleeper_hub_data, estimate_faab_trade_vorp
+
+        # 1. Budget-normalized FAAB calibration ($25/$100 == $250/$1000 == 25% == +5.0 VORP)
+        self.assertEqual(estimate_faab_trade_vorp(25, 100), (5.0, 25))
+        self.assertEqual(estimate_faab_trade_vorp(250, 1000), (5.0, 25))
+        self.assertEqual(estimate_faab_trade_vorp(0, 100), (0.0, 0))
+        self.assertEqual(estimate_faab_trade_vorp(250, 100), (40.0, 250))  # Capped at 2.0x budget VORP
+
+        # 2. Full Sleeper pipeline test: Player-for-FAAB, Pick-for-FAAB, and $1-for-$1 joke ping filter!
+        fake_lg = {
+            "league_id": "777001",
+            "name": "FAAB Dynasty Test",
+            "season": "2026",
+            "total_rosters": 4,
+            "status": "in_season",
+            "settings": {
+                "type": 2,
+                "playoff_teams": 2,
+                "playoff_week_start": 5,
+                "waiver_budget": 200,  # $200 season FAAB budget
+                "leg": 3,
+            },
+            "scoring_settings": {"rec": 1.0},
+            "roster_positions": ["QB", "RB", "WR", "TE", "BN"],
+        }
+        fake_users = [
+            {"user_id": f"u{i}", "display_name": nm}
+            for i, nm in enumerate(("Alice", "Bob", "Carol", "Dave"), 1)
+        ]
+        fake_rosters = [
+            {"roster_id": i, "owner_id": f"u{i}", "players": [str(100 + i)], "starters": [str(100 + i)], "settings": {}}
+            for i in range(1, 5)
+        ]
+        fake_matchups_wk1 = [
+            {"roster_id": 1, "matchup_id": 1, "points": 110.0, "starters": ["101"], "players": ["101"], "players_points": {"101": 20.0}},
+            {"roster_id": 2, "matchup_id": 1, "points": 98.0, "starters": ["102"], "players": ["102"], "players_points": {"102": 14.0}},
+            {"roster_id": 3, "matchup_id": 2, "points": 105.0, "starters": ["103"], "players": ["103"], "players_points": {"103": 16.0}},
+            {"roster_id": 4, "matchup_id": 2, "points": 92.0, "starters": ["104"], "players": ["104"], "players_points": {"104": 11.0}},
+        ]
+        fake_txs_wk2 = [
+            # Trade A: Alice (rid 1) sends RB 101 to Bob (rid 2) for $50 FAAB (25% of $200 budget -> +5.0 VORP)
+            {
+                "type": "trade",
+                "status": "complete",
+                "transaction_id": "tx_player_for_faab",
+                "status_updated": 1700000001,
+                "roster_ids": [1, 2],
+                "adds": {"101": 2},
+                "draft_picks": [],
+                "waiver_budget": [{"sender": 2, "receiver": 1, "amount": 50}],
+            },
+            # Trade B: Carol (rid 3) sends 2027 Rd 3 pick to Dave (rid 4) for $60 FAAB (30% of $200 -> +6.0 VORP)
+            {
+                "type": "trade",
+                "status": "complete",
+                "transaction_id": "tx_pick_for_faab",
+                "status_updated": 1700000002,
+                "roster_ids": [3, 4],
+                "adds": {},
+                "draft_picks": [{"season": "2027", "round": 3, "roster_id": 3, "owner_id": 4}],
+                "waiver_budget": [{"sender": 4, "receiver": 3, "amount": 60}],
+            },
+            # Trade C: $1-for-$1 Sleeper push-notification joke ping -> must be ignored!
+            {
+                "type": "trade",
+                "status": "complete",
+                "transaction_id": "tx_joke_ping",
+                "status_updated": 1700000003,
+                "roster_ids": [1, 2],
+                "adds": {},
+                "draft_picks": [],
+                "waiver_budget": [
+                    {"sender": 1, "receiver": 2, "amount": 1},
+                    {"sender": 2, "receiver": 1, "amount": 1},
+                ],
+            },
+        ]
+
+        def _mock_get(subpath, timeout=12.0):
+            if subpath == "league/777001":
+                return fake_lg
+            if subpath == "league/777001/users":
+                return fake_users
+            if subpath == "league/777001/rosters":
+                return fake_rosters
+            if subpath == "league/777001/drafts":
+                return []
+            if subpath in ("league/777001/matchups/1", "league/777001/matchups/2"):
+                return fake_matchups_wk1
+            if subpath.startswith("league/777001/matchups/"):
+                return []
+            if subpath == "league/777001/transactions/2":
+                return fake_txs_wk2
+            if subpath.startswith("league/777001/transactions/"):
+                return []
+            return None
+
+        fake_pdir = {
+            "101": ("Depth Runner", "RB", "KC", "ACTIVE"),
+            "102": ("Beta Back", "RB", "BUF", "ACTIVE"),
+            "103": ("Gamma Wideout", "WR", "SF", "ACTIVE"),
+            "104": ("Delta Tightend", "TE", "DET", "ACTIVE"),
+        }
+        with patch("FantasyRecap.sleeper_adapter._sleeper_get", side_effect=_mock_get), patch(
+            "FantasyRecap.sleeper_adapter.load_sleeper_players_directory", return_value=fake_pdir
+        ):
+            hub, _ = build_sleeper_hub_data("777001", "faab-test", ephemeral=True)
+
+        live_trades = hub["trades"]["live"]["trades"]
+        self.assertEqual(len(live_trades), 2)  # Both real FAAB deals kept; $1-for-$1 joke ping excluded!
+
+        by_id = {t["trade_id"]: t for t in live_trades}
+        t_player = next(v for k, v in by_id.items() if "tx_player" in k)
+        self.assertEqual(t_player["a_received"][0]["name"], "$50 FAAB")
+        self.assertEqual(t_player["a_received"][0]["pos"], "FAAB")
+        self.assertEqual(t_player["a_received"][0]["started_stat_note"], "25% Waiver Budget")
+        self.assertEqual(t_player["a_received"][0]["started_vorp"], 5.0)
+        self.assertEqual(t_player["b_received"][0]["name"], "Depth Runner")
+        self.assertIn("FAAB Deal", t_player["started"]["tags"])
+
+        t_pick = next(v for k, v in by_id.items() if "tx_pick" in k)
+        self.assertEqual(t_pick["a_received"][0]["name"], "$60 FAAB")
+        self.assertEqual(t_pick["a_received"][0]["started_vorp"], 6.0)
+        self.assertEqual(t_pick["b_received"][0]["pos"], "PICK")
+        self.assertIn("Pick Swap", t_pick["started"]["tags"])
+        self.assertIn("FAAB Deal", t_pick["started"]["tags"])
+        self.assertEqual(t_pick["started"]["winner"], "PUSH")  # $60 FAAB (+6.0) vs Rd 3 Pick (+3.0..+6.0) is an Even Swap!
+
 
 if __name__ == "__main__":
     unittest.main()
