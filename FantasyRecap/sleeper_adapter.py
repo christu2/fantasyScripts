@@ -653,22 +653,31 @@ def _build_sleeper_hub_data_impl(
         # Check winners_bracket for completed past seasons to record true Champions & Runners-Up!
         wb = _sleeper_get(f"league/{ylid}/winners_bracket") or []
         champ_rid, ru_rid = 0, 0
-        # Winners-bracket pairings (championship path only, excludes 3rd/5th place games) + every playoff team,
-        # so consolation/toilet-bowl games no longer count as "playoff" games or "Made Playoffs" appearances.
+        # Winners-bracket pairings (championship path only, excludes 3rd/5th place games) + exact final placements
+        # from Sleeper `p` (1=Champ/2=RU, 3=3rd/4=4th, 5=5th/6=6th, ...) + every playoff team.
         bracket_pairs: set = set()
         playoff_rids: set = set()
+        final_rank_by_rid: Dict[int, int] = {}
+        max_po_round: Dict[int, int] = defaultdict(int)
         if not is_curr or cfg["status"] == "complete":
             for bm in wb:
-                if bm.get("p") == 1 and bm.get("w") and bm.get("l"):
+                p_val = bm.get("p")
+                if p_val == 1 and bm.get("w") and bm.get("l"):
                     champ_rid, ru_rid = int(bm["w"]), int(bm["l"])
+                if isinstance(p_val, int) and p_val >= 1 and bm.get("w") and bm.get("l"):
+                    final_rank_by_rid[int(bm["w"])] = p_val
+                    final_rank_by_rid[int(bm["l"])] = p_val + 1
+                rnd_num = int(bm.get("r") or 0)
                 t1_raw, t2_raw = bm.get("t1"), bm.get("t2")
                 t1 = int(t1_raw) if isinstance(t1_raw, (int, str)) and str(t1_raw).isdigit() else 0
                 t2 = int(t2_raw) if isinstance(t2_raw, (int, str)) and str(t2_raw).isdigit() else 0
                 if t1:
                     playoff_rids.add(t1)
+                    max_po_round[t1] = max(max_po_round[t1], rnd_num)
                 if t2:
                     playoff_rids.add(t2)
-                if t1 and t2 and bm.get("p") in (None, 1):
+                    max_po_round[t2] = max(max_po_round[t2], rnd_num)
+                if t1 and t2 and p_val in (None, 1):
                     bracket_pairs.add(frozenset((t1, t2)))
 
         # 1. Insert Games & Player Boxscores
@@ -733,27 +742,57 @@ def _build_sleeper_hub_data_impl(
             ru_years_map[r_own].append(yr)
             championships_log.append({"year": yr, "champ": c_own, "runner_up": r_own, "score": "Playoff Bracket"})
 
-        # 2. Team Seasons table
+        # 2. Team Seasons table (with exact final_rank 1..N from winners_bracket + regular-season standings & division titles)
         is_complete = 1 if (not is_curr or cfg["status"] == "complete") else 0
+        roster_stats: List[Tuple[int, int, int, int, float, float]] = []
         for r_raw in (cfg.get("_rosters_raw") or []):
             rid = int(r_raw.get("roster_id") or 0)
             if rid not in tmap:
                 continue
-            ti = tmap[rid]
             rs = r_raw.get("settings") or {}
             w = int(rs.get("wins") or 0)
             l = int(rs.get("losses") or 0)
             ties = int(rs.get("ties") or 0)
             pf = float(rs.get("fpts") or 0.0) + float(rs.get("fpts_decimal") or 0.0) / 100.0
             pa = float(rs.get("fpts_against") or 0.0) + float(rs.get("fpts_against_decimal") or 0.0) / 100.0
+            roster_stats.append((rid, w, l, ties, pf, pa))
+
+        # Fill any unplaced playoff teams (when 3rd/5th place games are disabled) & all non-playoff teams
+        if is_complete and roster_stats:
+            used_ranks = set(final_rank_by_rid.values())
+            unplaced_po = [x for x in roster_stats if x[0] in playoff_rids and x[0] not in final_rank_by_rid]
+            unplaced_po.sort(key=lambda x: (-max_po_round.get(x[0], 0), -x[1], -x[4]))
+            unplaced_non = [x for x in roster_stats if x[0] not in playoff_rids and x[0] not in final_rank_by_rid]
+            unplaced_non.sort(key=lambda x: (-x[1], -x[4]))
+            avail_ranks = [rk for rk in range(1, len(roster_stats) + 1) if rk not in used_ranks]
+            for x, rk in zip(unplaced_po + unplaced_non, avail_ranks):
+                final_rank_by_rid[x[0]] = rk
+
+        # Detect division winners for completed seasons with divisions
+        div_winner_rids: set = set()
+        if is_complete and cfg.get("has_divisions"):
+            by_div_rs: Dict[int, List[Tuple[int, int, float]]] = defaultdict(list)
+            for rid, w, _l, _t, pf, _pa in roster_stats:
+                did_v = int(tmap[rid].get("division_id") or 0)
+                if did_v > 0:
+                    by_div_rs[did_v].append((rid, w, pf))
+            for _did_v, members in by_div_rs.items():
+                if members:
+                    members.sort(key=lambda x: (-x[1], -x[2]))
+                    div_winner_rids.add(members[0][0])
+
+        for rid, w, l, ties, pf, pa in roster_stats:
+            ti = tmap[rid]
             gp = max(1, w + l + ties)
             won_ch = 1 if rid == champ_rid else 0
             ru_ch = 1 if rid == ru_rid else 0
+            f_rk = int(final_rank_by_rid.get(rid, 0)) if is_complete else 0
+            won_div = 1 if rid in div_winner_rids else 0
             cur.execute(
                 "INSERT OR REPLACE INTO team_seasons VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (yr, rid, ti["name"], ti["owner"], ti["owner"], ti["co_owners"], ti["division_id"], ti["division"],
-                 w, l, ties, round(w / gp, 4), round(pf, 2), round(pa, 2), round(pf - pa, 2),
-                 0, 0, 0, 0, 0, 1 if (won_ch or ru_ch or rid in playoff_rids) else 0, 0, won_ch, ru_ch, is_complete),
+                 w, l, ties, round(w / gp, 4), round(pf, 2), round(pa, 2), 0,
+                 0, 0, 0, 0, f_rk, 1 if (won_ch or ru_ch or rid in playoff_rids) else 0, won_div, won_ch, ru_ch, is_complete),
             )
 
         # 3. Draft Picks (Snake, Auction `$`, Linear Rookie, Keepers + Traded-Slot Indexing)
@@ -1521,16 +1560,16 @@ def _build_sleeper_hub_data_impl(
                 "season": int(r[0]), "team_name": r[1], "division": r[2],
                 "era_note": season_rules_by_yr.get(int(r[0]), {}).get("summary", "") if distinct_eras else "",
                 "wins": int(r[3]), "losses": int(r[4]), "pf": round(float(r[5]), 1),
-                "final_rank": int(r[6]), "made_playoffs": bool(r[7]), "won_division": False,
-                "won_champ": bool(r[8]), "runner_up": bool(r[9]), "is_complete": bool(r[10]),
+                "final_rank": int(r[6]), "made_playoffs": bool(r[7]), "won_division": bool(r[8]),
+                "won_champ": bool(r[9]), "runner_up": bool(r[10]), "is_complete": bool(r[11]),
             }
-            for r in cur.execute("SELECT season, team_name, division_name, wins, losses, points_for, final_rank, made_playoffs, won_championship, runner_up, is_season_complete FROM team_seasons WHERE owner = ? ORDER BY season DESC", (o,)).fetchall()
+            for r in cur.execute("SELECT season, team_name, division_name, wins, losses, points_for, final_rank, made_playoffs, won_division, won_championship, runner_up, is_season_complete FROM team_seasons WHERE owner = ? ORDER BY season DESC", (o,)).fetchall()
         ]
         dossiers.append({
             "owner": o, "code": c["code"], "division": c["division"], "team_name": c["team_name"] or (ts_tl[0]["team_name"] if ts_tl else o),
             "is_active": is_act, "former_names": resolver.former_names_for(o),
             "first_season": c["first_season"], "seasons_played": c["seasons"], "completed_seasons": sum(1 for s in ts_tl if s["is_complete"]),
-            "rings": c["rings"], "champ_years": c["champ_years"], "runner_up_years": c["runner_up_years"], "div_titles": 0, "po_apps": sum(1 for s in ts_tl if s["made_playoffs"]),
+            "rings": c["rings"], "champ_years": c["champ_years"], "runner_up_years": c["runner_up_years"], "div_titles": sum(1 for s in ts_tl if s["won_division"]), "po_apps": sum(1 for s in ts_tl if s["made_playoffs"]),
             "reg_w": c["wins"], "reg_l": c["losses"], "reg_pct": c["win_pct"], "po_w": c["po_wins"], "po_l": c["po_losses"], "po_pct": round((c["po_wins"] / max(1, c["po_wins"] + c["po_losses"])) * 100.0, 1) if (c["po_wins"] + c["po_losses"]) else 0.0,
             "ap_pct": lk.get("ap_pct", 50.0), "luck_delta": lk.get("luck_delta", 0.0),
             "pf_plus": lk.get("pf_plus", 100.0), "pa_plus": lk.get("pa_plus", 100.0), "sos_rank": lk.get("sos_rank", 1),

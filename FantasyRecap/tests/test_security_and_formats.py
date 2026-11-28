@@ -885,6 +885,11 @@ class TestPublicAPIAndAnonymizerSecurity(unittest.TestCase):
         self.assertGreaterEqual(d_alice["victim"]["w"], 5)
         if d_alice["trade"]["best_trade"]:
             self.assertNotIn("Star Rookie", d_alice["trade"]["best_trade"]["received"])
+        # Verify completed 2025 timeline final_rank is 1..4 (never #0!)
+        tl_2025_ranks = {d["owner"]: next(s["final_rank"] for s in d["timeline"] if s["season"] == 2025) for d in hub["dossiers"]}
+        self.assertEqual(tl_2025_ranks["Alice"], 1)
+        self.assertEqual(tl_2025_ranks["Bob"], 2)
+        self.assertEqual(sorted(tl_2025_ranks.values()), [1, 2, 3, 4])
 
 
 if __name__ == "__main__":

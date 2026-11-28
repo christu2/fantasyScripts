@@ -1914,8 +1914,8 @@ function renderDossiersTab() {
       let badge = `<span class="muted small">${s.is_complete ? (s.final_rank ? `#${s.final_rank}` : "—") : "In Progress"}</span>`;
       if (s.won_champ) badge = `<span class="tag-pill tag-gold">Champion</span>`;
       else if (s.runner_up) badge = `<span class="tag-pill tag-blue">Runner-Up</span>`;
-      else if (s.won_division) badge = `<span class="tag-pill tag-green">Div Champ (#${s.final_rank})</span>`;
-      else if (s.made_playoffs) badge = `<span class="tag-pill tag-green">Playoffs (#${s.final_rank})</span>`;
+      else if (s.won_division) badge = `<span class="tag-pill tag-green">${s.final_rank ? `Div Champ (#${s.final_rank})` : "Div Champ"}</span>`;
+      else if (s.made_playoffs) badge = `<span class="tag-pill tag-green">${s.final_rank ? `Playoffs (#${s.final_rank})` : "Playoffs"}</span>`;
       const eraHtml = s.era_note ? `<span class="tie-note">${esc(s.era_note)}</span>` : "";
       return `
         <tr>
