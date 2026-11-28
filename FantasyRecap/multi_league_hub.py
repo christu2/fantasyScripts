@@ -115,6 +115,48 @@ def compute_dynamic_replacement_ranks(team_count: int, roster_slots: Dict[str, i
     return ranks
 
 
+def compute_h2h_extremes(h2h_summary: Dict[str, dict], min_games: int = 3) -> Dict[str, dict]:
+    """
+    Per-owner Head-to-Head extremes from `h2h_summary` (`o1|||o2` keyed series):
+      - `victim`  = opponent you dominate most (largest W-L margin, then win %), only if W > L
+      - `nemesis` = opponent who dominates you most (largest L-W margin, then loss %), only if L > W
+    Series with fewer than `min_games` meetings are ignored so 1-0 flukes don't qualify.
+    """
+    recs: Dict[str, List[Tuple[str, int, int]]] = defaultdict(list)
+    for rec in (h2h_summary or {}).values():
+        o1, o2 = rec.get("o1"), rec.get("o2")
+        w1, w2 = int(rec.get("w1") or 0), int(rec.get("w2") or 0)
+        if not o1 or not o2 or (w1 + w2) < min_games:
+            continue
+        recs[o1].append((o2, w1, w2))
+        recs[o2].append((o1, w2, w1))
+
+    def _fmt(x):
+        if not x:
+            return None
+        opp, w, l = x
+        return {"owner": opp, "w": w, "l": l, "games": w + l, "pct": round(100.0 * w / max(1, w + l), 1)}
+
+    out: Dict[str, dict] = {}
+    for own, lst in recs.items():
+        vic = max((x for x in lst if x[1] > x[2]), key=lambda x: (x[1] - x[2], x[1] / (x[1] + x[2]), x[1]), default=None)
+        nem = max((x for x in lst if x[2] > x[1]), key=lambda x: (x[2] - x[1], x[2] / (x[1] + x[2]), x[2]), default=None)
+        out[own] = {"victim": _fmt(vic), "nemesis": _fmt(nem)}
+    return out
+
+
+def partner_trade_extremes(pc_o: Counter, pn_o: Dict[str, float]) -> dict:
+    """Favorite trade partner (most deals), Biggest Mark (most VORP won from) & Worst Nemesis (most VORP lost to)."""
+    fp = pc_o.most_common(1)[0] if pc_o else None
+    mk = max(pn_o.items(), key=lambda kv: kv[1]) if pn_o else None
+    nm = min(pn_o.items(), key=lambda kv: kv[1]) if pn_o else None
+    return {
+        "favorite_partner": {"owner": fp[0], "count": fp[1], "net_vorp": round(float(pn_o.get(fp[0], 0.0)), 1)} if fp else None,
+        "biggest_mark": {"owner": mk[0], "count": int(pc_o[mk[0]]), "net_vorp": round(mk[1], 1)} if mk and mk[1] > TIE_MARGIN_VORP else None,
+        "worst_nemesis": {"owner": nm[0], "count": int(pc_o[nm[0]]), "net_vorp": round(nm[1], 1)} if nm and nm[1] < -TIE_MARGIN_VORP else None,
+    }
+
+
 def score_draft_picks_multi_format(
     dp_rows: List[tuple],
     repl_ranks: Dict[str, int],
@@ -1237,17 +1279,21 @@ def _build_generic_hub_data_impl(
 
     # Career + H2H
     g_rows = cur.execute(
-        "SELECT season, week, owner, co_owners, opp_owner, is_playoffs, score, opp_score, win, margin FROM games ORDER BY season, week"
+        "SELECT season, week, owner, co_owners, opp_owner, is_playoffs, score, opp_score, win, margin FROM games WHERE is_regular = 1 OR is_playoffs = 1 ORDER BY season, week"
     ).fetchall()
     career_agg = {}
     pair_games = defaultdict(list)
     for r in g_rows:
         s_yr, wk, own, _co, opp, is_po, sc, osc, win, margin = r
         sc_f, osc_f = float(sc), float(osc)
-        ca = career_agg.setdefault(own, {"w": 0, "l": 0, "pw": 0, "pl": 0, "pf": 0.0, "pa": 0.0, "hi": 0.0, "seasons": set(), "first": int(s_yr)})
+        ca = career_agg.setdefault(own, {"w": 0, "l": 0, "pw": 0, "pl": 0, "pf": 0.0, "pa": 0.0, "hi": None, "lo": None, "seasons": set(), "first": int(s_yr)})
         ca["w"] += int(win); ca["l"] += 1 - int(win)
         if int(is_po): ca["pw"] += int(win); ca["pl"] += 1 - int(win)
-        ca["pf"] += sc_f; ca["pa"] += osc_f; ca["hi"] = max(ca["hi"], sc_f)
+        ca["pf"] += sc_f; ca["pa"] += osc_f
+        if ca["hi"] is None or sc_f > ca["hi"][0]:
+            ca["hi"] = (sc_f, int(s_yr), int(wk))
+        if sc_f > 0 and (ca["lo"] is None or sc_f < ca["lo"][0]):
+            ca["lo"] = (sc_f, int(s_yr), int(wk))
         ca["seasons"].add(int(s_yr)); ca["first"] = min(ca["first"], int(s_yr))
         if own < opp:
             pair_games[f"{own}|||{opp}"].append({"season": int(s_yr), "week": int(wk), "is_playoffs": bool(is_po), "s1": round(sc_f, 2), "s2": round(osc_f, 2), "w1": int(win) == 1, "margin": round(abs(float(margin)), 2)})
@@ -1262,7 +1308,9 @@ def _build_generic_hub_data_impl(
             "is_active": own in owner_tname, "former_names": resolver.former_names_for(own),
             "seasons": len(ca["seasons"]), "first_season": ca["first"], "wins": ca["w"], "losses": ca["l"],
             "win_pct": round((ca["w"] / gp) * 100.0, 1), "po_wins": ca["pw"], "po_losses": ca["pl"],
-            "avg_pf": round(ca["pf"] / gp, 2), "avg_pa": round(ca["pa"] / gp, 2), "high_score": round(ca["hi"], 2),
+            "avg_pf": round(ca["pf"] / gp, 2), "avg_pa": round(ca["pa"] / gp, 2), "high_score": round(ca["hi"][0], 2) if ca["hi"] else 0.0,
+            "high_game": {"score": round(ca["hi"][0], 2), "season": ca["hi"][1], "week": ca["hi"][2]} if ca["hi"] else None,
+            "low_game": {"score": round(ca["lo"][0], 2), "season": ca["lo"][1], "week": ca["lo"][2]} if ca["lo"] else None,
             "rings": 0, "champ_years": [], "runner_up_years": [],
         })
     career.sort(key=lambda x: (-x["win_pct"], -x["avg_pf"]))
@@ -1288,6 +1336,8 @@ def _build_generic_hub_data_impl(
             "closest": {"season": closest["season"], "week": closest["week"], "winner": o1 if closest["w1"] else o2, "margin": closest["margin"]},
             "super_bowls": [],
         }
+
+    h2h_ext = compute_h2h_extremes(h2h_summary)
 
     # Draft Hall (Multi-Format, Keeper Roll-Up & Dynasty Career Aware!)
     dp_rows = cur.execute(
@@ -1518,14 +1568,12 @@ def _build_generic_hub_data_impl(
                 if not pair: return None
                 s, t = pair
                 return {"trade_id": t["trade_id"], "season": t["season"], "week": t["trade_week"], "partner": t["owner_b"] if t["owner_a"] == o else t["owner_a"], "swing": round(s, 1), "received": [p["name"] for p in (t["a_received"] if t["owner_a"] == o else t["b_received"])], "sent": [p["name"] for p in (t["b_received"] if t["owner_a"] == o else t["a_received"])]}
-            fp = pc[o].most_common(1)[0] if pc[o] else None
             out.append({
                 "owner": o, "trades": d["trades"], "wins": d["wins"], "losses": d["losses"], "pushes": d["pushes"],
                 "win_pct": round((d["wins"] / dec) * 100.0, 1) if dec else 0.0,
                 "net_vorp": round(d["net_vorp"], 1), "avg_swing": round(d["net_vorp"] / d["trades"], 1) if d["trades"] else 0.0,
                 "best_trade": _br(bt), "worst_trade": _br(wt),
-                "favorite_partner": {"owner": fp[0], "count": fp[1], "net_vorp": round(pn[o][fp[0]], 1)} if fp else None,
-                "biggest_mark": None, "worst_nemesis": None,
+                **partner_trade_extremes(pc[o], pn[o]),
             })
         out.sort(key=lambda x: (-x["net_vorp"], -x["trades"]))
         return out
@@ -1572,8 +1620,8 @@ def _build_generic_hub_data_impl(
             "reg_w": c["wins"], "reg_l": c["losses"], "reg_pct": c["win_pct"], "po_w": 0, "po_l": 0, "po_pct": 0.0,
             "ap_pct": lk.get("ap_pct", 50.0), "luck_delta": lk.get("luck_delta", 0.0),
             "pf_plus": lk.get("pf_plus", 100.0), "pa_plus": lk.get("pa_plus", 100.0), "sos_rank": lk.get("sos_rank", 1),
-            "high_game": {"score": c["high_score"], "season": season, "week": completed_week}, "low_game": None,
-            "badges": badges, "nemesis": None, "victim": None,
+            "high_game": c.get("high_game"), "low_game": c.get("low_game"),
+            "badges": badges, "nemesis": h2h_ext.get(o, {}).get("nemesis"), "victim": h2h_ext.get(o, {}).get("victim"),
             "draft": {"best_steal": bs, "worst_bust": wb},
             "trade": {"deals": tc.get("trades", 0), "wins": tc.get("wins", 0), "losses": tc.get("losses", 0), "pushes": tc.get("pushes", 0), "net_vorp": tc.get("net_vorp", 0.0), "best_trade": tc.get("best_trade"), "worst_trade": tc.get("worst_trade")},
             "timeline": ts_tl,

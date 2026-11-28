@@ -746,6 +746,146 @@ class TestPublicAPIAndAnonymizerSecurity(unittest.TestCase):
         self.assertIn("FAAB Deal", t_pick["started"]["tags"])
         self.assertEqual(t_pick["started"]["winner"], "PUSH")  # $60 FAAB (+6.0) vs Rd 3 Pick (+3.0..+6.0) is an Even Swap!
 
+    def test_flipped_pick_presentation_multi_hop_dossier_low_game_and_h2h_extremes(self):
+        from collections import Counter
+        from unittest.mock import patch
+        from FantasyRecap.multi_league_hub import compute_h2h_extremes, partner_trade_extremes
+        from FantasyRecap.sleeper_adapter import build_sleeper_hub_data
+
+        # 1. Pure helper checks: H2H extremes (min 3 meetings) + Trade partner extremes
+        h2h = {
+            "Alice|||Bob": {"o1": "Alice", "o2": "Bob", "w1": 4, "w2": 1},
+            "Alice|||Carol": {"o1": "Alice", "o2": "Carol", "w1": 1, "w2": 4},
+            "Alice|||Dave": {"o1": "Alice", "o2": "Dave", "w1": 2, "w2": 0},  # <3 games -> ignored!
+        }
+        ext = compute_h2h_extremes(h2h, min_games=3)
+        self.assertEqual(ext["Alice"]["victim"]["owner"], "Bob")
+        self.assertEqual((ext["Alice"]["victim"]["w"], ext["Alice"]["victim"]["l"]), (4, 1))
+        self.assertEqual(ext["Alice"]["nemesis"]["owner"], "Carol")
+        self.assertEqual((ext["Alice"]["nemesis"]["w"], ext["Alice"]["nemesis"]["l"]), (1, 4))
+        self.assertIsNone(ext.get("Dave"))
+
+        pt = partner_trade_extremes(Counter({"Bob": 3, "Carol": 1}), {"Bob": 45.0, "Carol": -30.0})
+        self.assertEqual(pt["favorite_partner"]["owner"], "Bob")
+        self.assertEqual(pt["biggest_mark"]["owner"], "Bob")
+        self.assertEqual(pt["worst_nemesis"]["owner"], "Carol")
+
+        # 2. Multi-season Sleeper Dynasty chain:
+        #    - 2025 Wk 2: Alice gets Bob's 2026 Rd 1 pick (which becomes 2026 Pick 1.02)
+        #    - 2025 Wk 3: Alice flips that exact 2026 Rd 1 pick to Carol
+        #    - 2026 Draft: Dave drafts "Star Rookie WR" at 2026 Pick 1.02 (simulating multi-hop Carol->Dave!)
+        #    - 2025 Winners Bracket: Alice wins Championship over Bob (runner-up) -> outcome badges!
+        #    - Verify Alice's 2025 Wk 2 trade lists "2026 Pick 1.02" (pos="PICK", NOT "Star Rookie WR"),
+        #      flipped.to="Carol", flipped.week=3, flipped.drafted_by="Dave", flipped.drafted_name="Star Rookie WR",
+        #      and Dossier has accurate high_game/low_game season+week AND H2H victim/nemesis!
+        lg_2025 = {
+            "league_id": "888025",
+            "name": "Pick Hop Dynasty",
+            "season": "2025",
+            "total_rosters": 4,
+            "status": "complete",
+            "settings": {"type": 2, "playoff_teams": 2, "playoff_week_start": 4, "leg": 4},
+            "scoring_settings": {"rec": 1.0},
+            "roster_positions": ["QB", "RB", "WR", "TE", "BN"],
+        }
+        lg_2026 = {
+            "league_id": "888026",
+            "previous_league_id": "888025",
+            "name": "Pick Hop Dynasty",
+            "season": "2026",
+            "total_rosters": 4,
+            "status": "in_season",
+            "settings": {"type": 2, "playoff_teams": 2, "playoff_week_start": 4, "leg": 3},
+            "scoring_settings": {"rec": 1.0},
+            "roster_positions": ["QB", "RB", "WR", "TE", "BN"],
+        }
+        users = [{"user_id": f"u{i}", "display_name": nm} for i, nm in enumerate(("Alice", "Bob", "Carol", "Dave"), 1)]
+        rosters = [{"roster_id": i, "owner_id": f"u{i}", "players": [str(200 + i)], "starters": [str(200 + i)], "settings": {"wins": 2, "losses": 1, "fpts": 300}} for i in range(1, 5)]
+        draft_2026 = [{"draft_id": "d2026", "type": "linear", "status": "complete", "slot_to_roster_id": {"1": 1, "2": 2, "3": 3, "4": 4}}]
+        picks_2026 = [
+            {"pick_no": 1, "round": 1, "draft_slot": 1, "roster_id": 1, "player_id": "201", "metadata": {"first_name": "Alpha", "last_name": "One", "position": "WR"}},
+            {"pick_no": 2, "round": 1, "draft_slot": 2, "roster_id": 4, "player_id": "299", "metadata": {"first_name": "Star", "last_name": "Rookie", "position": "WR"}},
+        ]
+        wb_2025 = [{"r": 1, "m": 1, "t1": 1, "t2": 2, "p": 1, "w": 1, "l": 2}]
+
+        def _wk_ms(a_sc, b_sc, c_sc, d_sc):
+            return [
+                {"roster_id": 1, "matchup_id": 1, "points": a_sc, "starters": ["201"], "players": ["201"], "players_points": {"201": a_sc}},
+                {"roster_id": 2, "matchup_id": 1, "points": b_sc, "starters": ["202"], "players": ["202"], "players_points": {"202": b_sc}},
+                {"roster_id": 3, "matchup_id": 2, "points": c_sc, "starters": ["203"], "players": ["203"], "players_points": {"203": c_sc}},
+                {"roster_id": 4, "matchup_id": 2, "points": d_sc, "starters": ["204"], "players": ["204"], "players_points": {"204": d_sc}},
+            ]
+
+        tx_2025_w2 = [{
+            "type": "trade", "status": "complete", "transaction_id": "tx_acq_pick", "status_updated": 1700000100,
+            "roster_ids": [1, 2], "adds": {"201": 2},
+            "draft_picks": [{"season": "2026", "round": 1, "roster_id": 2, "owner_id": 1, "previous_owner_id": 2}],
+            "waiver_budget": [],
+        }]
+        tx_2025_w3 = [{
+            "type": "trade", "status": "complete", "transaction_id": "tx_flip_pick", "status_updated": 1700000200,
+            "roster_ids": [1, 3], "adds": {"203": 1},
+            "draft_picks": [{"season": "2026", "round": 1, "roster_id": 2, "owner_id": 3, "previous_owner_id": 1}],
+            "waiver_budget": [],
+        }]
+
+        def _mock_get(subpath, timeout=12.0):
+            if subpath == "league/888026": return lg_2026
+            if subpath == "league/888025": return lg_2025
+            if subpath.endswith("/users"): return users
+            if subpath.endswith("/rosters"): return rosters
+            if subpath == "league/888026/drafts": return draft_2026
+            if subpath == "league/888025/drafts": return []
+            if subpath == "draft/d2026/picks": return picks_2026
+            if subpath == "league/888025/winners_bracket": return wb_2025
+            if subpath == "league/888026/winners_bracket": return []
+            if subpath == "league/888025/matchups/1": return _wk_ms(140.0, 90.0, 110.0, 95.0)
+            if subpath == "league/888025/matchups/2": return _wk_ms(62.5, 55.0, 100.0, 99.0)  # Alice's career low: 62.5 (2025 Wk 2)!
+            if subpath == "league/888025/matchups/3": return _wk_ms(120.0, 100.0, 105.0, 90.0)
+            if subpath == "league/888025/matchups/4": return _wk_ms(155.0, 115.0, 80.0, 75.0)  # Championship (1 vs 2); 3 vs 4 is consolation!
+            if subpath == "league/888026/matchups/1": return _wk_ms(130.0, 105.0, 115.0, 88.0)
+            if subpath == "league/888026/matchups/2": return _wk_ms(125.0, 102.0, 112.0, 91.0)
+            if subpath == "league/888025/transactions/2": return tx_2025_w2
+            if subpath == "league/888025/transactions/3": return tx_2025_w3
+            if "/matchups/" in subpath or "/transactions/" in subpath: return []
+            return None
+
+        pdir = {
+            "201": ("Vet Receiver", "WR", "KC", "ACTIVE"),
+            "202": ("Beta Back", "RB", "BUF", "ACTIVE"),
+            "203": ("Gamma Wideout", "WR", "SF", "ACTIVE"),
+            "204": ("Delta Tightend", "TE", "DET", "ACTIVE"),
+            "299": ("Star Rookie", "WR", "CAR", "ACTIVE"),
+        }
+        with patch("FantasyRecap.sleeper_adapter._sleeper_get", side_effect=_mock_get), patch(
+            "FantasyRecap.sleeper_adapter.load_sleeper_players_directory", return_value=pdir
+        ):
+            hub, _ = build_sleeper_hub_data("888026", "pick-hop-test", ephemeral=True)
+
+        # Verify flipped pick in 2025 Wk 2 trade shows "2026 Pick 1.02" (NOT "Star Rookie"), exact hop to Carol Wk 3,
+        # Dave drafted Star Rookie, AND Alice/Bob have Championship/Runner-Up outcome badges!
+        t_acq = next(t for t in hub["trades"]["all_time"]["trades"] if "tx_acq_pic" in t["trade_id"])
+        pk_item = t_acq["a_received"][0]
+        self.assertEqual(pk_item["pos"], "PICK")
+        self.assertEqual(pk_item["name"], "2026 Pick 1.02")
+        self.assertEqual(pk_item["flipped"]["to"], "Carol")
+        self.assertEqual(pk_item["flipped"]["season"], 2025)
+        self.assertEqual(pk_item["flipped"]["week"], 3)
+        self.assertEqual(pk_item["flipped"]["drafted_by"], "Dave")
+        self.assertEqual(pk_item["flipped"]["drafted_name"], "Star Rookie")
+        self.assertTrue(t_acq["a_outcome"]["won_champ"])
+        self.assertTrue(t_acq["b_outcome"]["runner_up"])
+
+        # Verify Alice's Franchise Dossier: exact Career High (155.0, 2025 Wk 4), Career Low (62.5, 2025 Wk 2),
+        # H2H Victim = Bob (6-0), AND Dossier trade received never claims "Star Rookie"!
+        d_alice = next(d for d in hub["dossiers"] if d["owner"] == "Alice")
+        self.assertEqual(d_alice["high_game"], {"score": 155.0, "season": 2025, "week": 4})
+        self.assertEqual(d_alice["low_game"], {"score": 62.5, "season": 2025, "week": 2})
+        self.assertEqual(d_alice["victim"]["owner"], "Bob")
+        self.assertGreaterEqual(d_alice["victim"]["w"], 5)
+        if d_alice["trade"]["best_trade"]:
+            self.assertNotIn("Star Rookie", d_alice["trade"]["best_trade"]["received"])
+
 
 if __name__ == "__main__":
     unittest.main()

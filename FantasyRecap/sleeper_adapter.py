@@ -59,9 +59,11 @@ from FantasyRecap.multi_league_hub import (
     _compute_generic_repl_baselines,
     _load_optional_owner_aliases,
     compute_dynamic_replacement_ranks,
+    compute_h2h_extremes,
     deploy_multi_league_to_gcs,
     make_league_badge,
     normalize_generic_owner_name,
+    partner_trade_extremes,
     run_generic_playoff_simulation,
     score_draft_picks_multi_format,
 )
@@ -595,6 +597,9 @@ def _build_sleeper_hub_data_impl(
     curr_week_matchups_cache: Dict[int, list] = {}
     traded_picks_raw: Dict[str, Dict[int, List[dict]]] = defaultdict(lambda: defaultdict(list))
     traded_faab_raw: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    # Chronological pick ownership hops: (pick_season, round, orig_rid) -> [(yr, wk, ts, from_rid, to_rid, to_owner)]
+    pick_transfers: Dict[Tuple[int, int, int], List[Tuple[int, int, int, int, int, str]]] = defaultdict(list)
+    trade_ts_by_id: Dict[str, int] = {}
     draft_orig_slot_by_yr: Dict[int, Dict[int, int]] = {}
     draft_picks_by_yr_rnd_slot: Dict[int, Dict[Tuple[int, int], dict]] = defaultdict(dict)
     draft_picks_by_yr_rnd_tid: Dict[int, Dict[Tuple[int, int], List[dict]]] = defaultdict(lambda: defaultdict(list))
@@ -607,7 +612,7 @@ def _build_sleeper_hub_data_impl(
         reg_wks = cfg["regular_season_weeks"]
         tmap = cfg["teams_by_id"]
         season_tmap_by_yr[yr] = tmap
-        max_fetch_wk = reg_wks if is_curr else (reg_wks + 3)
+        max_fetch_wk = reg_wks if is_curr else min(18, reg_wks + (6 if int(cfg.get("playoff_round_weeks") or 1) == 2 else 4))
 
         sf_tag = " • SF" if cfg["roster_slots"].get("OP", 0) > 0 else ""
         med_tag = " • Median" if cfg["uses_league_median"] else ""
@@ -648,10 +653,23 @@ def _build_sleeper_hub_data_impl(
         # Check winners_bracket for completed past seasons to record true Champions & Runners-Up!
         wb = _sleeper_get(f"league/{ylid}/winners_bracket") or []
         champ_rid, ru_rid = 0, 0
+        # Winners-bracket pairings (championship path only, excludes 3rd/5th place games) + every playoff team,
+        # so consolation/toilet-bowl games no longer count as "playoff" games or "Made Playoffs" appearances.
+        bracket_pairs: set = set()
+        playoff_rids: set = set()
         if not is_curr or cfg["status"] == "complete":
             for bm in wb:
                 if bm.get("p") == 1 and bm.get("w") and bm.get("l"):
                     champ_rid, ru_rid = int(bm["w"]), int(bm["l"])
+                t1_raw, t2_raw = bm.get("t1"), bm.get("t2")
+                t1 = int(t1_raw) if isinstance(t1_raw, (int, str)) and str(t1_raw).isdigit() else 0
+                t2 = int(t2_raw) if isinstance(t2_raw, (int, str)) and str(t2_raw).isdigit() else 0
+                if t1:
+                    playoff_rids.add(t1)
+                if t2:
+                    playoff_rids.add(t2)
+                if t1 and t2 and bm.get("p") in (None, 1):
+                    bracket_pairs.add(frozenset((t1, t2)))
 
         # 1. Insert Games & Player Boxscores
         p_season_pts: Dict[int, float] = defaultdict(float)
@@ -676,13 +694,15 @@ def _build_sleeper_hub_data_impl(
                 if s1 == 0.0 and s2 == 0.0:
                     continue
                 is_reg = 1 if wk <= reg_wks else 0
-                is_po = 1 if wk > reg_wks else 0
-                tier = "NONE" if is_reg else "WINNERS_BRACKET"
+                in_bracket = (not bracket_pairs) or (frozenset((r1, r2)) in bracket_pairs)
+                is_po = 1 if (wk > reg_wks and in_bracket) else 0
+                is_cons = 1 if (wk > reg_wks and not in_bracket) else 0
+                tier = "NONE" if is_reg else ("WINNERS_BRACKET" if is_po else "CONSOLATION")
                 for (tid_a, sc_a, tid_b, sc_b, m_obj) in ((r1, s1, r2, s2, m1), (r2, s2, r1, s1, m2)):
                     ta, tb = tmap[tid_a], tmap[tid_b]
                     cur.execute(
                         "INSERT OR REPLACE INTO games VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (yr, wk, mid, tier, is_reg, is_po, 0, tid_a, ta["name"], ta["owner"], ta["owner"],
+                        (yr, wk, mid, tier, is_reg, is_po, is_cons, tid_a, ta["name"], ta["owner"], ta["owner"],
                          ta["co_owners"], sc_a, tid_b, tb["name"], tb["owner"], tb["owner"], sc_b,
                          1 if sc_a >= sc_b else 0, round(sc_a - sc_b, 2)),
                     )
@@ -698,7 +718,7 @@ def _build_sleeper_hub_data_impl(
                         cur.execute(
                             "INSERT OR REPLACE INTO player_boxscores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (yr, wk, mid, tid_a, ta["name"], ta["owner"], ta["co_owners"], tb["id"], tb["owner"],
-                             tier, is_reg, is_po, 0, pid_i, pname, pro, pos, 0 if is_st else 20,
+                             tier, is_reg, is_po, is_cons, pid_i, pname, pro, pos, 0 if is_st else 20,
                              pos if is_st else "Bench", is_st, round(pts, 2), round(pts, 2)),
                         )
                         p_season_pts[pid_i] += pts
@@ -733,7 +753,7 @@ def _build_sleeper_hub_data_impl(
                 "INSERT OR REPLACE INTO team_seasons VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (yr, rid, ti["name"], ti["owner"], ti["owner"], ti["co_owners"], ti["division_id"], ti["division"],
                  w, l, ties, round(w / gp, 4), round(pf, 2), round(pa, 2), round(pf - pa, 2),
-                 0, 0, 0, 0, 0, 1 if (won_ch or ru_ch) else 0, 0, won_ch, ru_ch, is_complete),
+                 0, 0, 0, 0, 0, 1 if (won_ch or ru_ch or rid in playoff_rids) else 0, 0, won_ch, ru_ch, is_complete),
             )
 
         # 3. Draft Picks (Snake, Auction `$`, Linear Rookie, Keepers + Traded-Slot Indexing)
@@ -838,6 +858,7 @@ def _build_sleeper_hub_data_impl(
                     "INSERT OR REPLACE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (tx_id, yr, twk, twk, ta, tmap[ta]["owner"], tb, tmap[tb]["owner"], int(tx.get("status_updated") or 0), "sleeper_tx"),
                 )
+                trade_ts_by_id[tx_id] = int(tx.get("status_updated") or 0)
                 if net_faab_a > 0:
                     traded_faab_raw[tx_id][ta] = net_faab_a
                 if net_faab_b > 0:
@@ -857,12 +878,19 @@ def _build_sleeper_hub_data_impl(
                 for dp in dp_swaps:
                     to_i = int(dp.get("owner_id") or 0)
                     if to_i in (ta, tb):
+                        pk_season = int(dp.get("season") or yr)
+                        pk_round = int(dp.get("round") or 1)
+                        pk_orig = int(dp.get("roster_id") or 0)
                         traded_picks_raw[tx_id][to_i].append({
-                            "season": int(dp.get("season") or yr),
-                            "round": int(dp.get("round") or 1),
-                            "orig_rid": int(dp.get("roster_id") or 0),
+                            "season": pk_season,
+                            "round": pk_round,
+                            "orig_rid": pk_orig,
                             "to_rid": to_i,
                         })
+                        fr_pk = int(dp.get("previous_owner_id") or 0) or (tb if to_i == ta else ta)
+                        pick_transfers[(pk_season, pk_round, pk_orig)].append(
+                            (yr, twk, trade_ts_by_id.get(tx_id, 0), fr_pk, to_i, tmap[to_i]["owner"])
+                        )
 
         conn.commit()
         print(f"   ✅ Synced Sleeper {cfg['name']} ({yr}): {completed_wk_yr} completed wks, format={season_rules_by_yr[yr]['summary']}")
@@ -973,15 +1001,19 @@ def _build_sleeper_hub_data_impl(
             awards_data = compute_weekly_awards(m_list_aw, perfs_aw, week_num=completed_week, season=curr_season, playoff_odds=baseline_odds)
 
     # Career + H2H
-    g_rows = cur.execute("SELECT season, week, owner, opp_owner, is_playoffs, score, opp_score, win, margin FROM games ORDER BY season, week").fetchall()
+    g_rows = cur.execute("SELECT season, week, owner, opp_owner, is_playoffs, score, opp_score, win, margin FROM games WHERE is_regular = 1 OR is_playoffs = 1 ORDER BY season, week").fetchall()
     career_agg = {}
     pair_games = defaultdict(list)
     for s_yr, wk, own, opp, is_po, sc, osc, win, margin in g_rows:
         sc_f, osc_f = float(sc), float(osc)
-        ca = career_agg.setdefault(own, {"w": 0, "l": 0, "pw": 0, "pl": 0, "pf": 0.0, "pa": 0.0, "hi": 0.0, "seasons": set(), "first": int(s_yr)})
+        ca = career_agg.setdefault(own, {"w": 0, "l": 0, "pw": 0, "pl": 0, "pf": 0.0, "pa": 0.0, "hi": None, "lo": None, "seasons": set(), "first": int(s_yr)})
         ca["w"] += int(win); ca["l"] += 1 - int(win)
         if int(is_po): ca["pw"] += int(win); ca["pl"] += 1 - int(win)
-        ca["pf"] += sc_f; ca["pa"] += osc_f; ca["hi"] = max(ca["hi"], sc_f)
+        ca["pf"] += sc_f; ca["pa"] += osc_f
+        if ca["hi"] is None or sc_f > ca["hi"][0]:
+            ca["hi"] = (sc_f, int(s_yr), int(wk))
+        if sc_f > 0 and (ca["lo"] is None or sc_f < ca["lo"][0]):
+            ca["lo"] = (sc_f, int(s_yr), int(wk))
         ca["seasons"].add(int(s_yr)); ca["first"] = min(ca["first"], int(s_yr))
         if own < opp:
             pair_games[f"{own}|||{opp}"].append({"season": int(s_yr), "week": int(wk), "is_playoffs": bool(is_po), "s1": round(sc_f, 2), "s2": round(osc_f, 2), "w1": int(win) == 1, "margin": round(abs(float(margin)), 2)})
@@ -996,7 +1028,9 @@ def _build_sleeper_hub_data_impl(
             "is_active": own in owner_tname, "former_names": resolver.former_names_for(own),
             "seasons": len(ca["seasons"]), "first_season": ca["first"], "wins": ca["w"], "losses": ca["l"],
             "win_pct": round((ca["w"] / gp) * 100.0, 1), "po_wins": ca["pw"], "po_losses": ca["pl"],
-            "avg_pf": round(ca["pf"] / gp, 2), "avg_pa": round(ca["pa"] / gp, 2), "high_score": round(ca["hi"], 2),
+            "avg_pf": round(ca["pf"] / gp, 2), "avg_pa": round(ca["pa"] / gp, 2), "high_score": round(ca["hi"][0], 2) if ca["hi"] else 0.0,
+            "high_game": {"score": round(ca["hi"][0], 2), "season": ca["hi"][1], "week": ca["hi"][2]} if ca["hi"] else None,
+            "low_game": {"score": round(ca["lo"][0], 2), "season": ca["lo"][1], "week": ca["lo"][2]} if ca["lo"] else None,
             "rings": champ_count[own], "champ_years": sorted(champ_years_map[own]), "runner_up_years": sorted(ru_years_map[own]),
         })
     career.sort(key=lambda x: (-x["rings"], -x["win_pct"], -x["avg_pf"]))
@@ -1022,6 +1056,8 @@ def _build_sleeper_hub_data_impl(
             "closest": {"season": closest["season"], "week": closest["week"], "winner": o1 if closest["w1"] else o2, "margin": closest["margin"]},
             "super_bowls": [sb for sb in championships_log if {sb["champ"], sb["runner_up"]} == {o1, o2}],
         }
+
+    h2h_ext = compute_h2h_extremes(h2h_summary)
 
     # Draft Hall (Per-Season Snake / Auction / Linear + Keeper Roll-Up & Multi-Year Dynasty Career!)
     dp_rows = cur.execute(
@@ -1199,6 +1235,23 @@ def _build_sleeper_hub_data_impl(
     is_multi_yr_keeper = curr_cfg["format_label"] in ("Dynasty", "Keeper")
     is_sf_curr = curr_cfg["roster_slots"].get("OP", 0) > 0
 
+    # Per-season playoff outcomes for trade-card badges (Won Championship / Runner-Up / Made Playoffs)
+    outcome_by_yr_own: Dict[Tuple[int, str], dict] = {}
+    for r_o in cur.execute("SELECT season, owner, made_playoffs, won_championship, runner_up, is_season_complete FROM team_seasons").fetchall():
+        outcome_by_yr_own[(int(r_o[0]), r_o[1])] = {
+            "is_complete": bool(r_o[5]), "made_playoffs": bool(r_o[2]), "won_champ": bool(r_o[3]), "runner_up": bool(r_o[4]),
+        }
+
+    for pk_key in pick_transfers:
+        pick_transfers[pk_key].sort(key=lambda x: (x[0], x[1], x[2]))
+
+    def _find_pick_flip(p_yr: int, rnd: int, orig_rid: int, acq_tid: int, after_key: Tuple[int, int, int]) -> Optional[dict]:
+        """First later trade where `acq_tid` sent this exact pick onward (chronological, multi-hop aware)."""
+        for f_yr, f_wk, f_ts, fr_i, _to_i, next_own in pick_transfers.get((p_yr, rnd, orig_rid), []):
+            if fr_i == acq_tid and (f_yr, f_wk, f_ts) > after_key:
+                return {"season": f_yr, "week": f_wk, "to": next_own, "is_pick_flip": True}
+        return None
+
     def _eval_player_horizon(pid_i: int, pos: str, start_yr: int, start_wk: int, acq_tid: int) -> dict:
         horizon_yrs = [s for s in all_synced_seasons if s >= start_yr] if is_multi_yr_keeper else ([start_yr] if start_yr in season_rules_by_yr else [])
         flip_info = None
@@ -1244,7 +1297,7 @@ def _build_sleeper_hub_data_impl(
             "flipped": flip_info,
         }
 
-    def _eval_traded_pick(pk: dict, acq_tid: int) -> dict:
+    def _eval_traded_pick(pk: dict, acq_tid: int, trade_key: Tuple[int, int, int] = (0, 0, 0)) -> dict:
         p_yr = int(pk["season"])
         rnd = int(pk["round"])
         orig_rid = int(pk["orig_rid"])
@@ -1276,27 +1329,32 @@ def _build_sleeper_hub_data_impl(
                         **perf,
                     }
                 else:
-                    # Acquiring manager flipped this pick before draft day -> credit liquid pick slot value on `started`
-                    # and show who was drafted at that exact slot!
+                    # Acquiring manager flipped this pick before draft day -> headline is the PICK itself (never the
+                    # player someone else drafted), credited at liquid slot value, with the exact flip hop + who drafted.
+                    flip = _find_pick_flip(p_yr, rnd, orig_rid, acq_tid, trade_key) or {
+                        "season": p_yr, "week": 0, "to": resolved["drafted_by_owner"], "is_pick_flip": True,
+                    }
+                    flip["drafted_by"] = resolved["drafted_by_owner"]
+                    flip["drafted_name"] = resolved["name"]
                     ros_val = perf["ros_vorp"] if perf["ros_wks"] >= 4 else slot_ev
                     return {
-                        "player_id": resolved["pid"],
-                        "name": resolved["name"],
-                        "pos": resolved["pos"],
-                        "pick_badge": pick_tag,
+                        "player_id": 0,
+                        "name": f"{p_yr} Pick {rnd}.{pir:02d}",
+                        "pos": "PICK",
+                        "pick_badge": "",
                         "started_wks": 0,
                         "started_pts": 0.0,
                         "started_ppg": 0.0,
                         "started_vorp": slot_ev,
                         "po_started_vorp": 0.0,
-                        "started_stat_note": f"Traded {pick_tag} Pick Capital",
+                        "started_stat_note": "Flipped Pick Capital",
                         "ros_wks": perf["ros_wks"],
                         "ros_pts": perf["ros_pts"],
                         "ros_ppg": perf["ros_ppg"],
                         "ros_vorp": round(ros_val, 1),
                         "po_ros_vorp": perf["po_ros_vorp"],
-                        "ros_stat_note": "" if perf["ros_wks"] >= 4 else f"Est. {pick_tag} Pick Value",
-                        "flipped": {"season": p_yr, "week": 0, "to": resolved["drafted_by_owner"], "is_pick_flip": True},
+                        "ros_stat_note": "" if perf["ros_wks"] >= 4 else "Est. Pick Value",
+                        "flipped": flip,
                     }
 
         # Case B: Future Un-Drafted Pick (`2027`, `2028`, etc.) -> Projected Slot Expected VORP!
@@ -1319,7 +1377,7 @@ def _build_sleeper_hub_data_impl(
             "started_stat_note": "Future Pick Capital",
             "ros_wks": 0, "ros_pts": 0.0, "ros_ppg": 0.0, "ros_vorp": ev, "po_ros_vorp": 0.0,
             "ros_stat_note": "Future Pick Capital",
-            "flipped": None,
+            "flipped": _find_pick_flip(p_yr, rnd, orig_rid, acq_tid, trade_key),
         }
 
     eval_live, eval_all = [], []
@@ -1347,7 +1405,7 @@ def _build_sleeper_hub_data_impl(
                     **perf,
                 })
             for pk in pick_objs:
-                pk_eval = _eval_traded_pick(pk, acq_tid)
+                pk_eval = _eval_traded_pick(pk, acq_tid, (yr, twk, trade_ts_by_id.get(tid_s, 0)))
                 sv_tot += pk_eval["started_vorp"]
                 rv_tot += pk_eval["ros_vorp"]
                 pout.append(pk_eval)
@@ -1386,7 +1444,8 @@ def _build_sleeper_hub_data_impl(
         rec_t = {
             "trade_id": tid_s, "season": yr, "trade_week": twk, "effective_week": ewk, "source": "sleeper_tx",
             "owner_a": oa, "owner_b": ob, "a_owners": [oa], "b_owners": [ob],
-            "a_outcome": {"is_complete": yr < curr_season}, "b_outcome": {"is_complete": yr < curr_season},
+            "a_outcome": outcome_by_yr_own.get((yr, oa), {"is_complete": yr < curr_season}),
+            "b_outcome": outcome_by_yr_own.get((yr, ob), {"is_complete": yr < curr_season}),
             "a_games_swung": 0, "b_games_swung": 0, "a_received": ap, "b_received": bp,
             "started": _lens(asv, bsv), "ros": _lens(arv, brv),
         }
@@ -1395,11 +1454,15 @@ def _build_sleeper_hub_data_impl(
     def _owner_cards(tlist, lens):
         st = {o: {"owner": o, "trades": 0, "wins": 0, "losses": 0, "pushes": 0, "net_vorp": 0.0} for o in owners}
         ot = defaultdict(list)
+        pc = defaultdict(Counter)
+        pn = defaultdict(lambda: defaultdict(float))
         for tr in tlist:
             ld = tr[lens]
             for side, o in (("a", tr["owner_a"]), ("b", tr["owner_b"])):
                 if o not in st: continue
                 ms = ld["swing_a"] if side == "a" else -ld["swing_a"]
+                opp = tr["owner_b"] if side == "a" else tr["owner_a"]
+                pc[o][opp] += 1; pn[o][opp] += ms
                 st[o]["trades"] += 1; st[o]["net_vorp"] += ms
                 if ms > TIE_MARGIN_VORP: st[o]["wins"] += 1
                 elif ms < -TIE_MARGIN_VORP: st[o]["losses"] += 1
@@ -1422,7 +1485,7 @@ def _build_sleeper_hub_data_impl(
                 "owner": o, "trades": d["trades"], "wins": d["wins"], "losses": d["losses"], "pushes": d["pushes"],
                 "win_pct": round((d["wins"] / dec) * 100.0, 1) if dec else 0.0,
                 "net_vorp": round(d["net_vorp"], 1), "avg_swing": round(d["net_vorp"] / d["trades"], 1) if d["trades"] else 0.0,
-                "best_trade": _br(bt), "worst_trade": _br(wt), "favorite_partner": None, "biggest_mark": None, "worst_nemesis": None,
+                "best_trade": _br(bt), "worst_trade": _br(wt), **partner_trade_extremes(pc[o], pn[o]),
             })
         out.sort(key=lambda x: (-x["net_vorp"], -x["trades"]))
         return out
@@ -1471,8 +1534,8 @@ def _build_sleeper_hub_data_impl(
             "reg_w": c["wins"], "reg_l": c["losses"], "reg_pct": c["win_pct"], "po_w": c["po_wins"], "po_l": c["po_losses"], "po_pct": round((c["po_wins"] / max(1, c["po_wins"] + c["po_losses"])) * 100.0, 1) if (c["po_wins"] + c["po_losses"]) else 0.0,
             "ap_pct": lk.get("ap_pct", 50.0), "luck_delta": lk.get("luck_delta", 0.0),
             "pf_plus": lk.get("pf_plus", 100.0), "pa_plus": lk.get("pa_plus", 100.0), "sos_rank": lk.get("sos_rank", 1),
-            "high_game": {"score": c["high_score"], "season": curr_season, "week": completed_week}, "low_game": None,
-            "badges": badges, "nemesis": None, "victim": None,
+            "high_game": c.get("high_game"), "low_game": c.get("low_game"),
+            "badges": badges, "nemesis": h2h_ext.get(o, {}).get("nemesis"), "victim": h2h_ext.get(o, {}).get("victim"),
             "draft": {"best_steal": bs, "worst_bust": wb},
             "trade": {"deals": tc.get("trades", 0), "wins": tc.get("wins", 0), "losses": tc.get("losses", 0), "pushes": tc.get("pushes", 0), "net_vorp": tc.get("net_vorp", 0.0), "best_trade": tc.get("best_trade"), "worst_trade": tc.get("worst_trade")},
             "timeline": ts_tl,

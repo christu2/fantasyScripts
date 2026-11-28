@@ -1482,12 +1482,22 @@ function renderTradesTab() {
             : "";
           let flipHtml = "";
           if (p.flipped) {
-            const fWhen = p.flipped.is_pick_flip
-              ? `Pick traded`
-              : (p.flipped.season && p.flipped.season !== t.season
+            let fWhen;
+            if (p.flipped.is_pick_flip) {
+              fWhen = p.flipped.week > 0
+                ? `Pick flipped ${p.flipped.season !== t.season ? p.flipped.season + " " : ""}Wk ${p.flipped.week}`
+                : "Pick traded";
+            } else {
+              fWhen = p.flipped.season && p.flipped.season !== t.season
                 ? `Flipped ${p.flipped.season} Wk ${p.flipped.week}`
-                : `Flipped Wk ${p.flipped.week}`);
-            flipHtml = `<span class="flip-note">&#8627; ${esc(fWhen)} &rarr; ${escShortName(p.flipped.to)}</span>`;
+                : `Flipped Wk ${p.flipped.week}`;
+            }
+            const draftedTxt = p.flipped.drafted_name
+              ? (p.flipped.drafted_by && p.flipped.drafted_by !== p.flipped.to
+                ? ` (${escShortName(p.flipped.drafted_by)} drafted ${esc(p.flipped.drafted_name)})`
+                : ` (drafted ${esc(p.flipped.drafted_name)})`)
+              : "";
+            flipHtml = `<span class="flip-note">&#8627; ${esc(fWhen)} &rarr; ${escShortName(p.flipped.to)}${draftedTxt}</span>`;
           }
           const poHtml = pPo >= 8 ? ` <span style="color:var(--gold)">(PO ${fmtVorp(pPo)})</span>` : "";
           const rightStatHtml = statNote
