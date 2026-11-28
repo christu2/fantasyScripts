@@ -985,15 +985,28 @@ def _build_sleeper_hub_data_impl(
             "super_bowls": [sb for sb in championships_log if {sb["champ"], sb["runner_up"]} == {o1, o2}],
         }
 
-    # Draft Hall (Per-Season Snake / Auction / Linear + Keeper exclusion!)
+    # Draft Hall (Per-Season Snake / Auction / Linear + Keeper Roll-Up & Multi-Year Dynasty Career!)
     dp_rows = cur.execute(
         "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
+    ).fetchall()
+    ps_totals = cur.execute(
+        """
+        SELECT season, player_name, position, SUM(pts) FROM (
+            SELECT season, week, player_id, MAX(player_name) AS player_name, MAX(position) AS position, MAX(points) AS pts
+            FROM player_boxscores WHERE is_consolation = 0 AND position IN ('QB','RB','WR','TE')
+            GROUP BY season, week, player_id
+        ) GROUP BY season, player_id
+        """
     ).fetchall()
     season_dtypes = {yr: info["draft_type"] for yr, info in season_rules_by_yr.items()}
     season_rranks = {yr: info["repl_ranks"] for yr, info in season_rules_by_yr.items()}
     drafts, draft_seasons, scored_dp = score_draft_picks_multi_format(
         dp_rows, repl_ranks, curr_cfg["team_count"],
         draft_type=curr_cfg["draft_type"], season_draft_types=season_dtypes, season_repl_ranks=season_rranks,
+        league_format=curr_cfg["format_label"],
+        player_season_totals=ps_totals,
+        current_season=curr_season,
+        is_current_season_complete=(curr_cfg["status"] == "complete"),
     )
 
     # All-Play Schedule Luck + PF+/PA+

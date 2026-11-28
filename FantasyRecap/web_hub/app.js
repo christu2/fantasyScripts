@@ -1157,6 +1157,17 @@ function renderDraftsTab() {
     const own = oSel.value;
     const pack = HUB.history.drafts[yr] || { steals: [], busts: [] };
     const modes = pack.modes || [];
+    const meta = getLeagueMeta();
+    const dBlurb = document.getElementById("draftMethodologyBlurb");
+    if (dBlurb) {
+      if (meta.formatLabel === "Dynasty") {
+        dBlurb.innerHTML = `<strong>Multi-Year Dynasty Career VORP+:</strong> Sums cumulative post-draft VORP (<code>Draft Year &rarr; Present</code>) above each season's league-wide positional replacement vs. rookie class expectation (in-progress rookies excluded from All-Time Busts until Year 1 finishes).`;
+      } else if (meta.formatLabel === "Keeper") {
+        dBlurb.innerHTML = `<strong>Keeper-Tenure Surplus VORP+:</strong> Non-kept picks are graded on their single draft season, while kept players roll each consecutive kept season's cost-adjusted surplus onto the original draft pick (<code>Kept N yrs</code>) with zero double-counting.`;
+      } else {
+        dBlurb.innerHTML = `<strong>VORP+</strong> = Actual Season VORP minus Expected VORP for that exact draft slot or auction price above positional replacement — evaluated per season so rule changes compare apples-to-apples across eras.`;
+      }
+    }
     const stHead = document.getElementById("stealsSubhead");
     const buHead = document.getElementById("bustsSubhead");
     if (stHead && buHead) {
@@ -1167,8 +1178,8 @@ function renderDraftsTab() {
         stHead.textContent = "Biggest Auction Steals ($15 & Under)";
         buHead.textContent = "Biggest Auction Busts ($20+ Spend)";
       } else if (modes[0] === "LINEAR") {
-        stHead.textContent = "Biggest Rookie Draft Steals (Round 2+)";
-        buHead.textContent = "Biggest Rookie Draft Busts (Round 1)";
+        stHead.textContent = "Biggest Rookie Draft Steals (Round 2+ • Multi-Year Career)";
+        buHead.textContent = yr === String(HUB.season) ? `Early ${HUB.season} Round 1 Underperformers` : "Biggest Rookie Draft Busts (Round 1 • Multi-Year Career)";
       } else {
         stHead.textContent = "Biggest Draft Steals (Round 4+)";
         buHead.textContent = "Biggest Draft Busts (Rounds 1–5)";
@@ -1180,11 +1191,12 @@ function renderDraftsTab() {
       if (!f.length) return `<tr><td colspan="6" class="muted">No matching picks in top list for this filter.</td></tr>`;
       return f.map(r => {
         const costLbl = r.bid && Number(r.bid) > 0 ? `$${Number(r.bid)}` : `Rd ${r.round} (#${r.pick})`;
+        const tenureSub = r.tenure_note ? `<span class="tie-note">${esc(r.tenure_note)}</span>` : "";
         return `
         <tr>
           <td><strong>${esc(r.player)}</strong>${yr === "all" ? ` <span class="muted small">(${r.season})</span>` : ""}</td>
           <td>${escShortName(r.owner)}</td>
-          <td>${costLbl}</td>
+          <td>${costLbl}${tenureSub}</td>
           <td>${esc(r.pos)}${r.pos_draft_rank} &rarr; ${esc(r.pos)}${r.pos_finish_rank}</td>
           <td>${r.pts}</td>
           <td style="color:${isSteal ? 'var(--green)' : 'var(--red)'};font-weight:700">${r.delta > 0 ? '+' : ''}${r.delta}</td>

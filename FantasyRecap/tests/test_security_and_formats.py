@@ -485,6 +485,94 @@ class TestPublicAPIAndAnonymizerSecurity(unittest.TestCase):
         self.assertGreater(r3_mid_sf, 0.0)
         self.assertGreater(r1_mid_sf, r1_2yrs_out)
 
+    def test_keeper_rollup_handles_kept_and_non_kept_without_double_counting(self):
+        from FantasyRecap.multi_league_hub import score_draft_picks_multi_format
+
+        # 2024–2025 Keeper League:
+        # - "Breakout Keeper WR": drafted Rd 10 in 2024 (keeper=0), then KEPT Rd 9 in 2025 (keeper=1) -> rolls up 2 yrs!
+        # - "Non-Kept Rental WR": drafted Rd 5 in 2024 (keeper=0), NOT kept in 2025, re-drafted fresh Rd 6 in 2025 (keeper=0) -> two separate 1-yr entries!
+        rows = [
+            (2024, 5, 1, "Alice", "Alpha WR", "WR", 1, 2, 240.0, 0, 0),
+            (2024, 18, 2, "Bob", "Beta WR", "WR", 2, 3, 210.0, 0, 0),
+            (2024, 55, 5, "Carol", "Non-Kept Rental WR", "WR", 3, 4, 185.0, 0, 0),
+            (2024, 118, 10, "Dave", "Breakout Keeper WR", "WR", 4, 1, 290.0, 0, 0),
+            # 2025
+            (2025, 4, 1, "Alice", "Alpha WR", "WR", 1, 2, 235.0, 0, 0),
+            (2025, 19, 2, "Bob", "Beta WR", "WR", 2, 3, 205.0, 0, 0),
+            (2025, 66, 6, "Eve", "Non-Kept Rental WR", "WR", 3, 4, 175.0, 0, 0),
+            (2025, 105, 9, "Dave", "Breakout Keeper WR", "WR", 4, 1, 285.0, 0, 1),  # KEPT!
+        ]
+        drafts, _, scored = score_draft_picks_multi_format(rows, {"WR": 3}, team_count=12, league_format="Keeper")
+        kept_entries = [x for x in scored if x["player"] == "Breakout Keeper WR"]
+        self.assertEqual(len(kept_entries), 1)  # Rolled into the single 2024 origin pick!
+        self.assertEqual(kept_entries[0]["season"], 2024)
+        self.assertEqual(kept_entries[0]["tenure_years"], 2)
+        self.assertEqual(kept_entries[0]["tenure_note"], "Kept 2 yrs")
+        self.assertAlmostEqual(kept_entries[0]["pts"], 575.0, places=1)
+
+        rental_entries = [x for x in scored if x["player"] == "Non-Kept Rental WR"]
+        self.assertEqual(len(rental_entries), 2)  # Separate 2024 (Carol) and 2025 (Eve) 1-yr picks, zero double-counting!
+        self.assertTrue(all(x["tenure_years"] == 1 and x["tenure_note"] == "" for x in rental_entries))
+        self.assertEqual(drafts["all"]["steals"][0]["player"], "Breakout Keeper WR")
+
+    def test_dynasty_multi_year_career_vorp_and_rookie_patience_guardrail(self):
+        from FantasyRecap.multi_league_hub import score_draft_picks_multi_format
+
+        # 2024 Rookie QB injured Year 1 (0 pts) -> breaks out in 2025–2026 (280 + 270 pts)
+        # 2026 Rookie WR in incomplete Year 1 -> excluded from All-Time Busts
+        dp_rows = [
+            (2024, 1, 1, "Alice", "Outlier Rookie QB", "QB", 1, 1, 310.0, 0, 0),
+            (2024, 4, 1, "Bob", "Redshirt Year1 QB", "QB", 2, 4, 0.0, 0, 0),
+            (2024, 8, 1, "Carol", "True Bust QB", "QB", 3, 3, 25.0, 0, 0),
+            (2024, 14, 2, "Dave", "Round2 Gem QB", "QB", 4, 2, 240.0, 0, 0),
+            # Incomplete 2026 rookie class
+            (2026, 2, 1, "Eve", "Slow Start 2026 Rookie QB", "QB", 1, 2, 35.0, 0, 0),
+            (2026, 5, 1, "Frank", "Hot Start 2026 Rookie QB", "QB", 2, 1, 250.0, 0, 0),
+        ]
+        ps_totals = [
+            # 2024 league-wide QBs (replacement = QB3 = 180.0)
+            (2024, "Outlier Rookie QB", "QB", 310.0),
+            (2024, "Round2 Gem QB", "QB", 240.0),
+            (2024, "Vet Baseline QB", "QB", 180.0),
+            (2024, "True Bust QB", "QB", 25.0),
+            (2024, "Redshirt Year1 QB", "QB", 0.0),
+            # 2025 (Redshirt Year1 QB breaks out with 285 pts!)
+            (2025, "Outlier Rookie QB", "QB", 295.0),
+            (2025, "Redshirt Year1 QB", "QB", 285.0),
+            (2025, "Round2 Gem QB", "QB", 255.0),
+            (2025, "Vet Baseline QB", "QB", 180.0),
+            (2025, "True Bust QB", "QB", 10.0),
+            # 2026 (in progress, QB3 replacement = 220.0 -> Hot Start = +30 VORP, Slow Start = 0 VORP)
+            (2026, "Hot Start 2026 Rookie QB", "QB", 250.0),
+            (2026, "Redshirt Year1 QB", "QB", 230.0),
+            (2026, "Outlier Rookie QB", "QB", 220.0),
+            (2026, "Round2 Gem QB", "QB", 210.0),
+            (2026, "Vet Baseline QB", "QB", 120.0),
+            (2026, "Slow Start 2026 Rookie QB", "QB", 35.0),
+        ]
+        drafts, _, scored = score_draft_picks_multi_format(
+            dp_rows,
+            {"QB": 4},
+            team_count=12,
+            draft_type="LINEAR",
+            league_format="Dynasty",
+            player_season_totals=ps_totals,
+            current_season=2026,
+            is_current_season_complete=False,
+        )
+        redshirt = next(x for x in scored if x["player"] == "Redshirt Year1 QB")
+        self.assertAlmostEqual(redshirt["pts"], 515.0, places=1)  # Sums 0 (2024) + 285 (2025) + 230 (2026)!
+        self.assertEqual(redshirt["tenure_note"], "3 yrs")
+
+        all_bust_names = [b["player"] for b in drafts["all"]["busts"]]
+        yr24_bust_names = [b["player"] for b in drafts["2024"]["busts"]]
+        self.assertNotIn("Redshirt Year1 QB", all_bust_names)
+        self.assertNotIn("Redshirt Year1 QB", yr24_bust_names)
+        self.assertIn("True Bust QB", all_bust_names)
+        # 2026 incomplete-season rookie excluded from All-Time Busts, yet visible in 2026 Draft tab!
+        self.assertNotIn("Slow Start 2026 Rookie QB", all_bust_names)
+        self.assertIn("Slow Start 2026 Rookie QB", [b["player"] for b in drafts["2026"]["busts"]])
+
 
 if __name__ == "__main__":
     unittest.main()

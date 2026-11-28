@@ -123,17 +123,23 @@ def score_draft_picks_multi_format(
     draft_type: str = "SNAKE",
     season_draft_types: Optional[Dict[int, str]] = None,
     season_repl_ranks: Optional[Dict[int, Dict[str, int]]] = None,
+    league_format: str = "Redraft",
+    player_season_totals: Optional[List[Tuple[int, str, str, float]]] = None,
+    current_season: int = 0,
+    is_current_season_complete: bool = False,
 ) -> Tuple[dict, List[int], List[dict]]:
     """
     Scores Draft Hall steals & busts across Snake, Auction, Keeper, Dynasty Linear,
-    AND Mixed-History leagues that changed rules over time (e.g., Snake in 2021–2023
-    then Auction + Superflex in 2024–2026!):
-      - Evaluates draft mode (`AUCTION` vs `SNAKE` vs short `LINEAR` rookie draft) and
-        positional replacement baselines **independently per season `yr`**.
-      - Excludes keeper picks (`keeper == 1`) so late-round keepers never skew steals.
-      - Because every era is normalized to `+VORP points above expectation`, All-Time
-        Steals & Busts rank Snake-era picks (`Rd 10`) and Auction-era picks (`$3`)
-        side-by-side on the exact same value scale!
+    AND Mixed-History leagues that changed rules over time:
+      - **Redraft / Auction:** Single-season VORP above that season's positional expectation.
+      - **Keeper (Kept + Non-Kept Unified):** Non-kept picks (`keeper == 0` with no subsequent
+        keeper seasons) are graded on their single draft season (`1 yr` — zero double-counting if
+        re-drafted later). Kept players roll every consecutive `keeper == 1` season's net cost-adjusted
+        VORP surplus onto the original `keeper == 0` draft pick (`Kept N yrs`), while standalone
+        `keeper == 1` rows never appear as separate duplicate steals!
+      - **Dynasty (`league_format == 'Dynasty'`):** Evaluates cumulative Multi-Year Career VORP
+        (`Draft Year -> Present`) against league-wide positional replacement per season, with a
+        patience guardrail excluding incomplete current-year rookies from `All-Time Busts`.
     """
     valid_rows = [r for r in dp_rows if len(r) >= 9]
     rows_by_yr: Dict[int, List[tuple]] = defaultdict(list)
@@ -143,7 +149,6 @@ def score_draft_picks_multi_format(
         rows_by_yr[yr].append(r)
         max_round_by_yr[yr] = max(max_round_by_yr[yr], int(r[2] or 0))
 
-    # Determine draft mode PER SEASON so Snake -> Auction rule transitions never corrupt prior years!
     mode_by_yr: Dict[int, str] = {}
     all_yrs = sorted(rows_by_yr.keys())
     for yr in all_yrs:
@@ -156,80 +161,223 @@ def score_draft_picks_multi_format(
         else:
             mode_by_yr[yr] = "SNAKE"
 
-    # Replacement baseline per (season, pos) using that exact season's replacement ranks!
+    is_dynasty = str(league_format or "").strip().lower() == "dynasty"
+
+    # Build league-wide per-(season, pos) replacement baselines from `player_season_totals` when provided
+    # (critical for 3-round Dynasty rookie drafts where `dp_rows` only has ~5 rookies per position!).
+    pts_by_yr_player: Dict[Tuple[int, str], float] = {}
+    box_curves: Dict[Tuple[int, str], List[float]] = defaultdict(list)
+    box_seasons: Set[int] = set()
+    if player_season_totals:
+        for s_yr, p_nm, p_pos, tot_p in player_season_totals:
+            sy = int(s_yr)
+            val = float(tot_p or 0.0)
+            key_nm = str(p_nm or "").strip().lower()
+            if key_nm:
+                pts_by_yr_player[(sy, key_nm)] = max(pts_by_yr_player.get((sy, key_nm), 0.0), val)
+            box_curves[(sy, str(p_pos or "FLEX"))].append(val)
+            box_seasons.add(sy)
+
     curves = defaultdict(list)
     for r in valid_rows:
         curves[(int(r[0]), r[5])].append(float(r[8] or 0.0))
-    repl_pts_map = {}
-    for (yr, pos), vals in curves.items():
-        vals.sort(reverse=True)
+    for k_c in curves:
+        curves[k_c].sort(reverse=True)
+
+    repl_pts_map: Dict[Tuple[int, str], float] = {}
+    all_known_yrs = sorted(set(all_yrs) | box_seasons)
+    for yr in all_known_yrs:
         yr_ranks = (season_repl_ranks or {}).get(yr) or repl_ranks
-        r_idx = min(yr_ranks.get(pos, team_count) - 1, len(vals) - 1)
-        repl_pts_map[(yr, pos)] = vals[r_idx] if vals else 0.0
+        for pos in ("QB", "RB", "WR", "TE"):
+            src_vals = box_curves.get((yr, pos)) if box_curves.get((yr, pos)) else curves.get((yr, pos), [])
+            if src_vals:
+                sv = sorted(src_vals, reverse=True)
+                r_idx = min(max(1, yr_ranks.get(pos, team_count)) - 1, len(sv) - 1)
+                repl_pts_map[(yr, pos)] = sv[r_idx]
+            else:
+                repl_pts_map[(yr, pos)] = 0.0
 
-    # Auction expected-VORP curve & spend rank computed only for AUCTION seasons
-    auction_vorp_curves = defaultdict(list)
-    spend_rank_map = {}
-    by_yr_bid = defaultdict(list)
-    for idx, r in enumerate(valid_rows):
-        yr = int(r[0])
-        if mode_by_yr.get(yr) != "AUCTION":
-            continue
-        is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
-        if is_keeper:
-            continue
-        pos, pts = r[5], float(r[8] or 0.0)
-        bid = int(r[9] or 0) if len(r) >= 10 else 0
-        rp = repl_pts_map.get((yr, pos), 0.0)
-        auction_vorp_curves[yr].append(max(0.0, pts - rp))
-        by_yr_bid[yr].append((bid, -int(r[1]), idx))
-    for yr in auction_vorp_curves:
-        auction_vorp_curves[yr].sort(reverse=True)
-    for yr, items in by_yr_bid.items():
-        items.sort(reverse=True)
-        for rank_i, (_, _, row_idx) in enumerate(items, 1):
-            spend_rank_map[row_idx] = rank_i
+    # --- PATH A: DYNASTY MULTI-YEAR CAREER VORP ---
+    if is_dynasty and pts_by_yr_player:
+        horizon_all = sorted(all_known_yrs)
+        dyn_raw = []
+        class_pos_pts: Dict[Tuple[int, str], List[Tuple[float, int]]] = defaultdict(list)
+        class_pos_vorps: Dict[Tuple[int, str], List[float]] = defaultdict(list)
+        class_rnd_vorps: Dict[Tuple[int, int], List[float]] = defaultdict(list)
 
-    scored_dp = []
-    for idx, r in enumerate(valid_rows):
-        yr, pick, rnd = int(r[0]), int(r[1]), int(r[2])
-        own, pname, pos = r[3], r[4], r[5]
-        pdr, pfr, pts = int(r[6] or 0), int(r[7] or 0), float(r[8] or 0.0)
-        bid = int(r[9] or 0) if len(r) >= 10 else 0
-        is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
-        if is_keeper:
-            continue
-        c = curves.get((yr, pos), [])
-        if not c or pdr <= 0:
-            continue
-        rp = repl_pts_map[(yr, pos)]
-        actual_vorp = max(0.0, pts - rp)
-        dmode = mode_by_yr.get(yr, "SNAKE")
+        for idx, r in enumerate(valid_rows):
+            yr, pick, rnd = int(r[0]), int(r[1]), int(r[2])
+            own, pname, pos = r[3], r[4], r[5]
+            pdr = int(r[6] or 0)
+            bid = int(r[9] or 0) if len(r) >= 10 else 0
+            is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
+            if is_keeper or pdr <= 0:
+                continue
+            p_seasons = [s for s in horizon_all if s >= yr] or [yr]
+            key_nm = str(pname or "").strip().lower()
+            cum_pts = 0.0
+            cum_vorp = 0.0
+            for s in p_seasons:
+                s_pts = pts_by_yr_player.get((s, key_nm), float(r[8] or 0.0) if s == yr else 0.0)
+                cum_pts += s_pts
+                cum_vorp += max(0.0, s_pts - repl_pts_map.get((s, pos), 0.0))
+            dyn_raw.append((idx, yr, pick, rnd, bid, own, pname, pos, pdr, cum_pts, cum_vorp, len(p_seasons)))
+            class_pos_pts[(yr, pos)].append((cum_pts, idx))
+            class_pos_vorps[(yr, pos)].append(cum_vorp)
+            class_rnd_vorps[(yr, rnd)].append(cum_vorp)
 
-        if dmode == "AUCTION":
-            avc = auction_vorp_curves.get(yr, [])
-            srank = spend_rank_map.get(idx, pick)
-            exp_vorp = avc[min(srank - 1, len(avc) - 1)] if avc else 0.0
-            delta = round(actual_vorp - exp_vorp, 1)
-        else:
-            exp_pts = c[min(pdr - 1, len(c) - 1)]
-            delta = round(actual_vorp - max(0.0, exp_pts - rp), 1)
+        pfr_dyn: Dict[int, int] = {}
+        for (_yr, _pos), plist in class_pos_pts.items():
+            plist.sort(key=lambda x: -x[0])
+            for rk, (_cp, row_idx) in enumerate(plist, 1):
+                pfr_dyn[row_idx] = rk
+        for k in class_pos_vorps:
+            class_pos_vorps[k].sort(reverse=True)
+        class_overall_vorps: Dict[int, List[float]] = defaultdict(list)
+        yr_pick_order: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+        for (idx, yr, pick, _rnd, _bid, _own, _pname, _pos, _pdr, _cpts, cvorp, _nyrs) in dyn_raw:
+            class_overall_vorps[yr].append(cvorp)
+            yr_pick_order[yr].append((pick, idx))
+        for yr_k in class_overall_vorps:
+            class_overall_vorps[yr_k].sort(reverse=True)
+        overall_draft_rank_idx: Dict[int, int] = {}
+        for yr_k, plist_o in yr_pick_order.items():
+            plist_o.sort(key=lambda x: x[0])
+            for o_idx, (_pk, row_idx) in enumerate(plist_o):
+                overall_draft_rank_idx[row_idx] = o_idx
 
-        scored_dp.append({
-            "season": yr,
-            "pick": pick,
-            "round": rnd,
-            "bid": bid if dmode == "AUCTION" else 0,
-            "draft_mode": dmode,
-            "owner": own,
-            "player": pname,
-            "pos": pos,
-            "pos_draft_rank": pdr,
-            "pos_finish_rank": pfr,
-            "pos_leap": pdr - pfr,
-            "pts": round(pts, 1),
-            "delta": delta,
-        })
+        scored_dp = []
+        for (idx, yr, pick, rnd, bid, own, pname, pos, pdr, cum_pts, cum_vorp, n_yrs) in dyn_raw:
+            dmode = mode_by_yr.get(yr, "LINEAR")
+            pfr = pfr_dyn.get(idx, pdr)
+            ov_list = class_overall_vorps.get(yr, [0.0])
+            o_idx = overall_draft_rank_idx.get(idx, max(0, pick - 1))
+            ov_slot_exp = ov_list[min(o_idx, len(ov_list) - 1)]
+            rnd_vals = sorted(class_rnd_vorps.get((yr, rnd), [ov_slot_exp]))
+            rnd_med = rnd_vals[len(rnd_vals) // 2]
+            # Evaluate rookie picks against overall draft-slot VORP curve + round median so a stacked positional class rewards all hits!
+            exp_vorp = 0.55 * ov_slot_exp + 0.45 * rnd_med
+            delta = round(cum_vorp - exp_vorp, 1)
+            t_note = f"{n_yrs} yrs" if n_yrs >= 2 else ("Yr 1" if (current_season and yr == int(current_season) and not is_current_season_complete) else "1 yr")
+            scored_dp.append({
+                "season": yr,
+                "pick": pick,
+                "round": rnd,
+                "bid": bid if dmode == "AUCTION" else 0,
+                "draft_mode": dmode,
+                "owner": own,
+                "player": pname,
+                "pos": pos,
+                "pos_draft_rank": pdr,
+                "pos_finish_rank": pfr,
+                "pos_leap": pdr - pfr,
+                "pts": round(cum_pts, 1),
+                "actual_vorp": round(cum_vorp, 1),
+                "delta": delta,
+                "tenure_years": n_yrs,
+                "tenure_note": t_note,
+            })
+    else:
+        # --- PATH B: REDRAFT, AUCTION & KEEPER (WITH MULTI-YEAR KEEPER ROLL-UP!) ---
+        auction_vorp_curves = defaultdict(list)
+        spend_rank_map = {}
+        by_yr_bid = defaultdict(list)
+        for idx, r in enumerate(valid_rows):
+            yr = int(r[0])
+            if mode_by_yr.get(yr) != "AUCTION":
+                continue
+            pos, pts = r[5], float(r[8] or 0.0)
+            bid = int(r[9] or 0) if len(r) >= 10 else 0
+            rp = repl_pts_map.get((yr, pos), 0.0)
+            # Include all auction slots to anchor spend-rank curve accurately
+            is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
+            if not is_keeper:
+                auction_vorp_curves[yr].append(max(0.0, pts - rp))
+            by_yr_bid[yr].append((bid, -int(r[1]), idx))
+        for yr in auction_vorp_curves:
+            auction_vorp_curves[yr].sort(reverse=True)
+        for yr, items in by_yr_bid.items():
+            items.sort(reverse=True)
+            for rank_i, (_, _, row_idx) in enumerate(items, 1):
+                spend_rank_map[row_idx] = rank_i
+
+        # Compute single-season actual_vorp & single-season cost delta for every row (both `keeper==0` and `keeper==1`)
+        per_row_eval = []
+        keeper_rows_by_player_yr: Dict[Tuple[str, int], dict] = {}
+        for idx, r in enumerate(valid_rows):
+            yr, pick, rnd = int(r[0]), int(r[1]), int(r[2])
+            own, pname, pos = r[3], r[4], r[5]
+            pdr, pfr, pts = int(r[6] or 0), int(r[7] or 0), float(r[8] or 0.0)
+            bid = int(r[9] or 0) if len(r) >= 10 else 0
+            is_keeper = int(r[10] or 0) if len(r) >= 11 else 0
+            c = curves.get((yr, pos), [])
+            if not c or pdr <= 0:
+                continue
+            rp = repl_pts_map.get((yr, pos), 0.0)
+            actual_vorp = max(0.0, pts - rp)
+            dmode = mode_by_yr.get(yr, "SNAKE")
+            if dmode == "AUCTION":
+                avc = auction_vorp_curves.get(yr, [])
+                srank = spend_rank_map.get(idx, pick)
+                exp_vorp = avc[min(srank - 1, len(avc) - 1)] if avc else 0.0
+                delta = actual_vorp - exp_vorp
+            else:
+                exp_pts = c[min(pdr - 1, len(c) - 1)]
+                delta = actual_vorp - max(0.0, exp_pts - rp)
+
+            item = {
+                "season": yr,
+                "pick": pick,
+                "round": rnd,
+                "bid": bid if dmode == "AUCTION" else 0,
+                "draft_mode": dmode,
+                "owner": own,
+                "player": pname,
+                "pos": pos,
+                "pos_draft_rank": pdr,
+                "pos_finish_rank": pfr,
+                "pos_leap": pdr - pfr,
+                "pts": pts,
+                "delta": delta,
+                "is_keeper": is_keeper,
+            }
+            per_row_eval.append(item)
+            if is_keeper:
+                keeper_rows_by_player_yr[(str(pname).strip().lower(), yr)] = item
+
+        # Emit ONLY `is_keeper == 0` origin picks, rolling any consecutive `is_keeper == 1` kept seasons onto them!
+        scored_dp = []
+        for it in per_row_eval:
+            if it["is_keeper"]:
+                continue
+            pkey = str(it["player"]).strip().lower()
+            tot_pts = it["pts"]
+            tot_delta = it["delta"]
+            kept_yrs = 1
+            nxt_yr = it["season"] + 1
+            while (pkey, nxt_yr) in keeper_rows_by_player_yr:
+                k_row = keeper_rows_by_player_yr[(pkey, nxt_yr)]
+                tot_pts += k_row["pts"]
+                tot_delta += k_row["delta"]
+                kept_yrs += 1
+                nxt_yr += 1
+            scored_dp.append({
+                "season": it["season"],
+                "pick": it["pick"],
+                "round": it["round"],
+                "bid": it["bid"],
+                "draft_mode": it["draft_mode"],
+                "owner": it["owner"],
+                "player": it["player"],
+                "pos": it["pos"],
+                "pos_draft_rank": it["pos_draft_rank"],
+                "pos_finish_rank": it["pos_finish_rank"],
+                "pos_leap": it["pos_leap"],
+                "pts": round(tot_pts, 1),
+                "delta": round(tot_delta, 1),
+                "tenure_years": kept_yrs,
+                "tenure_note": f"Kept {kept_yrs} yrs" if kept_yrs > 1 else "",
+            })
 
     def _is_steal(x: dict) -> bool:
         if x["delta"] <= 0:
@@ -237,23 +385,30 @@ def score_draft_picks_multi_format(
         if x["draft_mode"] == "AUCTION":
             return x["bid"] <= 15
         if x["draft_mode"] == "LINEAR":
-            return x["round"] >= 2 and x["pos_leap"] >= 1
-        return x["round"] >= 4 and x["pos_leap"] >= 3
+            return x["round"] >= 2
+        return x["round"] >= 4 and (x["pos_leap"] >= 3 or x.get("tenure_years", 1) > 1)
 
-    def _is_bust(x: dict) -> bool:
+    def _is_bust(x: dict, *, for_all_time: bool = False) -> bool:
         if x["delta"] >= 0:
+            return False
+        # Dynasty Patience Guardrail: don't put incomplete current-year rookies onto the All-Time Busts wall!
+        if for_all_time and is_dynasty and current_season and x["season"] == int(current_season) and not is_current_season_complete:
             return False
         if x["draft_mode"] == "AUCTION":
             return x["bid"] >= 20
         if x["draft_mode"] == "LINEAR":
-            return x["round"] == 1
+            # A Round 1 Dynasty rookie who genuinely delivered multi-year above-replacement starter value is never a Bust!
+            eff_yrs = max(1.0, float(x.get("tenure_years", 1)) - (0.5 if (current_season and not is_current_season_complete) else 0.0))
+            starter_vorp_floor = 20.0 * eff_yrs
+            return x["round"] == 1 and x["delta"] <= -10.0 and float(x.get("actual_vorp", 0.0)) < starter_vorp_floor
         return x["round"] <= 5
 
     draft_seasons = sorted({x["season"] for x in scored_dp}, reverse=True)
     drafts = {}
     for label, sub in [("all", scored_dp)] + [(str(y), [x for x in scored_dp if x["season"] == y]) for y in draft_seasons]:
+        is_all = (label == "all")
         steals = sorted([x for x in sub if _is_steal(x)], key=lambda x: (-x["delta"], -x["pos_leap"]))[:15]
-        busts = sorted([x for x in sub if _is_bust(x)], key=lambda x: (x["delta"], x["pos_leap"]))[:15]
+        busts = sorted([x for x in sub if _is_bust(x, for_all_time=is_all)], key=lambda x: (x["delta"], x["pos_leap"]))[:15]
         modes_present = sorted({x["draft_mode"] for x in sub})
         drafts[label] = {"steals": steals, "busts": busts, "modes": modes_present}
     return drafts, draft_seasons, scored_dp
@@ -1134,9 +1289,18 @@ def _build_generic_hub_data_impl(
             "super_bowls": [],
         }
 
-    # Draft Hall (Multi-Format & Rule-Evolution Aware: Snake, Auction $, Keeper/Dynasty per season!)
+    # Draft Hall (Multi-Format, Keeper Roll-Up & Dynasty Career Aware!)
     dp_rows = cur.execute(
         "SELECT season, overall_pick, round_id, owner, player_name, position, pos_draft_rank, pos_finish_rank, season_points, bid_amount, keeper FROM draft_picks WHERE position IN ('QB','RB','WR','TE')"
+    ).fetchall()
+    ps_totals = cur.execute(
+        """
+        SELECT season, player_name, position, SUM(pts) FROM (
+            SELECT season, week, player_id, MAX(player_name) AS player_name, MAX(position) AS position, MAX(points) AS pts
+            FROM player_boxscores WHERE is_consolation = 0 AND position IN ('QB','RB','WR','TE')
+            GROUP BY season, week, player_id
+        ) GROUP BY season, player_id
+        """
     ).fetchall()
     season_dtypes = {yr: info["draft_type"] for yr, info in season_rules_by_yr.items()}
     season_rranks = {yr: info["repl_ranks"] for yr, info in season_rules_by_yr.items()}
@@ -1147,6 +1311,10 @@ def _build_generic_hub_data_impl(
         draft_type=config.get("draft_type", "SNAKE"),
         season_draft_types=season_dtypes,
         season_repl_ranks=season_rranks,
+        league_format=config.get("format_label", "Redraft"),
+        player_season_totals=ps_totals,
+        current_season=season,
+        is_current_season_complete=(completed_week >= reg_wks),
     )
 
     # Analytics Lab: All-Play Luck + PF+/PA+
