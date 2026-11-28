@@ -93,9 +93,9 @@ def build_public_bundle(out_dir: Path = DEFAULT_OUT_DIR, api_base: str = "") -> 
 
     # 4. Write Cloudflare Pages `_headers` file (OWASP A05 hardening + smart caching)
     cf_csp = (
-        f"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        f"default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; "
         f"img-src 'self' data: https:; media-src 'self' https:; "
-        f"connect-src 'self'{extra_csp_origin} https://api.sleeper.app https://storage.googleapis.com https://*.run.app; "
+        f"connect-src 'self'{extra_csp_origin} https://api.sleeper.app https://storage.googleapis.com https://*.run.app https://cloudflareinsights.com; "
         f"object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
     )
     headers_txt = f"""/*
